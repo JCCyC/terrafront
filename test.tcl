@@ -25,6 +25,7 @@ while {[gets $f line] >= 0} {
 }
 close $f
 proc m {name {ofs 0}} { debug read memory [expr {$::sym($name) + $ofs}] }
+proc rem {} { expr {[m call_rem] + 256*[m call_rem 1]} }
 proc sat {i} { debug read VRAM [expr {0x1B00 + $i}] }
 proc vol {} { debug read "PSG regs" 8 }
 
@@ -33,6 +34,9 @@ proc down {bits} { keymatrixdown 8 $bits }
 proc up {bits} { keymatrixup 8 $bits }
 proc cdown {} { keymatrixdown 3 0x01 }
 proc cup {} { keymatrixup 3 0x01 }
+# The test keys 1..4: row 0, bits 1..4
+proc kdown {k} { keymatrixdown 0 [expr {1 << $k}] }
+proc kup {k} { keymatrixup 0 [expr {1 << $k}] }
 # Joysticks: a breakpoint right after read_joy's R14 read clears the held
 # lines (bit 4 = button A, 5 = B) of port 1 (B = 03h) or 2 (B = 4Ch)
 set joy(1) 0
@@ -65,6 +69,7 @@ proc frame {} {
 	for {set i 0} {$i < $::sym(MAX_VOLLEYS)} {incr i} { if {[m volleys [expr {$i*$::VOL}]]} { incr live } }
 	if {$live > $::maxlive} { set ::maxlive $live }
 	if {[info exists ::track]} { try track_frame }
+	if {[info exists ::bw]} { lappend ::bw [list [sat [expr {$::bwslot*4}]] [sat [expr {$::bwslot*4+2}]]] }
 	try check_sat
 	try check_bitmap
 	try call_frame
@@ -254,11 +259,153 @@ proc plan_calls {a} {
 		up 0x80
 		check {[m ship_x] == 256 - 4*$::W} "four-ship front's right edge: ship_x [m ship_x]"
 		check {$::maxlive == 2} "at most two volleys in flight ($::maxlive)"
+	}
+	plan_kills [expr {$a+5}]
+}
+
+# The test keys: deaths, booms, holes, trims, the call-up rule on the
+# front's span, an emptied front. Start: four ships at the right edge, 1 in
+# reserve; the test gives the game more reserves (in RAM only: the status
+# row isn't redrawn) so that the call-ups below can run.
+proc plan_kills {a} {
+	set F $::F
+	at $a {
+		check {[m front_mask] == 15 && [m ship_x] == 256 - 4*$::W} "kills start: four ships at the right edge"
+		debug write memory $::sym(reserves) 3
+		set ::bwslot 1 ; set ::bw {}
+		kdown 2
+	}
+	at [expr {$a+1}] { kup 2 }
+	# a volley while ship 2 dies: no bullet from it
+	at [expr {$a+3}] { down 0x01 }
+	at [expr {$a+4}] {
+		up 0x01
+		set x [m ship_x]
+		set v [volley_live]
+		set want [list [expr {$x+4}] 0 [expr {$x+4+2*$::W}] [expr {$x+4+3*$::W}]]
+		check {[llength $v] == 1 && [lrange [lindex $v 0] 1 end] == $want} "a volley while ship 2 dies: [lindex $v 0] (want $want)"
+	}
+	at [expr {$a+25}] {
+		set runs [boom_runs $::bw] ; unset ::bw
+		set want [expr {$::F == 60 ? {12 6 16 4 20 5 parked} : {12 5 16 3 20 4 parked}}]
+		check {$runs eq $want} "key 2: ship 2's boom in the SAT, name and frames: $runs (want $want)"
+		check {[m front_mask] == 13 && [m front_slots] == 4 && [m ship_x] == 256 - 4*$::W} "ship 2 gone, a hole: mask [m front_mask], [m front_slots] slots, ship_x [m ship_x]"
+		kdown 2
+	}
+	# key 2 again: the second ship is now slot 2; ship-gap-gap-ship can't call up
+	at [expr {$a+26}] { kup 2 }
+	at [expr {$a+46}] {
+		check {[m front_mask] == 9 && [m front_slots] == 4} "key 2 again: ship-gap-gap-ship (mask [m front_mask], [m front_slots] slots)"
+		set ::calls {} ; cdown
+	}
+	at [expr {$a+47}] { cup }
+	at [expr {$a+50}] {
+		check {[m call_on] == 0 && [llength $::calls] == 0 && [m reserves] == 3} "ship-gap-gap-ship: C does nothing (span 4, 3 in reserve)"
+		kdown 4
+	}
+	# key 4 with two ships: nothing
+	at [expr {$a+51}] { kup 4 }
+	at [expr {$a+53}] {
+		set st [list [m boom_stage 0] [m boom_stage 1] [m boom_stage 2] [m boom_stage 3]]
+		check {[m front_mask] == 9 && $st == {0 0 0 0}} "key 4 with two ships: no death (mask [m front_mask], stages $st)"
+		kdown 1
+	}
+	# key 1: the first ship dies, the front is trimmed to the last one
+	at [expr {$a+54}] { kup 1 }
+	at [expr {$a+74}] {
+		check {[m front_mask] == 1 && [m front_slots] == 1 && [m front_w] == $::W && [m ship_x] == 256 - $::W} "key 1: trimmed to the last ship (mask [m front_mask], ship_x [m ship_x], [m front_w] px)"
+		set ::calls {} ; cdown
+	}
+	at [expr {$a+75}] { cup }
+	set b [expr {$a+74+$F/2}]
+	at $b {
+		check_call 1 [expr {256 - $::W}] [expr {256 - 2*$::W}] 2
+		set ::calls {} ; cdown
+	}
+	at [expr {$b+1}] { cup }
+	set b [expr {$b+$F/2}]
+	at $b {
+		check_call 1 [expr {256 - 2*$::W}] [expr {256 - 3*$::W}] 3
+		check {[m front_mask] == 7} "three ships again (mask [m front_mask])"
+		kdown 2
+	}
+	# ship-gap-ship calls up from the left ...
+	at [expr {$b+1}] { kup 2 }
+	at [expr {$b+26}] {
+		check {[m front_mask] == 5 && [m front_slots] == 3} "key 2: ship-gap-ship (mask [m front_mask])"
+		set ::calls {} ; cdown
+	}
+	at [expr {$b+27}] { cup }
+	set b [expr {$b+26+$F/2}]
+	at $b {
+		check_call 1 [expr {256 - 3*$::W}] [expr {256 - 4*$::W}] 4
+		check {[m front_mask] == 11 && [m reserves] == 0} "ship-gap-ship: one more from the left (mask [m front_mask])"
+		debug write memory $::sym(reserves) 1
+		kdown 1
+	}
+	# ... and, at the left edge, from the right
+	at [expr {$b+1}] { kup 1 }
+	at [expr {$b+26}] {
+		check {[m front_mask] == 5 && [m ship_x] == 256 - 3*$::W} "key 1: trimmed to ship-gap-ship (mask [m front_mask], ship_x [m ship_x])"
+		down 0x10
+	}
+	set b [expr {$b+26+3*$F}]
+	at $b { up 0x10 ; check {[m ship_x] == 0} "ship-gap-ship at the left edge" }
+	at [expr {$b+2}] { set ::calls {} ; cdown }
+	at [expr {$b+3}] { cup }
+	set b [expr {$b+2+$F/2}]
+	at $b {
+		check_call 0 [expr {256 - 3*$::W}] [expr {3*$::W}] 4
+		check {[m front_mask] == 13 && [m reserves] == 0} "ship-gap-ship: one more from the right (mask [m front_mask])"
+		kdown 3
+	}
+	# keys 3, 2, 1: all three die, the front is empty where its last died
+	at [expr {$b+1}] { kup 3 }
+	at [expr {$b+3}] { kdown 2 }
+	at [expr {$b+4}] { kup 2 }
+	at [expr {$b+6}] { kdown 1 }
+	at [expr {$b+7}] { kup 1 }
+	at [expr {$b+40}] {
+		check {[m front_mask] == 0 && [m front_slots] == 0 && [m front_w] == 0 && [m ship_x] == 0} "keys 3, 2, 1: the front is empty at x [m ship_x]"
+		set ::spawns 0
+		down 0x81
+	}
+	at [expr {$b+41}] { up 0x01 }
+	at [expr {$b+50}] {
+		up 0x80
+		check {[m ship_x] == 0 && $::spawns == 0 && [llength [volley_live]] == 0} "empty front: no move, no shot (ship_x [m ship_x], $::spawns shots)"
+		set ::calls {} ; cdown
+	}
+	at [expr {$b+51}] { cup }
+	at [expr {$b+54}] {
+		check {[m call_on] == 0 && [llength $::calls] == 0} "empty front, no reserves: C does nothing"
+		debug write memory $::sym(reserves) 1
+		cdown
+	}
+	at [expr {$b+55}] { cup }
+	set b [expr {$b+54+$F/2}]
+	at $b {
+		check_call 0 256 0 1
+		check {[m front_mask] == 1 && [m ship_x] == 0} "empty front refilled where its last ship died (ship_x [m ship_x])"
 		check {$::bitmap_bad == 0 && $::bitmap_lit > 0} "bitmap = the bullets in flight, every frame ($::bitmap_frames frames, $::bitmap_lit bullet pixels seen; [expr {$::bitmap_bad ? "first wrong: $::bitmap_first" : "none wrong"}])"
-		check {$::sat_bad == 0} "sprites = the front and the incoming ship, every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
+		check {$::sat_bad == 0} "sprites = the front (ships and booms) and the incoming ship, every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
 		check {$::coming_seen > 0} "the incoming ship's sprite showed on $::coming_seen frames"
 	}
-	at [expr {$a+10}] { screenshot_and_finish }
+	at [expr {$b+5}] { screenshot_and_finish }
+}
+
+# A slot's SAT entries ({Y name} a frame) from the first boom name on:
+# {name frames ...}, then "parked" if the sprite left afterwards
+proc boom_runs {entries} {
+	set r {}
+	set last -1
+	foreach e $entries {
+		lassign $e y nm
+		if {$y == 0xC0} { if {[llength $r]} { lappend r parked } ; break }
+		if {$nm < $::sym(NAME_BOOM) && ![llength $r]} continue
+		if {$nm == $last} { lset r end [expr {[lindex $r end] + 1}] } else { lappend r $nm 1 ; set last $nm }
+	}
+	return $r
 }
 
 # The volleys in flight: {Y x0 x1 x2 x3} each
@@ -299,15 +446,15 @@ proc call_frame {} {
 	set on [m call_on]
 	if {$on && !$::incall} {
 		set ::incall 1
-		set ::cur [list [m call_left] [m call_rem] [m call_target]]
+		set ::cur [list [m call_left] [rem] [m call_target]]
 		set ::curx [m ship_x]
-		set ::lastrem [m call_rem]
+		set ::lastrem [rem]
 		set ::cursteps {}
 		set ::curframes 0
 		set ::curfrozen 1
 	} elseif {$::incall} {
 		incr ::curframes
-		set rem [expr {$on ? [m call_rem] : 0}]
+		set rem [expr {$on ? [rem] : 0}]
 		lappend ::cursteps [expr {$::lastrem - $rem}]
 		set ::lastrem $rem
 		if {[m ship_x] != $::curx && $on} { set ::curfrozen 0 }
@@ -335,11 +482,14 @@ proc want_sat {} {
 	for {set i 0} {$i < 4} {incr i} {
 		if {$mask >> $i & 1} {
 			set sx [expr {$x + $i*$::W - $::sym(SHIP_ART_L)}]
-			lappend r [expr {$::sym(SHIP_TOP) - 1}] [expr {$sx < 0 ? $sx + 32 : $sx}] 0 [expr {$sx < 0 ? 0x8F : 0x0F}]
+			set st [m boom_stage $i]
+			set nm [expr {$st ? $::sym(NAME_BOOM) + 4*($st - 1) : 0}]
+			set col [expr {$st ? $::sym(BOOM_COLOR) : $::sym(SHIP_COLOR)}]
+			lappend r [expr {$::sym(SHIP_TOP) - 1}] [expr {$sx < 0 ? $sx + 32 : $sx}] $nm [expr {$sx < 0 ? 0x80 | $col : $col}]
 		} else { lappend r 0xC0 - - - }
 	}
 	if {[m call_on]} {
-		set t [m call_target] ; set rem [m call_rem]
+		set t [m call_target] ; set rem [rem]
 		if {[m call_left]} {
 			set sx [expr {$t - $rem - $::sym(COMING_L_ART_L)}] ; set nm 8
 		} else {

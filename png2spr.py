@@ -2,8 +2,10 @@
 """Player ship sprite from images/player-ship.png (16x16, black = transparent),
 and the reserve ship from images/reserve-ship.png (8x8, black = background).
 
-and the ship coming in from the right with its woosh lines,
-images/player-ship-coming.png (16x16; mirrored for a ship coming from the left).
+the ship coming in from the right with its woosh lines,
+images/player-ship-coming.png (16x16; mirrored for a ship coming from the left),
+and the dying ship's three boom images, images/player-ship-boom-1..3.png
+(SHIP_ART_W x 16: the ship's art box, placed where the ship's art is).
 
 Writes sjasmplus source to stdout:
   SHIP_PATTERN   32 bytes, the 16x16 sprite layout (left 8 columns, rows 0..15,
@@ -20,6 +22,8 @@ Writes sjasmplus source to stdout:
   COMING_R_ART_L the ship's art's left column in COMING_R_PATTERN (the ship
                  found by matching images/player-ship.png's art in it)
   COMING_L_ART_L ... in COMING_L_PATTERN
+  BOOM_PATTERN   3 x 32 bytes, the boom images in order (sprite layout)
+  BOOM_COLOR     the MSX1 colour nearest to their art's one colour (the same in all)
   RESERVE_SHAPE  8 bytes, the reserve ship's rows, its art's left column on bit 7
   RESERVE_COLOR  the MSX1 colour nearest to its art's one colour
   RESERVE_ART_W  its art width in pixels
@@ -30,6 +34,7 @@ from PIL import Image
 PNG = 'images/player-ship.png'
 COMING_PNG = 'images/player-ship-coming.png'
 RESERVE_PNG = 'images/reserve-ship.png'
+BOOM_PNGS = [f'images/player-ship-boom-{i}.png' for i in (1, 2, 3)]
 
 # TMS9918 palette (approximate RGB), colour 1..15
 MSX1 = {
@@ -44,12 +49,13 @@ def nearest(rgb):
     return min(MSX1, key=lambda c: sum((a - b) ** 2 for a, b in zip(MSX1[c], rgb)))
 
 
-def load(png, size):
+def load(png, size, width=None):
     """The art's pixels (on[y][x]) and its MSX1 colour"""
+    width = width or size
     im = Image.open(png).convert('RGB')
-    assert im.size == (size, size), f'{png}: {im.size}, want {size}x{size}'
-    on = [[im.getpixel((x, y)) != (0, 0, 0) for x in range(size)] for y in range(size)]
-    colours = {im.getpixel((x, y)) for y in range(size) for x in range(size) if on[y][x]}
+    assert im.size == (width, size), f'{png}: {im.size}, want {width}x{size}'
+    on = [[im.getpixel((x, y)) != (0, 0, 0) for x in range(width)] for y in range(size)]
+    colours = {im.getpixel((x, y)) for y in range(size) for x in range(width) if on[y][x]}
     assert len(colours) == 1, f'{png}: the art must have one colour, has {colours}'
     colour = nearest(colours.pop())
     assert colour != 1, f'{png}: the art is black: it would not show'
@@ -62,7 +68,7 @@ def sprite_pattern(on):
 
 
 def print_pattern(label, pattern):
-    print(label + ':')
+    print(label if label.startswith(';') else label + ':')
     for i in range(0, 32, 8):
         print('        db ' + ','.join(f'{b:#04x}' for b in pattern[i:i + 8]))
 
@@ -102,6 +108,19 @@ def main():
     print(f'COMING_L_ART_L  equ {16 - dx - (cols[-1] - cols[0] + 1)}')
     print_pattern('COMING_R_PATTERN', sprite_pattern(coming))
     print_pattern('COMING_L_PATTERN', sprite_pattern(mirrored))
+
+    # The boom images: the ship's art box, padded to 16 columns where the
+    # ship's art is in its sprite
+    w = cols[-1] - cols[0] + 1
+    bcolours = set()
+    print('BOOM_PATTERN:')
+    for png in BOOM_PNGS:
+        on, colour = load(png, 16, w)
+        bcolours.add(colour)
+        box = [[False] * cols[0] + row + [False] * (16 - cols[0] - w) for row in on]
+        print_pattern('; ' + png, sprite_pattern(box))
+    assert len(bcolours) == 1, f'{BOOM_PNGS}: the boom images must share one colour, have {bcolours}'
+    print(f'BOOM_COLOR      equ {bcolours.pop()}')
 
     on, colour = load(RESERVE_PNG, 8)
     cols = [x for x in range(8) if any(on[y][x] for y in range(8))]

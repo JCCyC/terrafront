@@ -15,10 +15,17 @@
 ; pixel apart. C calls one up: it leaves the reserve and flies in from the
 ; side away from the front, with woosh lines, at a constant speed that
 ; takes CALL_TIME_MS from the far edge, and glues on to the front's side.
-; Meanwhile the front can shoot but not move.
+; Meanwhile the front can shoot but not move. A call-up needs the front's
+; span (first to last ship, holes included) under FRONT_MAX.
+; A dying ship shows the three boom images in turn (BOOM*_60 / BOOM*_50
+; frames each) and doesn't fire; then its slot is empty, a hole in the
+; front, and the front is trimmed to its first and last ships. An empty
+; front stays where its last ship died, can't move or shoot, and a call-up
+; lands there.
 ; Controls: left / right arrows, space (fire), C (call-up); or either
-; joystick (button A fires, B calls up). Fire and call-up are
-; edge-triggered: one action per press.
+; joystick (button A fires, B calls up). Test keys 1..4 kill the front's
+; first..fourth ship. Fire, call-up and the test keys are edge-triggered:
+; one action per press.
 ; Speeds are Bresenham on frames (whole pixels plus a remainder per frame,
 ; per frame rate), so they're the same in px/s at 50 and 60 Hz.
 ; ---------------------------------------------------------------------------
@@ -45,6 +52,12 @@ RESERVES        equ 4           ; reserve ships at the start
 CALL_TIME_MS    equ 250         ; a call-up's flight from the far edge takes at most this
 RESERVE_X       equ 0           ; the first reserve ship's art's left column
 RESERVE_GAP     equ 1           ; black pixels between two reserve ships
+BOOM1_60        equ 6           ; frames each boom image shows, at 60 Hz ...
+BOOM2_60        equ 4
+BOOM3_60        equ 5
+BOOM1_50        equ 5           ; ... and at 50 Hz
+BOOM2_50        equ 3
+BOOM3_50        equ 4
 
 ; ---- Layout ----------------------------------------------------------------
 
@@ -62,9 +75,10 @@ BULLET_START    equ SHIP_TOP+SHIP_ART_T-BULLET_H    ; a new bullet's top line: r
 
 ; A call-up: the new ship starts with its art just off screen, on the side
 ; away from the front, and flies to the front's side at CALL_SPEED px/s.
-; The longest flight (a one-ship front at one edge) is CALL_DIST px, which
-; must take at most CALL_TIME_MS at both rates: whole frames at 50 Hz.
-CALL_DIST       equ 256-SHIP_ART_W
+; The longest flight (into an empty front whose last ship died at an edge)
+; is CALL_DIST px, which must take at most CALL_TIME_MS at both rates:
+; whole frames at 50 Hz.
+CALL_DIST       equ 256
 CALL_FRAMES_50  equ CALL_TIME_MS*50/1000
 CALL_SPEED      equ (CALL_DIST*50+CALL_FRAMES_50-1)/CALL_FRAMES_50
         assert (CALL_DIST*60+CALL_SPEED-1)/CALL_SPEED*1000 <= CALL_TIME_MS*60
@@ -84,6 +98,8 @@ RESERVE_VRAM    equ RESERVE_ROW*32*8    ; the row's first cell, from GRPCGP / GR
 NAME_SHIP       equ 0
 NAME_COMING_R   equ 4           ; the ship coming in from the right, its woosh lines behind
 NAME_COMING_L   equ 8           ; ... from the left
+NAME_BOOM       equ 12          ; the boom images: 12, 16, 20
+BOOM_STAGES     equ 3
 SPR_PARK        equ 0C0h        ; a sprite's Y off screen (lines 193..208); below D0h, the end marker
 SPR_END         equ 0D0h        ; Y that ends the sprite list
 SPR_EC          equ 80h         ; colour byte: early clock, X shifted 32 px left
@@ -119,6 +135,8 @@ KEY_LEFT        equ 10h
 KEY_RIGHT       equ 80h
 KEY_ROW_C       equ 3
 KEY_C           equ 01h
+KEY_ROW_NUM     equ 0           ; keys 0..7 on bits 0..7
+KEYS_KILL       equ 1Eh         ; the test keys 1..4
 
 MSXID1          equ 002Bh       ; bit 7 set = 50 Hz
 WRTVDP          equ 0047h
@@ -161,24 +179,29 @@ bullet_frac:    ds 1
 call_whole:     ds 1
 call_frac:      ds 1
 shot_sound:     ds 2            ; SHOT_60 or SHOT_50
+boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
 RATES_SIZE      equ $-rates
 
 input:          ds 1            ; IN_* this frame
 input_prev:     ds 1            ; ... and last frame (fire is edge-triggered)
+kill_keys:      ds 1            ; the test keys 1..4 held (bits 1..4) this frame
+kill_prev:      ds 1            ; ... and last frame
 ship_x:         ds 1            ; front slot 0's art's left column, 0..256-front_w
 ship_acc:       ds 1            ; Bresenham remainder
-; The front: FRONT_MAX slots from the left, SHIP_ART_W px apart. A mask so
-; that a front can have holes later; for now its ships are slots 0..n-1.
-front_mask:     ds 1            ; bit i set: a ship in slot i
-front_slots:    ds 1            ; slots the front spans (1..FRONT_MAX)
+; The front: FRONT_MAX slots from the left, SHIP_ART_W px apart. Slot 0
+; holds a ship (unless the front is empty); the others may be holes.
+front_mask:     ds 1            ; bit i set: a ship (living or dying) in slot i
+front_slots:    ds 1            ; slots the front spans (0..FRONT_MAX)
 front_w:        ds 1            ; ... in px: front_slots*SHIP_ART_W
+boom_stage:     ds FRONT_MAX    ; per slot: 0 = alive (or empty), 1..BOOM_STAGES the boom image shown
+boom_left:      ds FRONT_MAX    ; ... and the frames it still shows
 reserves:       ds 1
 ; A call-up, while call_on: the new ship's art's left column is call_target
 ; + call_rem (from the right) or call_target - call_rem (from the left)
 call_on:        ds 1
 call_left:      ds 1            ; nonzero: coming from the left
 call_target:    ds 1            ; its art's left column once glued
-call_rem:       ds 1            ; px still to fly
+call_rem:       ds 2            ; px still to fly (up to CALL_DIST)
 call_acc:       ds 1            ; Bresenham remainder
 volleys:        ds MAX_VOLLEYS*VOLLEY
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
@@ -221,12 +244,13 @@ init:
         ld c,1
         call WRTVDP
 
-        ld hl,SHIP_PATTERN      ; the three ship patterns follow each other
+        ld hl,SHIP_PATTERN      ; the six ship patterns follow each other
         ld de,(GRPPAT)
-        ld bc,3*32
+        ld bc,(3+BOOM_STAGES)*32
         call LDIRVM
         assert COMING_R_PATTERN == SHIP_PATTERN+32 && COMING_L_PATTERN == SHIP_PATTERN+64
-        assert NAME_COMING_R == 4 && NAME_COMING_L == 8
+        assert BOOM_PATTERN == SHIP_PATTERN+96
+        assert NAME_SHIP == 0 && NAME_COMING_R == 4 && NAME_COMING_L == 8 && NAME_BOOM == 12
 
         ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
         ld de,PLAY_TOP/8*256
@@ -262,6 +286,8 @@ init:
         ld (reserves),a
         ld a,IN_FIRE|IN_CALL    ; armed only once released (read_input moves it to input_prev)
         ld (input),a
+        ld a,KEYS_KILL
+        ld (kill_keys),a
         ld a,(GRPCGP+1)         ; (SCREEN 2's pattern table: at 0000h or 2000h)
         or 40h
         ld (pat_hi),a
@@ -295,6 +321,8 @@ main_loop:
         halt
         call upload_sat         ; last frame's sprites, in vertical blank
         call read_input
+        call booms              ; before kill: a new boom's first image shows its full count
+        call kill
         call move_bullets       ; first: in vertical blank, and a volley gone frees its slot
         call fire
         call call_up            ; before move_ship: the front stays put while one runs
@@ -317,6 +345,16 @@ isr:    push af
 read_input:
         ld a,(input)
         ld (input_prev),a
+        ld a,(kill_keys)
+        ld (kill_prev),a
+        in a,(PPI_C)            ; keyboard row KEY_ROW_NUM: the test keys
+        and 0F0h
+        or KEY_ROW_NUM
+        out (PPI_C),a
+        in a,(PPI_B)
+        cpl
+        and KEYS_KILL
+        ld (kill_keys),a
         ld c,0
         in a,(PPI_C)            ; keyboard row KEY_ROW
         and 0F0h
@@ -397,11 +435,14 @@ bresenham:
         ret
 
 ; Left or right while one of them is held (not both), the front's art kept
-; on screen; not during a call-up
+; on screen; not during a call-up, nor with the front empty
 move_ship:
         ld a,(call_on)
         or a
         ret nz
+        ld a,(front_w)
+        or a
+        ret z
         ld a,(input)
         and IN_LEFT|IN_RIGHT
         ret z
@@ -480,8 +521,8 @@ move_bullets:
         ret
         assert PLAY_TOP > (BULLET_SPEED+49)/50
 
-; A new press of fire, with a volley free: a bullet from each ship's nose,
-; and the laser sound
+; A new press of fire, with a volley free and a living ship: a bullet from
+; each living ship's nose, and the laser sound
 fire:
         ld a,(input_prev)
         cpl
@@ -490,6 +531,10 @@ fire:
         and b
         and IN_FIRE
         ret z
+        call alive_mask
+        or a
+        ret z
+        ld c,a
         ld hl,volleys
         ld de,VOLLEY
         ld b,MAX_VOLLEYS
@@ -503,8 +548,6 @@ fire:
         pop ix
         ld (hl),BULLET_START    ; Y
         inc hl
-        ld a,(front_mask)
-        ld c,a
         ld a,(ship_x)
         add a,SHIP_NOSE_DX
         ld b,FRONT_MAX
@@ -600,10 +643,11 @@ bullet_px:
 ; ---- Call-up ---------------------------------------------------------------
 
 ; A new press of C, with no call-up running, a reserve ship and a front
-; under FRONT_MAX: one ship leaves the reserve and comes in from the right
-; if the front's middle is left of the screen's (or on it), else from the
-; left, to glue on to that side of the front. While one runs, it flies
-; CALL_SPEED px/s; on arrival it joins the front (and move_ship moves it).
+; spanning under FRONT_MAX slots: one ship leaves the reserve and comes in
+; from the right if the front's middle is left of the screen's (or on it),
+; else from the left, to glue on to that side of the front (an empty front:
+; to where its last ship died). While one runs, it flies CALL_SPEED px/s;
+; on arrival it joins the front (and move_ship moves it).
 call_up:
         ld a,(call_on)
         or a
@@ -621,32 +665,43 @@ call_up:
         ld a,(front_slots)
         cp FRONT_MAX
         ret nc
+        ld a,(front_w)
+        ld c,a                  ; the front's width, 0 = empty
+        or a
+        jr nz,.mid
+        ld a,SHIP_ART_W         ; empty: its last ship's place
+.mid:   ld e,a
         ld a,(ship_x)
         ld l,a
         ld h,0
         add hl,hl
-        ld a,(front_w)
-        ld e,a
         ld d,h
         add hl,de               ; twice the front's middle
         ld de,-257
         add hl,de               ; carry: right of the screen's middle
         ld a,(ship_x)
         jr c,.left
-        ld b,a
-        ld a,(front_w)
-        add a,b
-        ld (call_target),a      ; on the front's right
-        neg                     ; from just off the right edge (256)
-        ld (call_rem),a
+        add a,c
+        ld (call_target),a      ; on the front's right (empty: at ship_x)
+        ld e,a
+        ld d,0
+        ld hl,256               ; from just off the right edge
+        or a
+        sbc hl,de
         xor a
         jr .go
-.left:  ld (call_rem),a         ; from just off the left edge (-SHIP_ART_W)
-        sub SHIP_ART_W
-        ld (call_target),a      ; on the front's left
+.left:  inc c
+        dec c
+        jr z,.lt                ; empty: at ship_x
+        sub SHIP_ART_W          ; on the front's left
+.lt:    ld (call_target),a
+        ld l,a
+        ld h,0
+        ld de,SHIP_ART_W        ; from just off the left edge (-SHIP_ART_W)
+        add hl,de
         ld a,1
 .go:    ld (call_left),a
-        ld (call_on),a          ; (nonzero either way: see below)
+        ld (call_rem),hl
         ld a,1
         ld (call_on),a
         xor a
@@ -661,49 +716,61 @@ call_up:
         ld d,a
         ld hl,call_acc
         call bresenham          ; A = step
-        ld b,a
-        ld a,(call_rem)
-        sub b
+        ld e,a
+        ld d,0
+        ld hl,(call_rem)
+        or a
+        sbc hl,de
         jr z,.glue
         jr c,.glue
-        ld (call_rem),a
+        ld (call_rem),hl
         ret
-.glue:  xor a
-        ld (call_rem),a
+        ; Glued at call_target. The front may have been trimmed in flight
+        ; (its end ships died), so the slot comes from where it is now.
+.glue:  ld hl,0
+        ld (call_rem),hl
+        xor a
         ld (call_on),a
         ld hl,front_mask
-        ld a,(call_left)
-        or a
-        jr nz,.gl
-        ld a,(front_slots)      ; on the right: slot front_slots
-        ld b,a
-        ld a,1
-.sl:    add a,a
-        djnz .sl
         or (hl)
-        ld (hl),a
-        jr .grow
-.gl:    ld a,(hl)               ; on the left: the new slot 0
-        add a,a
-        inc a
-        ld (hl),a
+        jr nz,.join
+        inc (hl)                ; empty: the new ship is the front
         ld a,(call_target)
         ld (ship_x),a
-.grow:  ld hl,front_slots
-        inc (hl)
-        ld a,(front_w)
-        add a,SHIP_ART_W
-        ld (front_w),a
-        ret
+        jp front_span
+.join:  ld a,(call_target)
+        ld hl,ship_x
+        sub (hl)
+        jr c,.gl
+        ld b,0                  ; on the right: slot (target - ship_x) / SHIP_ART_W
+.div:   sub SHIP_ART_W
+        jr c,.slot
+        inc b
+        jr .div
+.slot:  inc b
+        ld a,1
+        jr .bit
+.sh:    add a,a
+.bit:   djnz .sh
+        ld hl,front_mask
+        or (hl)
+        ld (hl),a
+        jp front_span
+.gl:    call front_shift        ; on the left: slots shift right until slot 0 is there
+        ld a,(call_target)
+        ld hl,ship_x
+        cp (hl)
+        jr nz,.gl
+        ld hl,front_mask
+        set 0,(hl)
+        jp front_span
 
 ; HL = the incoming ship's art's left column (-SHIP_ART_W..256, signed)
 call_pos:
+        ld de,(call_rem)
         ld a,(call_target)
         ld l,a
         ld h,0
-        ld a,(call_rem)
-        ld e,a
-        ld d,h
         ld a,(call_left)
         or a
         jr nz,.left
@@ -712,11 +779,172 @@ call_pos:
 .left:  sbc hl,de               ; (no carry after the or)
         ret
 
+; ---- Front -----------------------------------------------------------------
+
+; front_slots and front_w from front_mask (its highest ship)
+front_span:
+        ld a,(front_mask)
+        ld b,0
+.hi:    or a
+        jr z,.w
+        inc b
+        srl a
+        jr .hi
+.w:     ld a,b
+        ld (front_slots),a
+        xor a
+        inc b
+        jr .add
+.mul:   add a,SHIP_ART_W
+.add:   djnz .mul
+        ld (front_w),a
+        ret
+
+; The front's slots one to the right (a new empty slot 0, one SHIP_ART_W
+; further left), the boom states with them
+front_shift:
+        ld hl,front_mask
+        sla (hl)
+        ld hl,boom_left+FRONT_MAX-2
+        ld de,boom_left+FRONT_MAX-1
+        ld bc,2*FRONT_MAX-1
+        lddr
+        xor a
+        ld (boom_stage),a
+        ld (boom_left),a
+        ld a,(ship_x)
+        sub SHIP_ART_W
+        ld (ship_x),a
+        ret
+        assert boom_left == boom_stage+FRONT_MAX
+
+; A = front_mask without the dying ships. Keeps B.
+alive_mask:
+        ld hl,boom_stage+FRONT_MAX-1
+        ld c,FRONT_MAX
+.s:     ld a,(hl)
+        cp 1                    ; carry: stage 0, alive
+        rl e                    ; slot 3 first: it ends on bit 3
+        dec hl
+        dec c
+        jr nz,.s
+        ld a,(front_mask)
+        and e
+        ret
+
+; New presses of the test keys 1..4: the front's first..fourth living ship
+; (counted from the left) starts to die; from 4 down, so that a kill doesn't
+; renumber the keys still to do
+kill:
+        ld a,(kill_prev)
+        cpl
+        ld b,a
+        ld a,(kill_keys)
+        and b
+        ret z
+        add a,a
+        add a,a
+        add a,a                 ; key 4 on bit 7
+        ld c,a
+        ld b,4
+.key:   sla c
+        jr nc,.next
+        push bc
+        call kill_nth
+        pop bc
+.next:  djnz .key
+        ret
+        assert KEYS_KILL == 1Eh
+
+; The front's Bth living ship (1..) starts to die, if there is one
+kill_nth:
+        call alive_mask
+        ld hl,boom_stage
+.s:     or a
+        ret z                   ; no more living ships
+        rra
+        jr nc,.next
+        djnz .next              ; not the Bth yet
+        ld (hl),1
+        ld de,FRONT_MAX
+        add hl,de
+        ld a,(boom_frames)
+        ld (hl),a               ; boom_left
+        ret
+.next:  inc hl
+        jr .s
+
+; Each dying ship's boom: the next image when one's frames are over; after
+; the last, the slot is empty and the front trimmed to its first and last
+; ships (an emptied front stays where its leftmost of them died)
+booms:
+        ld ix,boom_stage
+        ld b,FRONT_MAX
+        ld c,0                  ; slots whose boom ended
+        ld d,1                  ; this slot's bit
+.s:     ld a,(ix+0)
+        or a
+        jr z,.next
+        dec (ix+FRONT_MAX)      ; boom_left
+        jr nz,.next
+        inc a
+        cp BOOM_STAGES+1
+        jr nc,.done
+        ld (ix+0),a
+        ld hl,boom_frames-1
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld a,(hl)
+        ld (ix+FRONT_MAX),a
+        jr .next
+.done:  ld (ix+0),0
+        ld a,c
+        or d
+        ld c,a
+.next:  inc ix
+        sla d
+        djnz .s
+        ld a,c
+        or a
+        ret z
+        cpl
+        ld hl,front_mask
+        and (hl)
+        ld (hl),a
+        jr nz,.trim
+        ld a,(ship_x)           ; empty
+.lo:    rr c
+        jr c,.at
+        add a,SHIP_ART_W
+        jr .lo
+.at:    ld (ship_x),a
+        jp front_span
+.trim:  bit 0,(hl)              ; slot 0 empty: everything one slot left
+        jp nz,front_span
+        srl (hl)
+        push hl
+        ld hl,boom_stage+1
+        ld de,boom_stage
+        ld bc,2*FRONT_MAX-1
+        ldir
+        xor a
+        ld (boom_stage+FRONT_MAX-1),a
+        ld (boom_left+FRONT_MAX-1),a
+        ld a,(ship_x)
+        add a,SHIP_ART_W
+        ld (ship_x),a
+        pop hl
+        jr .trim
+
 ; ---- Sprites ---------------------------------------------------------------
 
-; sat_buf from the front's slots and the incoming ship (the end marker stays)
+; sat_buf from the front's slots (the ship or its boom) and the incoming
+; ship (the end marker stays)
 build_sat:
         ld hl,sat_buf
+        ld ix,boom_stage
         ld a,(front_mask)
         ld d,a
         ld a,(ship_x)
@@ -737,10 +965,23 @@ build_sat:
 .park:  ld (hl),SPR_PARK
         inc hl
 .rest:  inc hl
-        ld (hl),NAME_SHIP
-        inc hl
+        ld a,(ix+0)             ; boom_stage: 0 the ship, else a boom image
+        or a
+        jr z,.nm
+        add a,a
+        add a,a
+        add a,NAME_BOOM-4
+        ld (hl),a
+        ld a,c
+        and SPR_EC
+        or BOOM_COLOR
+        ld c,a
+        jr .col
+.nm:    ld (hl),NAME_SHIP
+.col:   inc hl
         ld (hl),c
         inc hl
+        inc ix
         ld a,e
         add a,SHIP_ART_W
         ld e,a
@@ -944,10 +1185,12 @@ sfx:
 RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPEED%60
                 db CALL_SPEED/60, CALL_SPEED%60
                 dw SHOT_60
+                db BOOM1_60, BOOM2_60, BOOM3_60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50
                 dw SHOT_50
-        assert RATES_50-RATES_60 == RATES_SIZE
+                db BOOM1_50, BOOM2_50, BOOM3_50
+        assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
 
         include "build/sprites.inc"
         include "build/sfx.inc"

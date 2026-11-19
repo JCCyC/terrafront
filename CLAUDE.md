@@ -20,12 +20,21 @@ flight is ignored), one volley per press. Each volley plays a 0.25 s laser
 either joystick (button A fires, B calls up). The bottom status area shows the reserve ships
 (4 at the start; `images/reserve-ship.png`, 8×8, drawn in the bitmap) at its
 left, art from column 0, one black pixel apart (`draw_reserves`, A = how
-many). C calls one up (not while one is flying, nor with 4 in the front):
+many). C calls one up (not while one is flying, nor with the front
+spanning 4 slots):
 it leaves the reserve and flies in from just off the edge away from the
 front (from the right if the front's middle is left of the screen's or on
 it) as `images/player-ship-coming.png` (mirrored when coming from the left),
-at a constant 1030 px/s (the far-edge flight in at most 0.25 s at 50 and
-60 Hz), and glues on to that side. Meanwhile the front shoots but can't move.
+at a constant 1067 px/s (the longest flight, 256 px into an empty front at
+an edge, in at most 0.25 s at 50 and 60 Hz), and glues on to that side.
+Meanwhile the front shoots but can't move. The front's span runs from its
+first ship to its last, holes included: ship-gap-ship can still call one
+up (from either side), ship-gap-gap-ship can't. Test keys 1..4 kill the
+front's 1st..4th living ship: it shows `images/player-ship-boom-1..3.png`
+(9×16, the ship's art box) for 6/4/5 frames at 60 Hz, 5/3/4 at 50 Hz, and
+doesn't fire; then its slot is a hole, and the front is trimmed to its
+first and last ships. An emptied front stays where its last ship died,
+can't move or shoot, and a call-up lands there.
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -45,7 +54,8 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
 
 - `make` runs `png2spr.py` (→ `build/sprites.inc`: ship pattern, colour,
   art bounds, nose column; the coming ship's two patterns and where the
-  ship's art is in them; the reserve ship's rows, colour, art width) and `sfx.py` (→ `build/sfx.inc`: the shot sound
+  ship's art is in them; the three boom patterns and their colour; the
+  reserve ship's rows, colour, art width) and `sfx.py` (→ `build/sfx.inc`: the shot sound
   tables), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
   `build/terrafnt.sym`). `build/` is generated; don't edit it.
 - `make run` runs the Gradiente Expert 1.1 (primary target, 60 Hz),
@@ -63,6 +73,11 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   constant step, frozen front, glue point), a shot during one, C ignored
   with 4 ships, a 4-bullet volley; joystick buttons A (fires, no
   call-up) and B (calls up, no shot), faked by a breakpoint after
-  `read_joy`'s R14 read. Every frame it also checks the SAT
-  against the front and the incoming ship, and the bitmap against the
-  bullets in flight.
+  `read_joy`'s R14 read; the test keys: a boom's images and frame counts
+  in the SAT, no bullet from a dying ship, holes, C refused for
+  ship-gap-gap-ship, a key with no such ship, trims, ship-gap-ship calling
+  up from either side, an emptied front (no move, no shot) refilled where
+  its last ship died (the test writes `reserves` in RAM for these
+  call-ups). Every frame it also checks the SAT against the front (ships
+  and booms) and the incoming ship, and the bitmap against the bullets in
+  flight.
