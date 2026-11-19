@@ -36,7 +36,13 @@ doesn't fire, and Skyfighter's ship-blown-up sound plays on PSG channel C
 (1.4 s, U-boat Killer's "water, loud"; another death restarts it; where
 it clashes with the shot's sound, the PSG's one noise period, it wins); then its slot is a hole, and the front is trimmed to its
 first and last ships. An emptied front stays where its last ship died,
-can't move or shoot, and a call-up lands there.
+can't move or shoot, and a call-up lands there. Behind it all, 15
+one-pixel light grey stars (random columns, random lines, never two on a
+line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
+50 Hz), drawn in the bitmap (`move_stars`, after `fire`); one leaving past
+column 0 comes back at column 255 on a free random line. A star isn't
+drawn in a bitmap byte a bullet is in (one colour per byte: the bullet's
+white is kept); it shows again once the bullet has left the byte.
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -83,6 +89,9 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   one plays out in 1.4 s), a key with no such ship, trims, ship-gap-ship calling
   up from either side, an emptied front (no move, no shot) refilled where
   its last ship died (the test writes `reserves` in RAM for these
-  call-ups). Every frame it also checks the SAT against the front (ships
-  and booms) and the incoming ship, and the bitmap against the bullets in
-  flight.
+  call-ups); the stars: 15 on 15 lines, all moving together 1 px every
+  6 / 5 frames, wraps to 255 on a free line, a star the test puts on a
+  new volley's spawn line hiding under it. Every frame it also checks the
+  SAT against the front (ships and booms) and the incoming ship, and the
+  bitmap (pixels and the playfield's colours) against the bullets in
+  flight and the stars not in their bytes.

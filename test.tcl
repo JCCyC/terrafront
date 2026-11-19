@@ -78,6 +78,7 @@ proc frame {} {
 	if {[info exists ::track]} { try track_frame }
 	if {[info exists ::bw]} { lappend ::bw [list [sat [expr {$::bwslot*4}]] [sat [expr {$::bwslot*4+2}]]] }
 	try check_sat
+	try star_frame
 	try check_bitmap
 	try call_frame
 	try death_frame
@@ -93,6 +94,7 @@ proc plan {} {
 	check {$x0 == $::sym(SHIP_X_MAX)/2} "ship starts in the middle (x $x0)"
 	at 3 { check {[sat 0] == $::sym(SHIP_TOP) - 1} "ship sprite Y [sat 0] (art's last row on line 183)" }
 	at 3 { check_reserves }
+	at 3 { check_stars_start }
 
 	# 1 s of right: SHIP_SPEED px (+-1 for the Bresenham remainder)
 	set a 10
@@ -131,6 +133,7 @@ proc plan {} {
 	at $a { down 0x10 }
 	at [expr {$a+$F}] { up 0x10 }
 	set a [expr {$a+$F+5}]
+	at [expr {$a-3}] { put_star0 }
 	at $a { set ::spawns 0 ; down 0x01 }
 	at [expr {$a+1}] {
 		up 0x01
@@ -144,6 +147,7 @@ proc plan {} {
 	set a [expr {$a+2*$F}]
 	at $a {
 		check {$::spawns == 1} "one press, one shot ($::spawns)"
+		check {$::star0_hid > 0 && [m stars 2]} "a star under a new bullet hides ($::star0_hid frames), then shows again"
 		set ::spawns 0
 		down 0x01
 	}
@@ -395,9 +399,10 @@ proc plan_kills {a} {
 	at $b {
 		check_call 0 256 0 1
 		check {[m front_mask] == 1 && [m ship_x] == 0} "empty front refilled where its last ship died (ship_x [m ship_x])"
-		check {$::bitmap_bad == 0 && $::bitmap_lit > 0} "bitmap = the bullets in flight, every frame ($::bitmap_frames frames, $::bitmap_lit bullet pixels seen; [expr {$::bitmap_bad ? "first wrong: $::bitmap_first" : "none wrong"}])"
+		check {$::bitmap_bad == 0 && $::bitmap_lit > 0} "bitmap = the bullets in flight and the stars not in their bytes, colours too, every frame ($::bitmap_frames frames, $::bitmap_lit pixels seen; [expr {$::bitmap_bad ? "first wrong: $::bitmap_first" : "none wrong"}])"
 		check {$::sat_bad == 0} "sprites = the front (ships and booms) and the incoming ship, every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
 		check {$::coming_seen > 0} "the incoming ship's sprite showed on $::coming_seen frames"
+		check_stars_end
 	}
 	# the last death sound plays out
 	at [expr {$b+5+$F*3/2}] {
@@ -568,12 +573,106 @@ proc check_sat {} {
 	set ::prev_sat [want_sat]
 }
 
+# A bullet in flight in pixel (x, y)'s bitmap byte
+proc bullet_in {x y} {
+	foreach v [volley_live] {
+		set t [lindex $v 0]
+		if {$y < $t || $y >= $t + $::sym(BULLET_H)} continue
+		foreach bx [lrange $v 1 end] { if {$bx && $bx/8 == $x/8} { return 1 } }
+	}
+	return 0
+}
+
+# The stars: {x y on} each
+proc star_list {} {
+	set r {}
+	for {set i 0} {$i < $::sym(STARS)} {incr i} {
+		set b [expr {$i*$::sym(STAR)}]
+		lappend r [list [m stars [expr {$b+$::sym(STAR.X)}]] [m stars [expr {$b+$::sym(STAR.Y)}]] [m stars [expr {$b+$::sym(STAR.ON)}]]]
+	}
+	return $r
+}
+
+proc check_stars_start {} {
+	set s [star_list]
+	set ys [lsort -integer -unique [lmap e $s {lindex $e 1}]]
+	check {[llength $s] == 15 && [llength $ys] == 15 && [lindex $ys 0] >= 8 && [lindex $ys end] <= 183} "15 stars on 15 playfield lines ($s)"
+	set lit 0
+	foreach e $s { lassign $e x y on ; if {$on} { incr lit } }
+	check {$lit == 15} "all 15 stars drawn ($lit)"
+}
+
+# Every frame: all stars move together, 0 or 1 px left; one leaving column
+# 0 comes back at 255 on a new line; the lines stay distinct, in the playfield
+set star_bad 0 ; set star_first "" ; set star_moves {} ; set star_wraps 0 ; set star_skip 0
+proc star_bad {s} { if {!$::star_bad} { set ::star_first "frame $::n: $s" } ; incr ::star_bad }
+proc star_frame {} {
+	set cur [star_list]
+	set ys [lsort -integer -unique [lmap e $cur {lindex $e 1}]]
+	if {[llength $ys] != 15 || [lindex $ys 0] < 8 || [lindex $ys end] > 183} { star_bad "lines $ys" }
+	if {[info exists ::star_prev] && !$::star_skip} {
+		set moved -1
+		foreach p $::star_prev c $cur {
+			lassign $p px py ; lassign $c cx cy
+			set d [expr {($px - $cx) & 255}]
+			if {$moved < 0} { set moved $d } elseif {$d != $moved} { star_bad "steps differ" }
+			if {$d > 1} { star_bad "step $d" }
+			if {$d == 1 && $px == 0} { incr ::star_wraps } elseif {$cy != $py} { star_bad "line changed without a wrap" }
+		}
+		if {$moved == 1} { lappend ::star_moves $::n }
+	}
+	set ::star_skip 0
+	set ::star_prev $cur
+}
+
+proc check_stars_end {} {
+	set gaps {}
+	set prev ""
+	foreach f $::star_moves { if {$prev ne ""} { lappend gaps [expr {$f - $prev}] } ; set prev $f }
+	set want [expr {$::F / 10}]
+	set g [lsort -integer -unique $gaps]
+	check {$g == $want && [llength $::star_moves] > 100} "stars step 1 px every $want frames ([llength $::star_moves] steps, gaps seen: $g; 10 px/s)"
+	check {$::star_wraps >= 15} "stars leaving column 0 come back at 255 on a free line ($::star_wraps)"
+	check {$::star_bad == 0} "stars move together, lines distinct ([expr {$::star_bad ? $::star_first : "none wrong"}])"
+	check {$::star_hidden > 0} "stars hidden in a bullet's byte on $::star_hidden star-frames"
+}
+
+# Star 0 moved onto a free spawn line of a bullet, at the ship's nose, so
+# that the next volley draws over it (the test's own VRAM fix-up for its old
+# place)
+set star0_hid 0
+proc put_star0 {} {
+	lassign [lindex [star_list] 0] x y on
+	if {$on} {
+		set a [expr {($y/8)*256 + ($x & 0xF8) + $y%8}]
+		debug write VRAM $a 0
+		debug write VRAM [expr {0x2000 + $a}] 0xF1
+	}
+	set used [lmap e [lrange [star_list] 1 end] {lindex $e 1}]
+	set ny -1
+	for {set r 0} {$r < 3} {incr r} { set l [expr {$::bstart + $r}] ; if {$l ni $used} { set ny $l ; break } }
+	if {$ny < 0} { fail "no free bullet line for star 0" ; return }
+	set b $::sym(stars)
+	debug write memory $b [expr {[m ship_x] + 4}]
+	debug write memory [expr {$b+1}] $ny
+	debug write memory [expr {$b+2}] 0
+	set ::star_skip 1
+	set ::bitmap_skip 1
+}
+
 # Every frame: the bitmap's playfield and top status rows (lines 0..183)
-# hold exactly the volleys' bullets, BULLET_COLOR on black
+# hold exactly the volleys' bullets, BULLET_COLOR on black, and the stars
+# not in a bullet's byte, STAR_COLOR on black; the rest of the playfield's
+# colour bytes are BULLET_COLOR on black
 set bitmap_bad 0
 set bitmap_frames 0
 set bitmap_lit 0
+set star_hidden 0
+set bitmap_skip 0
 proc check_bitmap {} {
+	if {$::n == 1} return   ;# before the main loop's first frame: no star drawn yet
+	if {$::bitmap_skip} { set ::bitmap_skip 0 ; return }   ;# put_star0 just undrew star 0
+	set bad0 {}
 	set want [dict create]
 	foreach v [volley_live] {
 		set y [lindex $v 0]
@@ -587,6 +686,20 @@ proc check_bitmap {} {
 			}
 		}
 	}
+	set starb [dict create]
+	set i 0
+	foreach e [star_list] {
+		lassign $e x y on
+		set hid [bullet_in $x $y]
+		if {$hid} { incr ::star_hidden ; if {$i == 0} { incr ::star0_hid } }
+		if {$on == $hid} { lappend bad0 "star $i on $on" }
+		if {!$hid} {
+			set a [expr {($y/8)*256 + ($x/8)*8 + $y%8}]
+			dict set want $a [expr {0x80 >> ($x%8)}]
+			dict set starb $a 1
+		}
+		incr i
+	}
 	set blk [debug read_block VRAM 0 [expr {23*256}]]
 	set got [dict create]
 	foreach p [regexp -all -indices -inline {[^\x00]} $blk] {
@@ -596,11 +709,17 @@ proc check_bitmap {} {
 	}
 	incr ::bitmap_frames
 	incr ::bitmap_lit [dict size $got]
-	set bad {}
+	set bad $bad0
 	dict for {a b} $want { if {![dict exists $got $a] || [dict get $got $a] != $b} { lappend bad $a } }
 	dict for {a b} $got { if {![dict exists $want $a]} { lappend bad $a } }
-	foreach a [dict keys $want] {
-		if {[debug read VRAM [expr {0x2000 + $a}]] != 0xF1} { lappend bad "colour $a" }
+	set cb [debug read_block VRAM 0x2100 [expr {22*256}]]
+	foreach p [regexp -all -indices -inline {[^\xF1]} $cb] {
+		set a [expr {[lindex $p 0] + 256}]
+		binary scan [string index $cb [lindex $p 0]] cu c
+		if {!([dict exists $starb $a] && $c == 0xE1)} { lappend bad "colour $a" }
+	}
+	dict for {a b} $starb {
+		if {[debug read VRAM [expr {0x2000 + $a}]] != 0xE1} { lappend bad "star colour $a" }
 	}
 	if {[llength $bad]} {
 		if {!$::bitmap_bad} { set ::bitmap_first "frame $::n at [lrange $bad 0 4]" }

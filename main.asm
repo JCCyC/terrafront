@@ -25,6 +25,11 @@
 ; It wins over the shot's sound where they clash (the PSG's one noise period).
 ; An empty front stays where its last ship died, can't move or shoot, and a
 ; call-up lands there.
+; Behind it all, STARS one-pixel STAR_COLOR stars in the playfield's bitmap
+; scroll left at STAR_SPEED px/s; one that leaves past column 0 comes back
+; at column 255 on a random line. No two stars share a line (so never a
+; bitmap byte), and a star isn't drawn in a byte a bullet is in (each byte
+; has one colour; the bullet's is kept).
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Test keys 1..4 kill the front's
 ; first..fourth ship. Fire, call-up and the test keys are edge-triggered:
@@ -61,11 +66,17 @@ BOOM3_60        equ 5
 BOOM1_50        equ 5           ; ... and at 50 Hz
 BOOM2_50        equ 3
 BOOM3_50        equ 4
+STARS           equ 15          ; one-pixel stars in the background
+STAR_COLOR      equ 14          ; light grey
+STAR_SPEED      equ 10          ; px/s to the left: 1 px every 6 frames at 60 Hz, every 5 at 50 Hz
+        assert STAR_SPEED < 50  ; at most 1 px a frame
 
 ; ---- Layout ----------------------------------------------------------------
 
 PLAY_TOP        equ STATUS_LINES            ; first playfield line
 PLAY_BOTTOM     equ 191-STATUS_LINES        ; last playfield line
+PLAY_LINES      equ PLAY_BOTTOM+1-PLAY_TOP
+        assert STARS <= PLAY_LINES && PLAY_LINES < 256
 
 ; SHIP_* come from build/sprites.inc (png2spr.py), SHOT_* from build/sfx.inc
 ; (sfx.py), included with the data at the end
@@ -173,6 +184,12 @@ Y               byte            ; the bullets' top line, 0 = not in flight
 X               block FRONT_MAX ; each front slot's bullet's column, 0 = none
         ends
 
+        struct STAR
+X               byte            ; column
+Y               byte            ; line
+ON              byte            ; nonzero: drawn in the bitmap at (X, Y)
+        ends
+
         org 0E000h
 ram_start:
 rates:                          ; copied from RATES_60 or RATES_50
@@ -183,6 +200,8 @@ bullet_whole:   ds 1
 bullet_frac:    ds 1
 call_whole:     ds 1
 call_frac:      ds 1
+star_whole:     ds 1
+star_frac:      ds 1
 shot_sound:     ds 2            ; SHOT_60 or SHOT_50
 death_sound:    ds 2            ; DEATH_60 or DEATH_50
 boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
@@ -213,6 +232,11 @@ volleys:        ds MAX_VOLLEYS*VOLLEY
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
 bullet_step:    ds 1            ; this frame's px
 pat_hi:         ds 1            ; GRPCGP's high byte with the VDP's write bit
+col_hi:         ds 1            ; ... GRPCOL's
+stars:          ds STARS*STAR
+star_acc:       ds 1            ; Bresenham remainder
+star_step:      ds 1            ; this frame's px (0 or 1)
+rand_seed:      ds 2            ; xorshift state, never 0
 sfx_ptr:        ds 2            ; the shot sound's next frame in its table, 0 = silent
 death_ptr:      ds 2            ; the death sound's next frame in its table, 0 = silent
 shot_mix:       ds 1            ; mixer bits the shot sound switches on now
@@ -300,6 +324,9 @@ init:
         ld a,(GRPCGP+1)         ; (SCREEN 2's pattern table: at 0000h or 2000h)
         or 40h
         ld (pat_hi),a
+        ld a,(GRPCOL+1)
+        or 40h
+        ld (col_hi),a
         ld hl,(GRPATR)
         set 6,h
         ld (sat_w),hl
@@ -307,6 +334,7 @@ init:
         ld (sat_buf+SAT_SIZE-1),a
 
         call init_sound
+        call init_stars         ; (drawn by the first move_stars)
         call build_sat
         ld a,RESERVES
         call draw_reserves
@@ -334,6 +362,7 @@ main_loop:
         call kill
         call move_bullets       ; first: in vertical blank, and a volley gone frees its slot
         call fire
+        call move_stars         ; after the bullets (fire's too): a star in their bytes hides
         call call_up            ; before move_ship: the front stays put while one runs
         call move_ship
         call sfx
@@ -649,6 +678,225 @@ bullet_px:
         and 7
         jr nz,.row              ; same cell: the next byte
         jr .cell
+
+; ---- Stars -----------------------------------------------------------------
+
+; The stars at random columns, on random lines (one each), not drawn yet
+init_stars:
+        ld a,r
+        ld h,a
+        ld l,0B5h               ; (never 0)
+        ld (rand_seed),hl
+        ld ix,stars
+        ld b,STARS
+.s:     push bc
+        call rand
+        ld (ix+STAR.X),a
+        call random_line        ; (the lines not set yet are 0: off the playfield)
+        ld (ix+STAR.Y),a
+        ld de,STAR
+        add ix,de
+        pop bc
+        djnz .s
+        ret
+        assert PLAY_TOP > 0
+
+; Every star one frame on
+move_stars:
+        ld a,(star_whole)
+        ld b,a
+        ld a,(star_frac)
+        ld d,a
+        ld hl,star_acc
+        call bresenham
+        ld (star_step),a
+        ld ix,stars
+        ld b,STARS
+.s:     push bc
+        call star
+        ld de,STAR
+        add ix,de
+        pop bc
+        djnz .s
+        ret
+
+; The star at IX: this frame's step left (out past column 0: a new star at
+; column 255 on a free random line); in the bitmap, off its byte if it left
+; it or a bullet is in it now (the bullet's pixels stay, its colour comes
+; back), then drawn at its place unless a bullet is in that byte. Staying in
+; its byte, shown: one VRAM write if it moved, none if not.
+star:
+        ld a,(star_step)
+        ld c,a
+        ld a,(ix+STAR.X)
+        sub c
+        ld d,a                  ; its new column
+        ld e,(ix+STAR.Y)        ; ... and line
+        jr nc,.in
+        call random_line        ; out: the new star (column 255)
+        ld e,a
+.in:    call bullet_at
+        sbc a,a
+        ld c,a                  ; FFh: a bullet in the new byte, not shown
+        ld a,(ix+STAR.ON)
+        or a
+        jr z,.draw
+        inc c
+        dec c
+        jr nz,.off
+        ld a,(ix+STAR.Y)
+        cp e
+        jr nz,.off
+        ld a,(ix+STAR.X)
+        xor d
+        and 0F8h
+        jr nz,.off              ; another byte
+        ld a,(ix+STAR.X)
+        cp d
+        call nz,pat_bit         ; the same byte: just its new bit
+        jr .put
+.off:   push de
+        ld d,(ix+STAR.X)
+        ld e,(ix+STAR.Y)
+        call bullet_at
+        jr c,.col               ; a bullet drew over it: its pixels stay
+        ld a,(pat_hi)
+        call vdp_at
+        xor a
+        out (VDP_DATA),a
+.col:   ld a,(col_hi)
+        call vdp_at
+        ld a,BULLET_COLOR*16+BG_COLOR
+        out (VDP_DATA),a
+        pop de
+        ld (ix+STAR.ON),0
+.draw:  inc c
+        jr z,.put               ; hidden
+        call pat_bit
+        ld a,(col_hi)
+        call vdp_at
+        ld a,STAR_COLOR*16+BG_COLOR
+        out (VDP_DATA),a
+        ld (ix+STAR.ON),1
+.put:   ld (ix+STAR.X),d
+        ld (ix+STAR.Y),e
+        ret
+
+; Carry: a bullet in flight is in pixel (D, E)'s bitmap byte (line E, the
+; 8-px cell of column D). Keeps BC, DE.
+bullet_at:
+        push bc
+        ld hl,volleys
+        ld b,MAX_VOLLEYS
+.v:     ld a,e
+        sub (hl)                ; line - the volley's top (0 = none: E is more than BULLET_H)
+        cp BULLET_H
+        jr nc,.nv
+        push hl
+        ld c,FRONT_MAX
+.x:     inc hl
+        ld a,(hl)
+        or a
+        jr z,.nx                ; no bullet from this slot
+        xor d
+        and 0F8h
+        jr z,.hit
+.nx:    dec c
+        jr nz,.x
+        pop hl
+.nv:    ld a,l
+        add a,VOLLEY
+        ld l,a
+        djnz .v
+        pop bc
+        or a
+        ret
+.hit:   pop hl
+        pop bc
+        scf
+        ret
+        assert PLAY_TOP >= BULLET_H
+        assert volleys/256 == (volleys+MAX_VOLLEYS*VOLLEY-1)/256
+
+; Pixel (D, E)'s bitmap byte := its bit alone. Keeps BC, DE.
+pat_bit:
+        ld a,(pat_hi)
+        call vdp_at
+        ld a,d
+        and 7
+        ld hl,PIXEL_BIT
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld a,(hl)
+        out (VDP_DATA),a
+        ret
+
+; The VDP's write address := pixel (D, E)'s byte, (E/8)*256 + (D and F8h) +
+; E%8, in the table whose high byte (with the write bit) is A. Keeps BC, DE.
+vdp_at:
+        ld l,a
+        ld a,e
+        rrca
+        rrca
+        rrca
+        and 1Fh
+        or l
+        ld h,a
+        ld a,e
+        and 7
+        ld l,a
+        ld a,d
+        and 0F8h
+        or l
+        di
+        out (VDP_ADDR),a
+        ld a,h
+        out (VDP_ADDR),a
+        ei
+        ret
+
+; A = a random playfield line no star is on. Keeps BC, DE.
+random_line:
+        push bc
+.r:     call rand
+        cp PLAY_LINES
+        jr nc,.r
+        add a,PLAY_TOP
+        ld c,a
+        ld hl,stars+STAR.Y
+        ld b,STARS
+.chk:   ld a,(hl)
+        cp c
+        jr z,.r                 ; taken
+        inc hl
+        inc hl
+        inc hl
+        djnz .chk
+        ld a,c
+        pop bc
+        ret
+        assert STAR == 3
+
+; A = a random byte (16-bit xorshift, 7/9/8). Keeps BC, DE.
+rand:   ld hl,(rand_seed)
+        ld a,h
+        rra
+        ld a,l
+        rra
+        xor h
+        ld h,a
+        ld a,l
+        rra
+        ld a,h
+        rra
+        xor l
+        ld l,a
+        xor h
+        ld h,a
+        ld (rand_seed),hl
+        ret
 
 ; ---- Call-up ---------------------------------------------------------------
 
@@ -1249,14 +1497,16 @@ death:
 ; ---- Data ------------------------------------------------------------------
 
 RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPEED%60
-                db CALL_SPEED/60, CALL_SPEED%60
+                db CALL_SPEED/60, CALL_SPEED%60, STAR_SPEED/60, STAR_SPEED%60
                 dw SHOT_60, DEATH_60
                 db BOOM1_60, BOOM2_60, BOOM3_60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
-                db CALL_SPEED/50, CALL_SPEED%50
+                db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 dw SHOT_50, DEATH_50
                 db BOOM1_50, BOOM2_50, BOOM3_50
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
+
+PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 
         include "build/sprites.inc"
         include "build/sfx.inc"
