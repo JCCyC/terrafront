@@ -30,8 +30,9 @@
 ; at column 255 on a random line. No two stars share a line (so never a
 ; bitmap byte), and a star isn't drawn in a byte a bullet is in (each byte
 ; has one colour; the bullet's is kept).
-; The enemies: a formation of FORM_PAIRS_N pairs of FORM_ENEMY in
-; FORM_COLOR, laid out as in images/formation-enemy-*-color-*.png (each pair
+; The enemies: a formation of FORM_PAIRS_N pairs of one enemy in one
+; colour, both picked at random once the splash ends (the enemy among all
+; ENEMIES, the colour among FORM_COLOR_LIST, seeded from entropy), laid out as in images/formation-enemy-*-color-*.png (each pair
 ; one sprite: the enemy twice, side by side), flies a loop at a constant
 ; speed: northeast across a 35 x 29 box, east-southeast across a 60 x 29
 ; one, southwest and northwest across 35 x 29 ones, in path.py's
@@ -39,6 +40,12 @@
 ; tunables and table). The loop is
 ; centred between the top status area and the front's sprite lines. Past the right
 ; edge, it comes back in from the left (x mod 256 + 16, a pair's width).
+; It starts with a splash screen, images/title.png (title.py): "PRESS SPACE
+; TO BEGIN" blinks, BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
+; joystick's button A) starts the game. Meanwhile the keyboard and the
+; joysticks are polled as fast as the loop goes, and the time of every
+; press and release (the polls so far, and R) is mixed into entropy, kept
+; for later.
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Test keys 1..4 kill the front's
 ; first..fourth ship. Fire, call-up and the test keys are edge-triggered:
@@ -79,8 +86,11 @@ STARS           equ 15          ; one-pixel stars in the background
 STAR_COLOR      equ 14          ; light grey
 STAR_SPEED      equ 10          ; px/s to the left: 1 px every 6 frames at 60 Hz, every 5 at 50 Hz
         assert STAR_SPEED < 50  ; at most 1 px a frame
-FORM_ENEMY      equ 0           ; the formation's enemy (images/enemy-N.png)
-FORM_COLOR      equ 12          ; dark green
+BLINK_ON_MS     equ 300         ; the splash's "PRESS SPACE TO BEGIN" shows this long ...
+BLINK_OFF_MS    equ 200         ; ... then is hidden this long
+BLINK_ROW       equ 22          ; its character row in images/title.png (lines 176..183)
+; the formation's colours, one picked at random (its enemy: any of images/enemy-N.png)
+        define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
 ; (the formation's loop: path.py)
 
 ; ---- Layout ----------------------------------------------------------------
@@ -107,7 +117,7 @@ FORM_Y0         equ (PLAY_TOP+SHIP_TOP-FORM_H)/2
 FORM_WRAP       equ 256+16      ; x is mod this: a pair off the right edge comes in from the left
         assert FORM_X0 < FORM_WRAP && FORM_ADVANCE < FORM_WRAP
         assert FORM_WRAP-1+FORM_PATH_DX_MAX+FORM_W-16 < 2*FORM_WRAP    ; one wrap at most
-        assert FORM_TICKS*2 < 65536 && FORM_ENEMY < ENEMIES
+        assert FORM_TICKS*2 < 65536 && ENEMIES <= 16
 
 ; A call-up: the new ship starts with its art just off screen, on the side
 ; away from the front, and flies to the front's side at CALL_SPEED px/s.
@@ -176,6 +186,8 @@ KEY_ROW_C       equ 3
 KEY_C           equ 01h
 KEY_ROW_NUM     equ 0           ; keys 0..7 on bits 0..7
 KEYS_KILL       equ 1Eh         ; the test keys 1..4
+KEY_ROWS        equ 11          ; keyboard matrix rows 0..10 (9, 10: the keypad, if any)
+JOY_A           equ 10h         ; R14: button A (0 when pressed)
 
 MSXID1          equ 002Bh       ; bit 7 set = 50 Hz
 WRTVDP          equ 0047h
@@ -230,6 +242,8 @@ form_frac:      ds 1
 shot_sound:     ds 2            ; SHOT_60 or SHOT_50
 death_sound:    ds 2            ; DEATH_60 or DEATH_50
 boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
+blink_on:       ds 1            ; the splash's text: frames shown ...
+blink_off:      ds 1            ; ... and hidden
 RATES_SIZE      equ $-rates
 
 input:          ds 1            ; IN_* this frame
@@ -268,11 +282,21 @@ shot_mix:       ds 1            ; mixer bits the shot sound switches on now
 death_mix:      ds 1            ; ... and the death sound
 psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
+frames:         ds 1            ; +1 every frame interrupt
+entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
+polls:          ds 2            ; the splash's input polls so far
+key_state:      ds KEY_ROWS+2   ; the splash's last poll: keyboard rows 0.., joysticks 1 and 2 (R14)
+key_prev:       ds KEY_ROWS+2   ; ... and the one before
+frames_seen:    ds 1            ; frames when the splash last blinked
+blink_left:     ds 1            ; frames until the text shows or hides
+blink_shown:    ds 1            ; nonzero: the text shows
 ; The formation: its left column when this cycle started (0..FORM_WRAP-1),
 ; plus FORM_PATH's offset at form_tick (0..FORM_TICKS-1)
 form_x:         ds 2
 form_tick:      ds 2
 form_acc:       ds 1            ; Bresenham remainder
+form_enemy:     ds 1            ; its enemy (0..ENEMIES-1) ...
+form_color:     ds 1            ; ... and colour, picked after the splash
 sat_buf:        ds (FRONT_MAX+1+FORM_PAIRS_N)*4+1   ; the front's slots, the incoming ship, the formation, the end marker
 SAT_SIZE        equ $-sat_buf
 reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1: a ship's spill)
@@ -303,33 +327,10 @@ init:
 
         ld a,(RG1SAV)
         or 02h                  ; 16x16 sprites
+        and 0BFh                ; display off until the splash is drawn
         ld b,a
         ld c,1
         call WRTVDP
-
-        ld hl,SHIP_PATTERN      ; the six ship patterns follow each other
-        ld de,(GRPPAT)
-        ld bc,(3+BOOM_STAGES)*32
-        call LDIRVM
-        assert COMING_R_PATTERN == SHIP_PATTERN+32 && COMING_L_PATTERN == SHIP_PATTERN+64
-        assert BOOM_PATTERN == SHIP_PATTERN+96
-        assert NAME_SHIP == 0 && NAME_COMING_R == 4 && NAME_COMING_L == 8 && NAME_BOOM == 12
-        ld hl,(GRPPAT)          ; the formation's pair
-        ld de,NAME_ENEMY*8
-        add hl,de
-        ex de,hl
-        ld hl,ENEMY_PATTERN+FORM_ENEMY*32
-        ld bc,32
-        call LDIRVM
-        assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY
-
-        ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
-        ld de,PLAY_TOP/8*256
-        add hl,de
-        ld bc,(PLAY_BOTTOM+1-PLAY_TOP)/8*256
-        ld a,BULLET_COLOR*16+BG_COLOR
-        call FILVRM
-        assert PLAY_TOP%8 == 0 && (PLAY_BOTTOM+1)%8 == 0
 
         ld hl,ram_start         ; RAM starts as anything
         ld de,ram_start+1
@@ -345,6 +346,57 @@ init:
 .hz60:  ld de,rates
         ld bc,RATES_SIZE
         ldir
+
+        di
+        ld hl,IM2_TABLE
+        ld de,IM2_TABLE+1
+        ld bc,256
+        ld (hl),IM2_HI
+        ldir
+        ld a,0C3h               ; jp isr
+        ld (IM2_JUMP),a
+        ld hl,isr
+        ld (IM2_JUMP+1),hl
+        ld a,IM2_TABLE/256
+        ld i,a
+        im 2
+        ei
+
+        call splash
+        call pick_formation
+
+        ld hl,SHIP_PATTERN      ; the six ship patterns follow each other
+        ld de,(GRPPAT)
+        ld bc,(3+BOOM_STAGES)*32
+        call LDIRVM
+        assert COMING_R_PATTERN == SHIP_PATTERN+32 && COMING_L_PATTERN == SHIP_PATTERN+64
+        assert BOOM_PATTERN == SHIP_PATTERN+96
+        assert NAME_SHIP == 0 && NAME_COMING_R == 4 && NAME_COMING_L == 8 && NAME_BOOM == 12
+        ld hl,(GRPPAT)          ; the formation's pair
+        ld de,NAME_ENEMY*8
+        add hl,de
+        ex de,hl
+        ld a,(form_enemy)
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld bc,ENEMY_PATTERN
+        add hl,bc
+        ld bc,32
+        call LDIRVM
+        assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY
+
+        ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
+        ld de,PLAY_TOP/8*256
+        add hl,de
+        ld bc,(PLAY_BOTTOM+1-PLAY_TOP)/8*256
+        ld a,BULLET_COLOR*16+BG_COLOR
+        call FILVRM
+        assert PLAY_TOP%8 == 0 && (PLAY_BOTTOM+1)%8 == 0
 
         ld a,SHIP_X_MAX/2       ; one ship in the middle
         ld (ship_x),a
@@ -379,20 +431,7 @@ init:
         ld a,RESERVES
         call draw_reserves
 
-        di
-        ld hl,IM2_TABLE
-        ld de,IM2_TABLE+1
-        ld bc,256
-        ld (hl),IM2_HI
-        ldir
-        ld a,0C3h               ; jp isr
-        ld (IM2_JUMP),a
-        ld hl,isr
-        ld (IM2_JUMP+1),hl
-        ld a,IM2_TABLE/256
-        ld i,a
-        im 2
-        ei
+        call display_on
 
 main_loop:
         halt
@@ -414,9 +453,233 @@ main_loop:
 ; The frame interrupt: reading the VDP's status acknowledges it
 isr:    push af
         in a,(VDP_ADDR)
+        ld a,(frames)
+        inc a
+        ld (frames),a
         pop af
         ei
         reti
+
+; ---- Splash ----------------------------------------------------------------
+
+; The title screen (images/title.png) until space or either joystick's
+; button A goes down (a press: held from before doesn't count); it leaves
+; the display off and SCREEN 2's tables cleared, all black. Busy-polls the
+; inputs; every change (a key or button going down or up) mixes the time,
+; in polls since the splash began, into entropy.
+splash:
+        ld hl,TITLE_PAT_ROWS
+        ld de,(GRPCGP)
+        call unpack_rows
+        ld hl,TITLE_COL_ROWS
+        ld de,(GRPCOL)
+        call unpack_rows
+        call display_on
+        ld a,(blink_on)
+        ld (blink_left),a
+        ld a,1
+        ld (blink_shown),a
+        ld a,(frames)
+        ld (frames_seen),a
+        call poll_inputs        ; what's held now isn't a press
+.poll:  ld hl,(polls)
+        inc hl
+        ld (polls),hl
+        call poll_inputs
+        ld hl,key_prev+KEY_ROW  ; space: down now, up before
+        ld a,(key_state+KEY_ROW)
+        cpl
+        and (hl)
+        and KEY_SPACE
+        jr nz,.go
+        inc hl
+        ld a,(key_state+KEY_ROWS)
+        cpl
+        and (hl)
+        ld b,a
+        inc hl
+        ld a,(key_state+KEY_ROWS+1)
+        cpl
+        and (hl)
+        or b
+        and JOY_A               ; either joystick's button A
+        jr nz,.go
+        ld a,(frames)
+        ld hl,frames_seen
+        cp (hl)
+        jr z,.poll
+        ld (hl),a               ; a new frame (the loop keeps up: one at a time)
+.blink: call blink
+        jr .poll
+.go:    call display_off
+        ld hl,(GRPCGP)
+        ld bc,24*256
+        xor a
+        call FILVRM
+        ld hl,(GRPCOL)
+        ld bc,24*256
+        ld a,BG_COLOR*16+BG_COLOR
+        jp FILVRM
+
+; One frame of the splash's blinking text: after blink_on frames shown,
+; its character row's colours go all black for blink_off frames, then
+; come back from the picture
+blink:
+        ld hl,blink_left
+        dec (hl)
+        ret nz
+        ld a,(blink_shown)
+        xor 1
+        ld (blink_shown),a
+        jr z,.hide
+        ld a,(blink_on)
+        ld (hl),a
+        ld hl,(TITLE_COL_ROWS+BLINK_ROW*2)
+        ld de,(GRPCOL)
+        ld a,d
+        add a,BLINK_ROW
+        ld d,a
+        jp unpack
+.hide:  ld a,(blink_off)
+        ld (hl),a
+        ld hl,(GRPCOL)
+        ld de,BLINK_ROW*256
+        add hl,de
+        ld bc,256
+        ld a,BG_COLOR*16+BG_COLOR
+        jp FILVRM
+
+; key_prev = key_state; key_state = the keyboard's rows 0..KEY_ROWS-1 and
+; both joysticks' R14 (bit = 0 when pressed); each byte that changed
+; mixes the time into entropy
+poll_inputs:
+        ld hl,key_state
+        ld de,key_prev
+        ld bc,KEY_ROWS+2
+        ldir
+        ld hl,key_state
+        ld b,0                  ; the row
+.row:   di
+        in a,(PPI_C)
+        and 0F0h
+        or b
+        out (PPI_C),a
+        in a,(PPI_B)
+        ei
+        call .put
+        inc b
+        ld a,b
+        cp KEY_ROWS
+        jr c,.row
+        ld b,03h                ; joystick 1 (as read_joy)
+        ld e,0AFh
+        call joy_r14
+        call .put
+        ld b,4Ch                ; joystick 2
+        ld e,0DFh
+        call joy_r14
+.put:   cp (hl)
+        ld (hl),a
+        inc hl
+        ret z
+; entropy = xorshift(entropy + polls, xor A (the byte now) xor B (its row
+; or port) * 256 xor R * 256); never 0. Keeps B, HL.
+mix:    push hl
+        ld hl,(entropy)
+        ld de,(polls)
+        add hl,de
+        xor l
+        ld l,a
+        ld a,r
+        xor b
+        xor h
+        ld h,a
+        ld a,h                  ; (rand's xorshift, 7/9/8)
+        rra
+        ld a,l
+        rra
+        xor h
+        ld h,a
+        ld a,l
+        rra
+        ld a,h
+        rra
+        xor l
+        ld l,a
+        xor h
+        ld h,a
+        or l
+        jr nz,.keep
+        inc l
+.keep:  ld (entropy),hl
+        pop hl
+        ret
+
+; 24 rows of characters (256 bytes each) to VRAM from DE on, unpacked
+; from the RLE streams HL points to (24 words: title.py)
+unpack_rows:
+        ld b,24
+.r:     push bc
+        push hl
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a
+        push de
+        call unpack
+        pop de
+        inc d
+        pop hl
+        inc hl
+        inc hl
+        pop bc
+        djnz .r
+        ret
+
+; The RLE stream HL (title.py) to VRAM at DE: n = 1..127, n bytes as they
+; are; n = 128..255, the next byte n-126 times; 0, the end. At least 29 T
+; a byte: safe outside vertical blank.
+unpack:
+        di
+        ld a,e
+        out (VDP_ADDR),a
+        ld a,d
+        or 40h
+        out (VDP_ADDR),a
+        ei
+.n:     ld a,(hl)
+        inc hl
+        or a
+        ret z
+        ld b,a
+        jp p,.lit
+        sub 126
+        ld b,a
+        ld a,(hl)
+        inc hl
+.rep:   out (VDP_DATA),a        ; 32 T
+        nop
+        nop
+        djnz .rep
+        jr .n
+.lit:   ld a,(hl)               ; 37 T
+        out (VDP_DATA),a
+        inc hl
+        djnz .lit
+        jr .n
+
+; The display on or off (R1's blank bit)
+display_on:
+        ld a,(RG1SAV)
+        or 40h
+        jr display_r1
+display_off:
+        ld a,(RG1SAV)
+        and 0BFh
+display_r1:
+        ld b,a
+        ld c,1
+        jp WRTVDP
 
 ; ---- Input -----------------------------------------------------------------
 
@@ -476,6 +739,20 @@ read_input:
 ; C |= the joystick's left, right, button A (fire) and B (call-up) as IN_*;
 ; the port is selected in R15 by (R15 and E) or B
 read_joy:
+        call joy_r14
+        cpl                     ; 1 = pressed: bit 2 left, 3 right, 4 A, 5 B
+        ld b,a
+        and IN_LEFT|IN_RIGHT|IN_FIRE    ; button A fires
+        or c
+        ld c,a
+        bit 5,b                 ; button B calls up
+        ret z
+        set 7,c                 ; IN_CALL
+        ret
+
+; A = the joystick port's R14 (bit = 0 when pressed), the port selected in
+; R15 by (R15 and E) or B. Keeps B, C, D, HL.
+joy_r14:
         di
         ld a,PSG_IO_B
         out (PSG_ADDR),a
@@ -487,14 +764,6 @@ read_joy:
         out (PSG_ADDR),a
         in a,(PSG_READ)
 .r14:   ei
-        cpl                     ; 1 = pressed: bit 2 left, 3 right, 4 A, 5 B
-        ld b,a
-        and IN_LEFT|IN_RIGHT|IN_FIRE    ; button A fires
-        or c
-        ld c,a
-        bit 5,b                 ; button B calls up
-        ret z
-        set 7,c                 ; IN_CALL
         ret
 
 ; ---- Movement --------------------------------------------------------------
@@ -952,6 +1221,32 @@ random_line:
         ret
         assert STAR == 3
 
+; The formation's enemy and colour at random, rand seeded from entropy
+; (the splash's key times)
+pick_formation:
+        ld hl,(entropy)
+        ld a,h
+        or l
+        jr nz,.seed
+        inc l                   ; (never 0)
+.seed:  ld (rand_seed),hl
+.e:     call rand
+        and 15
+        cp ENEMIES
+        jr nc,.e
+        ld (form_enemy),a
+.c:     call rand
+        and 15
+        cp FORM_COLORS_N
+        jr nc,.c
+        ld e,a
+        ld d,0
+        ld hl,FORM_COLORS
+        add hl,de
+        ld a,(hl)
+        ld (form_color),a
+        ret
+
 ; A = a random byte (16-bit xorshift, 7/9/8). Keeps BC, DE.
 rand:   ld hl,(rand_seed)
         ld a,h
@@ -1394,12 +1689,14 @@ build_sat:
         add a,(ix+1)
         ld (de),a
         inc de
-        ld a,l
         dec h                   ; 256..FORM_WRAP-1: -16..-1 on screen
-        ld h,FORM_COLOR
+        ld a,(form_color)
+        ld h,a
+        ld a,l
         jr nz,.fpx
         add a,32+256-FORM_WRAP  ; the early clock
-        ld h,FORM_COLOR|SPR_EC
+        set 7,h                 ; SPR_EC
+        assert SPR_EC == 80h
 .fpx:   ld (de),a
         inc de
         ld a,NAME_ENEMY
@@ -1630,18 +1927,27 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 db FORM_TICK_RATE/60, FORM_TICK_RATE%60
                 dw SHOT_60, DEATH_60
                 db BOOM1_60, BOOM2_60, BOOM3_60
+                db BLINK_ON_MS*60/1000, BLINK_OFF_MS*60/1000
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
                 dw SHOT_50, DEATH_50
                 db BOOM1_50, BOOM2_50, BOOM3_50
+                db BLINK_ON_MS*50/1000, BLINK_OFF_MS*50/1000
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
+        assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
+        assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0
+
+FORM_COLORS:    db FORM_COLOR_LIST
+FORM_COLORS_N   equ $-FORM_COLORS
+        assert FORM_COLORS_N <= 16
 
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 
         include "build/sprites.inc"
         include "build/sfx.inc"
         include "build/path.inc"
+        include "build/title.inc"
 
         assert $ <= 8000h
         ds 8000h-$,0FFh         ; a 16 KB ROM

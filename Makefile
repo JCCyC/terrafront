@@ -1,5 +1,5 @@
 ROM     := terrafnt.rom
-INCS    := build/sprites.inc build/sfx.inc build/path.inc
+INCS    := build/sprites.inc build/sfx.inc build/path.inc build/title.inc
 
 # Any run target: make FS=1 run starts openMSX fullscreen (else windowed),
 # make VIDEO=1 run records the session to videos/<target>-<date>-<time>.avi.
@@ -34,6 +34,10 @@ build/sfx.inc: sfx.py
 build/path.inc: path.py
 	@mkdir -p build
 	python3 path.py > $@
+
+build/title.inc: title.py png2spr.py images/title.png
+	@mkdir -p build
+	python3 title.py > $@
 
 run: $(ROM)
 	$(call OPENMSX,-machine Gradiente_Expert_GPC-1 -carta $(ROM))

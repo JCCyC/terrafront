@@ -6,7 +6,17 @@ The game's name is **Terra Front** (two words); `terrafront` (directory) and
 An MSX1 shoot-'em-up in Z80 assembly (sjasmplus), built as a 16 KB plain
 cartridge ROM at 4000h..7FFFh (`terrafnt.rom`, an 8.3 name). RAM at E000h.
 
-**Current state:** SCREEN 2, all black. The top 8 and bottom 8 pixel lines
+**Current state:** it starts with a splash screen, `images/title.png`
+(256×192, the user may retouch it: MSX1 colours, at most two per 8×1
+byte), the logo solid cyan, "PRESS SPACE TO BEGIN" (Expert BIOS font,
+character row 22, `BLINK_ROW`) blinking 0.3 s on, 0.2 s off by its row's
+colours. Space or either joystick's button A starts the game (a press;
+held from before doesn't count). Meanwhile `splash` busy-polls the 11
+keyboard rows and both joysticks (about 22 polls a frame on the Expert)
+and mixes every press's and release's time (polls so far, R) into
+`entropy` (16 bits, nonzero once a key moved); once the splash ends it
+seeds `rand` for the formation's pick (`pick_formation`). Then the tables are cleared, display off until the game's
+init is done. The game: SCREEN 2, all black. The top 8 and bottom 8 pixel lines
 are not playfield (reserved for scores and reserve ships). The front, 1 to
 4 player ships (`images/player-ship.png`, one 16×16 sprite each) glued side
 by side (9-px art, no pixel between), sits on the playfield's last line and
@@ -43,9 +53,11 @@ line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 column 0 comes back at column 255 on a free random line. A star isn't
 drawn in a bitmap byte a bullet is in (one colour per byte: the bullet's
 white is kept); it shows again once the bullet has left the byte.
-The enemies (movement only so far): a formation of 4 pairs of
-`images/enemy-0.png` in colour 12 (each pair one 16×16 sprite, the 8×16
-enemy twice side by side; `enemy-0..9.png` are all in the ROM), laid out
+The enemies (movement only so far): a formation of 4 pairs of one enemy
+in one colour, both picked at random once the splash ends (`rand` seeded
+from `entropy`): the enemy among all 10 `images/enemy-0..9.png`, the
+colour among 2, 3, 5, 7, 8, 9, 10, 11, 13 (`FORM_COLOR_LIST`). Each pair
+is one 16×16 sprite, the 8×16 enemy twice side by side; laid out
 as in `images/formation-enemy-0-color-12.png` and starting at its column
 25, flies a loop at a constant 113 px/s: northeast across a 35×29 box,
 east-southeast across 60×29, southwest and northwest across 35×29, in
@@ -80,7 +92,11 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `build/path.inc`: the formation loop's tunables and its table, 300
   entries per second of cycle, stepped by Bresenham on frames; only
   `CYCLE_SECS` sets the timing) and `sfx.py` (→ `build/sfx.inc`: the shot and death
-  sound tables; the death one is Skyfighter's `BOOM_SHIP`, byte for byte), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
+  sound tables; the death one is Skyfighter's `BOOM_SHIP`, byte for byte) and
+  `title.py` (→ `build/title.inc`: the splash's SCREEN 2 pattern and colour
+  tables from `images/title.png`, 24 rows each RLE-packed alone, so the
+  blinking row unpacks by itself; `title.py --raw` prints them unpacked,
+  for the test), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
   `build/terrafnt.sym`). `build/` is generated; don't edit it.
 - `make run` runs the Gradiente Expert 1.1 (primary target, 60 Hz),
   `make run-cbios` C-BIOS MSX1 (50 Hz), `make run-nms8250` the Philips
@@ -89,7 +105,13 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   command (each on when a nonzero number; see `../MSXDEV.md`).
 - `make test` runs `test.tcl` headless on all three machines (log in
   `build/test-<machine>.log`, screenshots `build/shot-<machine>.png` and
-  `build/shot-<machine>-call.png`, a call-up in flight): ship start, speed
+  `build/shot-<machine>-call.png`, a call-up in flight). It boots twice:
+  first space held from power-on (then let go) doesn't start, joystick 1's
+  button A does, then a reset; then the splash's VRAM against
+  `title.py --raw` (text shown and hidden), the blink every frame (on/off
+  frame counts, 0.5 s period in emulated time, no frame missed), A, C and
+  button B changing `entropy` without starting, and space starting; then
+  the status rows blank after it. Then: ship start, speed
   over 1 s, both arrows, edge clamps for 1, 2 and 4 ships and their sprite
   X / EC, bullet spawn point, speed, removal at the top, the shot sound's
   length, the 2-volley limit, one shot per press, the reserve ships' pixels
@@ -97,7 +119,7 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   constant step, frozen front, glue point), a shot during one, C ignored
   with 4 ships, a 4-bullet volley; joystick buttons A (fires, no
   call-up) and B (calls up, no shot), faked by a breakpoint after
-  `read_joy`'s R14 read; the test keys: a boom's images and frame counts
+  `joy_r14`'s R14 read; the test keys: a boom's images and frame counts
   in the SAT, no bullet from a dying ship, holes, C refused for
   ship-gap-gap-ship, the death sound (every frame: channel C's volume,
   tone, noise period and mixer bits against the table, restarted by each
@@ -107,10 +129,11 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   its last ship died (the test writes `reserves` in RAM for these
   call-ups); the stars: 15 on 15 lines, all moving together 1 px every
   6 / 5 frames, wraps to 255 on a free line, a star the test puts on a
-  new volley's spawn line hiding under it; the formation's pair pattern
-  in VRAM. Every frame it also checks the SAT against the front (ships
+  new volley's spawn line hiding under it; the formation's pick (enemy and colour
+  from `entropy` through `rand`, worked out by the test) and its pair
+  pattern in VRAM. Every frame it also checks the SAT against the front (ships
   and booms), the incoming ship and the formation (against the test's own
   model of the loop from the spec, the cycle from the build: pair layout,
-  colour, ±1 px, 25 px east a cycle later, its lines clear of the front, the wrap with EC), and the
+  the picked colour, ±1 px, 25 px east a cycle later, its lines clear of the front, the wrap with EC), and the
   bitmap (pixels and the playfield's colours) against the bullets in
   flight and the stars not in their bytes.

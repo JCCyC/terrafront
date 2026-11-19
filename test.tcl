@@ -38,13 +38,13 @@ proc cup {} { keymatrixup 3 0x01 }
 # The test keys 1..4: row 0, bits 1..4
 proc kdown {k} { keymatrixdown 0 [expr {1 << $k}] }
 proc kup {k} { keymatrixup 0 [expr {1 << $k}] }
-# Joysticks: a breakpoint right after read_joy's R14 read clears the held
+# Joysticks: a breakpoint right after joy_r14's R14 read clears the held
 # lines (bit 4 = button A, 5 = B) of port 1 (B = 03h) or 2 (B = 4Ch)
 set joy(1) 0
 set joy(2) 0
 proc joydown {port bits} { set ::joy($port) $bits }
 proc joyup {port} { set ::joy($port) 0 }
-debug set_bp $sym(read_joy.r14) {} {
+debug set_bp $sym(joy_r14.r14) {} {
 	set p [expr {[reg B] == 0x03 ? 1 : 2}]
 	if {$::joy($p)} { reg A [expr {[reg A] & ~$::joy($p) & 0xFF}] }
 }
@@ -96,7 +96,8 @@ proc plan {} {
 	at 3 { check {[sat 0] == $::sym(SHIP_TOP) - 1} "ship sprite Y [sat 0] (art's last row on line 183)" }
 	at 3 { check_reserves }
 	at 3 { check_stars_start }
-	at 3 { check_form_pattern }
+	at 3 { check_form_pick ; check_form_pattern }
+	at 3 { check_cleared }
 
 	# 1 s of right: SHIP_SPEED px (+-1 for the Bresenham remainder)
 	set a 10
@@ -797,9 +798,128 @@ proc screenshot_and_finish {} {
 	}
 }
 
+# The splash, twice. Boot 1: space held from power-on, then let go, doesn't
+# start; joystick 1's button A does; then a reset. Boot 2: the tables
+# against title.py's picture, the blinking (every frame, and its times),
+# other keys and button B mixing their times into entropy but not
+# starting; space starts the game, and the plan above runs.
+set ROOT [file dirname [file dirname $::env(SYMFILE)]]
+set TITLE [exec sh -c "cd '$ROOT' && python3 title.py --raw"]
+set BROW $sym(BLINK_ROW)
+set phase 1
+set sn 0
+proc vdp_r1 {} { debug read "VDP regs" 1 }
+# the blinking row's colours: 1 = the picture's, 0 = all black, -1 neither
+proc blink_state {} {
+	set pic 1 ; set blk 1
+	set a [expr {0x2000 + $::BROW*256}]
+	for {set i 0} {$i < 256} {incr i} {
+		set v [debug read VRAM [expr {$a + $i}]]
+		if {$v != "0x[lindex $::TITLE [expr {6144 + $::BROW*256 + $i}]]"} { set pic 0 }
+		if {$v != 0x11} { set blk 0 }
+	}
+	expr {$pic ? 1 : ($blk ? 0 : -1)}
+}
+# VRAM's tables against the picture (the blinking row's colours as $shown)
+proc check_title {shown what} {
+	set bad {}
+	for {set i 0} {$i < 12288} {incr i} {
+		set w [expr 0x[lindex $::TITLE $i]]
+		if {$i >= 6144 + $::BROW*256 && $i < 6144 + ($::BROW+1)*256 && !$shown} { set w 0x11 }
+		set a [expr {$i < 6144 ? $i : 0x2000 + $i - 6144}]
+		if {[debug read VRAM $a] != $w} { lappend bad [format %04X $a] ; if {[llength $bad] > 5} break }
+	}
+	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png (wrong at: $bad)"
+}
+proc entropy {} { expr {[m entropy] + 256*[m entropy 1]} }
+set blinks {}        ;# {state time} each splash frame
+set frames_bad 0
+proc splash_frame {} {
+	incr ::sn
+	set fr [m frames]
+	if {$::sn > 1 && (($fr - $::last_fr) & 0xFF) != 1} { incr ::frames_bad }
+	set ::last_fr $fr
+	if {$::phase == 1} {
+		if {$::sn == 4} { up 0x01 }
+		if {$::sn == 8} { joydown 1 0x10 }
+		if {$::sn == 12} { fail "joystick 1's button A doesn't start the game" ; finish }
+		return
+	}
+	set F [m fps]
+	lappend ::blinks [list [blink_state] [machine_info time]]
+	if {$::sn == 3} {
+		check {[vdp_r1] & 0x40} "splash: display on (R1 [format %02X [vdp_r1]])"
+		check_title 1 "(text shown)"
+	}
+	if {$::sn == 5} { set ::e0 [entropy] ; keymatrixdown 2 0x40 }
+	if {$::sn == 6} { set ::e1 [entropy] ; check {$::e1 != $::e0 && $::e1 != 0} "splash: A down mixes into entropy ([format %04X $::e0] -> [format %04X $::e1])" }
+	if {$::sn == 9} { keymatrixup 2 0x40 }
+	if {$::sn == 10} { set ::e2 [entropy] ; check {$::e2 != $::e1 && $::e2 != 0} "splash: A up mixes into entropy (-> [format %04X $::e2])" }
+	if {$::sn == 13} { joydown 2 0x20 }
+	if {$::sn == 14} { set ::e3 [entropy] ; check {$::e3 != $::e2} "splash: joystick 2's button B mixes into entropy, doesn't start (-> [format %04X $::e3])" ; joyup 2 }
+	if {$::sn == 16} { cdown }
+	if {$::sn == 17} { cup ; set ::e4 [entropy] ; check {$::e4 != $::e3} "splash: C mixes into entropy, doesn't start (-> [format %04X $::e4])" }
+	if {$::sn > 1 && [lindex $::blinks end 0] == 0 && [lindex $::blinks end-1 0] == 1} {
+		if {![info exists ::offchecked]} { set ::offchecked 1 ; check_title 0 "(text hidden)" }
+	}
+	if {$::sn == 3*$F} {
+		say "splash: [expr {([m polls] + 256*[m polls 1]) / $::sn}] polls a frame"
+		check_blinks $F
+		down 0x01
+	}
+	if {$::sn == 3*$F + 4} { fail "space doesn't start the game" ; finish }
+}
+proc check_blinks {F} {
+	set on [expr {$F*3/10}] ; set off [expr {$F/5}]
+	set runs {} ; set times {}
+	set prev "" ; set len 0
+	foreach b $::blinks {
+		lassign $b st t
+		if {$st == -1} { fail "splash: the blinking row is neither the picture's nor black" ; return }
+		if {$st != $prev && $prev ne ""} { lappend runs [list $prev $len] ; lappend times $t }
+		if {$st != $prev} { set len 0 }
+		set prev $st
+		incr len
+	}
+	set bad 0
+	foreach r $runs { lassign $r st len ; if {$len != ($st ? $on : $off)} { incr bad } }
+	check {[llength $runs] >= 10 && $bad == 0 && [lindex $runs 0 0] == 1} "splash: text shown $on frames, hidden $off, in turn, from the start ($runs)"
+	set tbad {}
+	for {set i 2} {$i < [llength $times]} {incr i} {
+		set d [expr {[lindex $times $i] - [lindex $times $i-2]}]
+		if {abs($d - 0.5) > 0.002} { lappend tbad [format %.4f $d] }
+	}
+	check {[llength $tbad] == 0} "splash: blink period 0.5 s in emulated time (wrong: $tbad)"
+	check {$::frames_bad == 0} "splash: the poll loop sees every frame, one at a time"
+}
+debug set_bp $sym(splash.blink) {} { try splash_frame }
+# blank after the splash: the top status row, and the bottom one past the reserves
+proc check_cleared {} {
+	set bad {}
+	for {set a 0} {$a < 256} {incr a} {
+		if {[debug read VRAM $a] || [debug read VRAM [expr {0x2000 + $a}]] != 0x11} { lappend bad [format %04X $a] }
+	}
+	for {set a [expr {23*256 + $::sym(RESERVE_CELLS)*8}]} {$a < 6144} {incr a} {
+		if {[debug read VRAM $a] || [debug read VRAM [expr {0x2000 + $a}]] != 0x11} { lappend bad [format %04X $a] }
+	}
+	check {[llength $bad] == 0} "after the splash: status rows blank (wrong: [lrange $bad 0 5])"
+}
+
+down 0x01            ;# boot 1: space held from power-on
 set started 0
 debug set_bp $sym(main_loop) {} {
-	if {!$::started} { set ::started 1 ; try plan }
+	if {$::phase == 1} {
+		check {$::sn >= 8} "joystick 1's button A starts the game; space held from power-on, then let go, didn't (splash frame $::sn)"
+		joyup 1
+		set ::phase 2 ; set ::sn 0
+		reset
+		return
+	}
+	if {!$::started} {
+		check {$::sn == 3*[m fps]} "space starts the game (splash frame $::sn)"
+		up 0x01
+		set ::started 1 ; try plan
+	}
 	frame
 }
 
@@ -866,7 +986,7 @@ proc form_frame {} {
 		lassign [form_sat $i] x y nm c
 		lassign $p dx dy
 		if {[wdiff $x [expr {$x0 + $dx}]] != 0 || $y != $y0 + $dy} { form_bad "pair $i at ($x, $y), not at ($dx, $dy) from pair 0's place" }
-		if {$nm != $::sym(NAME_ENEMY) || ($c & 0x7F) != 12} { form_bad "pair $i name $nm colour [format %02X $c]" }
+		if {$nm != $::sym(NAME_ENEMY) || ($c & 0x7F) != [m form_color]} { form_bad "pair $i name $nm colour [format %02X $c]" }
 		if {$x > 256} { incr ::form_left }   ;# -15..-1: partly in at the left
 		if {$x < 256 && $x > 240} { incr ::form_right }
 		incr i
@@ -882,17 +1002,38 @@ proc form_frame {} {
 	}
 	incr ::form_frames
 }
+# rand (16-bit xorshift 7/9/8): {h l} -> {h l byte}
+proc xs {h l} {
+	set h1 [expr {((($h & 1) << 7) | ($l >> 1)) ^ $h}]
+	set l1 [expr {((($l & 1) << 7) | ($h1 >> 1)) ^ $l}]
+	set h2 [expr {$l1 ^ $h1}]
+	list $h2 $l1 $h2
+}
+# The enemy and colour the game picked: rand seeded from entropy, the
+# enemy (rand & 15) < 10, then the colour's index (rand & 15) < 9 into
+# the spec's list
+proc check_form_pick {} {
+	set COLS {2 3 5 7 8 9 10 11 13}
+	set h [m entropy 1] ; set l [m entropy]
+	if {!$h && !$l} { set l 1 }
+	while 1 { lassign [xs $h $l] h l r ; if {($r & 15) < 10} break }
+	set e [expr {$r & 15}]
+	while 1 { lassign [xs $h $l] h l r ; if {($r & 15) < 9} break }
+	set c [lindex $COLS [expr {$r & 15}]]
+	check {[m form_enemy] == $e && [m form_color] == $c} "formation picked from entropy [format %04X [entropy]]: enemy [m form_enemy], colour [m form_color] (want enemy $e, colour $c)"
+}
 proc check_form_pattern {} {
 	set a [expr {0x3800 + $::sym(NAME_ENEMY)*8}]
+	set e [m form_enemy]
 	set bad {}
 	for {set i 0} {$i < 32} {incr i} {
-		if {[debug read VRAM [expr {$a + $i}]] != [m ENEMY_PATTERN $i]} { lappend bad $i }
+		if {[debug read VRAM [expr {$a + $i}]] != [m ENEMY_PATTERN [expr {$e*32 + $i}]]} { lappend bad $i }
 		if {$i < 16 && [debug read VRAM [expr {$a + $i}]] != [debug read VRAM [expr {$a + $i + 16}]]} { lappend bad "half $i" }
 	}
-	check {[llength $bad] == 0} "the formation's pair in VRAM: enemy 0, twice side by side (wrong: $bad)"
+	check {[llength $bad] == 0} "the formation's pair in VRAM: enemy [m form_enemy], twice side by side (wrong: $bad)"
 }
 proc check_form_end {} {
-	check {$::form_bad == 0 && $::form_frames > 10*$::F} "formation = the spec's loop ([format %.3f [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]] s, constant speed, 25 px east a cycle), pairs in the picture's layout, colour 12, every frame ($::form_frames frames, off by $::form_err px at most; [expr {$::form_bad ? "first wrong: $::form_first" : "none wrong"}])"
+	check {$::form_bad == 0 && $::form_frames > 10*$::F} "formation = the spec's loop ([format %.3f [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]] s, constant speed, 25 px east a cycle), pairs in the picture's layout, colour [m form_color], every frame ($::form_frames frames, off by $::form_err px at most; [expr {$::form_bad ? "first wrong: $::form_first" : "none wrong"}])"
 	check {$::form_laps > 0 && $::form_lapbad == 0} "a cycle later the formation is 25 px east on the same lines ($::form_laps frames checked)"
 	check {$::form_ymin >= 8 && $::form_ymax + 44 <= $::sym(SHIP_TOP) && $::form_ymin <= 39 && $::form_ymax >= 93} "formation's top from line $::form_ymin to $::form_ymax: between the status area and the front's sprites"
 	check {$::form_left > 0 && $::form_right > 0} "pairs leaving the right edge ($::form_right pair-frames) come back in from the left, early clock ($::form_left)"
