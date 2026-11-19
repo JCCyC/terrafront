@@ -30,6 +30,15 @@
 ; at column 255 on a random line. No two stars share a line (so never a
 ; bitmap byte), and a star isn't drawn in a byte a bullet is in (each byte
 ; has one colour; the bullet's is kept).
+; The enemies: a formation of FORM_PAIRS_N pairs of FORM_ENEMY in
+; FORM_COLOR, laid out as in images/formation-enemy-*-color-*.png (each pair
+; one sprite: the enemy twice, side by side), flies a loop at a constant
+; speed: northeast across a 35 x 29 box, east-southeast across a 60 x 29
+; one, southwest and northwest across 35 x 29 ones, in path.py's
+; CYCLE_SECS (1.8 s), ending 25 px east of where it started (path.py: its
+; tunables and table). The loop is
+; centred between the top status area and the front's sprite lines. Past the right
+; edge, it comes back in from the left (x mod 256 + 16, a pair's width).
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Test keys 1..4 kill the front's
 ; first..fourth ship. Fire, call-up and the test keys are edge-triggered:
@@ -70,6 +79,9 @@ STARS           equ 15          ; one-pixel stars in the background
 STAR_COLOR      equ 14          ; light grey
 STAR_SPEED      equ 10          ; px/s to the left: 1 px every 6 frames at 60 Hz, every 5 at 50 Hz
         assert STAR_SPEED < 50  ; at most 1 px a frame
+FORM_ENEMY      equ 0           ; the formation's enemy (images/enemy-N.png)
+FORM_COLOR      equ 12          ; dark green
+; (the formation's loop: path.py)
 
 ; ---- Layout ----------------------------------------------------------------
 
@@ -86,6 +98,16 @@ BULLET_START    equ SHIP_TOP+SHIP_ART_T-BULLET_H    ; a new bullet's top line: r
         assert BULLET_START >= PLAY_TOP
         assert SHIP_ART_L < 32              ; the EC bit's 32 px cover the left clip
         assert FRONT_MAX*SHIP_ART_W <= 128  ; a front left of the middle has room on its right
+
+; The formation (FORM_* from build/sprites.inc and build/path.inc): its top
+; line when the cycle starts, so that its loop is centred between the
+; playfield's first line and the front's sprites' first
+FORM_Y0         equ (PLAY_TOP+SHIP_TOP-FORM_H)/2
+        assert FORM_Y0-FORM_RISE >= PLAY_TOP && FORM_Y0+FORM_RISE+FORM_H <= SHIP_TOP
+FORM_WRAP       equ 256+16      ; x is mod this: a pair off the right edge comes in from the left
+        assert FORM_X0 < FORM_WRAP && FORM_ADVANCE < FORM_WRAP
+        assert FORM_WRAP-1+FORM_PATH_DX_MAX+FORM_W-16 < 2*FORM_WRAP    ; one wrap at most
+        assert FORM_TICKS*2 < 65536 && FORM_ENEMY < ENEMIES
 
 ; A call-up: the new ship starts with its art just off screen, on the side
 ; away from the front, and flies to the front's side at CALL_SPEED px/s.
@@ -114,6 +136,7 @@ NAME_COMING_R   equ 4           ; the ship coming in from the right, its woosh l
 NAME_COMING_L   equ 8           ; ... from the left
 NAME_BOOM       equ 12          ; the boom images: 12, 16, 20
 BOOM_STAGES     equ 3
+NAME_ENEMY      equ 24          ; the formation's pair
 SPR_PARK        equ 0C0h        ; a sprite's Y off screen (lines 193..208); below D0h, the end marker
 SPR_END         equ 0D0h        ; Y that ends the sprite list
 SPR_EC          equ 80h         ; colour byte: early clock, X shifted 32 px left
@@ -202,6 +225,8 @@ call_whole:     ds 1
 call_frac:      ds 1
 star_whole:     ds 1
 star_frac:      ds 1
+form_whole:     ds 1            ; path entries a frame
+form_frac:      ds 1
 shot_sound:     ds 2            ; SHOT_60 or SHOT_50
 death_sound:    ds 2            ; DEATH_60 or DEATH_50
 boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
@@ -243,7 +268,12 @@ shot_mix:       ds 1            ; mixer bits the shot sound switches on now
 death_mix:      ds 1            ; ... and the death sound
 psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
-sat_buf:        ds (FRONT_MAX+1)*4+1    ; the front's slots, the incoming ship, the end marker
+; The formation: its left column when this cycle started (0..FORM_WRAP-1),
+; plus FORM_PATH's offset at form_tick (0..FORM_TICKS-1)
+form_x:         ds 2
+form_tick:      ds 2
+form_acc:       ds 1            ; Bresenham remainder
+sat_buf:        ds (FRONT_MAX+1+FORM_PAIRS_N)*4+1   ; the front's slots, the incoming ship, the formation, the end marker
 SAT_SIZE        equ $-sat_buf
 reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1: a ship's spill)
 RAM_SIZE        equ $-ram_start
@@ -284,6 +314,14 @@ init:
         assert COMING_R_PATTERN == SHIP_PATTERN+32 && COMING_L_PATTERN == SHIP_PATTERN+64
         assert BOOM_PATTERN == SHIP_PATTERN+96
         assert NAME_SHIP == 0 && NAME_COMING_R == 4 && NAME_COMING_L == 8 && NAME_BOOM == 12
+        ld hl,(GRPPAT)          ; the formation's pair
+        ld de,NAME_ENEMY*8
+        add hl,de
+        ex de,hl
+        ld hl,ENEMY_PATTERN+FORM_ENEMY*32
+        ld bc,32
+        call LDIRVM
+        assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY
 
         ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
         ld de,PLAY_TOP/8*256
@@ -317,6 +355,8 @@ init:
         ld (front_w),a
         ld a,RESERVES
         ld (reserves),a
+        ld hl,FORM_X0
+        ld (form_x),hl
         ld a,IN_FIRE|IN_CALL    ; armed only once released (read_input moves it to input_prev)
         ld (input),a
         ld a,KEYS_KILL
@@ -365,6 +405,7 @@ main_loop:
         call move_stars         ; after the bullets (fire's too): a star in their bytes hides
         call call_up            ; before move_ship: the front stays put while one runs
         call move_ship
+        call move_formation
         call sfx
         call death              ; after sfx: its noise period wins over the shot's
         call build_sat
@@ -514,6 +555,38 @@ move_ship:
 .set:   ld (hl),a
         ret
         assert SHIP_X_MAX+(SHIP_SPEED+49)/50 < 256
+
+; The formation one frame on along its loop: FORM_TICK_RATE path entries
+; a second; past the last, the next cycle starts FORM_ADVANCE px east
+move_formation:
+        ld a,(form_whole)
+        ld b,a
+        ld a,(form_frac)
+        ld d,a
+        ld hl,form_acc
+        call bresenham
+        ld hl,(form_tick)
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld de,-FORM_TICKS
+        add hl,de
+        jr c,.lap               ; carry: form_tick + step >= FORM_TICKS
+        ld de,FORM_TICKS
+        add hl,de
+        ld (form_tick),hl
+        ret
+.lap:   ld (form_tick),hl
+        ld hl,(form_x)
+        ld de,FORM_ADVANCE-FORM_WRAP
+        add hl,de
+        jr c,.at                ; carry: form_x + FORM_ADVANCE >= FORM_WRAP
+        ld de,FORM_WRAP
+        add hl,de
+.at:    ld (form_x),hl
+        ret
+        assert FORM_TICK_RATE/50 < FORM_TICKS
 
 ; Each volley in flight goes up BULLET_SPEED px/s; it's gone once its top
 ; leaves the playfield. All are erased first, then drawn, so one's erase
@@ -1280,12 +1353,68 @@ build_sat:
         ld (hl),b
         inc hl
         ld (hl),c
-        ret
+        inc hl
+        jr .form
 .nocall:
         ld (hl),SPR_PARK
+        ld de,4
+        add hl,de
+.form:  ex de,hl                ; DE: the formation's entries
+        ld hl,(form_tick)
+        add hl,hl
+        ld bc,FORM_PATH
+        add hl,bc
+        ld a,(hl)               ; the loop's dx
+        inc hl
+        ld c,(hl)               ; ... and dy (signed)
+        ld hl,(form_x)
+        add a,l
+        ld l,a
+        jr nc,.fx
+        inc h                   ; HL: the formation's left column (mod FORM_WRAP)
+.fx:    ld a,c
+        add a,FORM_Y0-1         ; a sprite's first line is Y + 1
+        ld c,a
+        ld ix,FORM_PAIRS
+        ld b,FORM_PAIRS_N
+.pair:  push hl
+        ld a,(ix+0)
+        add a,l
+        ld l,a
+        jr nc,.px
+        inc h
+.px:    push de
+        ld de,-FORM_WRAP
+        add hl,de
+        jr c,.wr                ; carry: it was >= FORM_WRAP
+        ld de,FORM_WRAP
+        add hl,de
+.wr:    pop de
+        ld a,c
+        add a,(ix+1)
+        ld (de),a
+        inc de
+        ld a,l
+        dec h                   ; 256..FORM_WRAP-1: -16..-1 on screen
+        ld h,FORM_COLOR
+        jr nz,.fpx
+        add a,32+256-FORM_WRAP  ; the early clock
+        ld h,FORM_COLOR|SPR_EC
+.fpx:   ld (de),a
+        inc de
+        ld a,NAME_ENEMY
+        ld (de),a
+        inc de
+        ld a,h
+        ld (de),a
+        inc de
+        pop hl
+        inc ix
+        inc ix
+        djnz .pair
         ret
         assert COMING_L_ART_L <= 16 && COMING_R_ART_L+SHIP_ART_W <= 16
-        assert SAT_SIZE == (FRONT_MAX+1)*4+1
+        assert SAT_SIZE == (FRONT_MAX+1+FORM_PAIRS_N)*4+1
 
 ; sat_buf to the VDP; right after halt, so OTIR is safe (vertical blank)
 upload_sat:
@@ -1498,10 +1627,12 @@ death:
 
 RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPEED%60
                 db CALL_SPEED/60, CALL_SPEED%60, STAR_SPEED/60, STAR_SPEED%60
+                db FORM_TICK_RATE/60, FORM_TICK_RATE%60
                 dw SHOT_60, DEATH_60
                 db BOOM1_60, BOOM2_60, BOOM3_60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
+                db FORM_TICK_RATE/50, FORM_TICK_RATE%50
                 dw SHOT_50, DEATH_50
                 db BOOM1_50, BOOM2_50, BOOM3_50
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
@@ -1510,6 +1641,7 @@ PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in 
 
         include "build/sprites.inc"
         include "build/sfx.inc"
+        include "build/path.inc"
 
         assert $ <= 8000h
         ds 8000h-$,0FFh         ; a 16 KB ROM

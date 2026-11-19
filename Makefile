@@ -1,5 +1,5 @@
 ROM     := terrafnt.rom
-INCS    := build/sprites.inc build/sfx.inc
+INCS    := build/sprites.inc build/sfx.inc build/path.inc
 
 # Any run target: make FS=1 run starts openMSX fullscreen (else windowed),
 # make VIDEO=1 run records the session to videos/<target>-<date>-<time>.avi.
@@ -22,13 +22,18 @@ $(ROM): main.asm $(INCS)
 	sjasmplus --nologo --lst=build/terrafnt.lst --sym=build/terrafnt.sym main.asm
 
 build/sprites.inc: png2spr.py images/player-ship.png images/player-ship-coming.png images/reserve-ship.png \
-		images/player-ship-boom-1.png images/player-ship-boom-2.png images/player-ship-boom-3.png
+		images/player-ship-boom-1.png images/player-ship-boom-2.png images/player-ship-boom-3.png \
+		$(wildcard images/enemy-*.png) $(wildcard images/formation-enemy-*-color-*.png)
 	@mkdir -p build
 	python3 png2spr.py > $@
 
 build/sfx.inc: sfx.py
 	@mkdir -p build
 	python3 sfx.py > $@
+
+build/path.inc: path.py
+	@mkdir -p build
+	python3 path.py > $@
 
 run: $(ROM)
 	$(call OPENMSX,-machine Gradiente_Expert_GPC-1 -carta $(ROM))

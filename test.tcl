@@ -82,6 +82,7 @@ proc frame {} {
 	try check_bitmap
 	try call_frame
 	try death_frame
+	try form_frame
 }
 set maxlive 0
 
@@ -95,6 +96,7 @@ proc plan {} {
 	at 3 { check {[sat 0] == $::sym(SHIP_TOP) - 1} "ship sprite Y [sat 0] (art's last row on line 183)" }
 	at 3 { check_reserves }
 	at 3 { check_stars_start }
+	at 3 { check_form_pattern }
 
 	# 1 s of right: SHIP_SPEED px (+-1 for the Bresenham remainder)
 	set a 10
@@ -403,6 +405,7 @@ proc plan_kills {a} {
 		check {$::sat_bad == 0} "sprites = the front (ships and booms) and the incoming ship, every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
 		check {$::coming_seen > 0} "the incoming ship's sprite showed on $::coming_seen frames"
 		check_stars_end
+		check_form_end
 	}
 	# the last death sound plays out
 	at [expr {$b+5+$F*3/2}] {
@@ -552,6 +555,7 @@ proc want_sat {} {
 			lappend r [expr {$::sym(SHIP_TOP) - 1}] [expr {$sx < 0 ? $sx + 32 : $sx}] $nm [expr {$sx < 0 ? 0x8F : 0x0F}]
 		}
 	} else { lappend r 0xC0 - - - }
+	lappend r {*}[lrepeat 16 -]   ;# the formation: form_frame
 	lappend r 0xD0
 	return $r
 }
@@ -797,4 +801,99 @@ set started 0
 debug set_bp $sym(main_loop) {} {
 	if {!$::started} { set ::started 1 ; try plan }
 	frame
+}
+
+# The formation, from the spec: its pairs (dx dy from its top left, in the
+# picture images/formation-enemy-0-color-12.png, starting at column 25),
+# starting with its top on line 66 (the loop centred between lines 8 and
+# 168, the front's sprites); a loop at constant speed of four legs {dx dy}
+# a cycle (FORM_TICKS / FORM_TICK_RATE s, path.py's CYCLE_SECS), 25 px east
+# a cycle; x mod 272 (256 + a pair), a pair
+# at 256..271 is at -16..-1 on screen (early clock)
+set FPAIRS {{20 0} {55 8} {0 20} {35 28}}
+set FLEGS {{35 -29} {60 29} {-35 29} {-35 -29}}
+set FX0 25 ; set FY0 66 ; set FWRAP 272
+# Path entries stepped after k frames (Bresenham: whole entries a frame)
+proc form_ticks {k} { expr {$k * $::sym(FORM_TICK_RATE) / $::F} }
+proc form_at {k} {
+	# the formation's top left after k frames: {x (mod FWRAP) y}
+	set T $::sym(FORM_TICKS)
+	set tk [form_ticks $k]
+	set cyc [expr {$tk / $T}]
+	set s [expr {double($tk % $T) / $T}]
+	set tot 0.0
+	foreach l $::FLEGS { set tot [expr {$tot + hypot([lindex $l 0], [lindex $l 1])}] }
+	set s [expr {$s * $tot}]
+	set x 0.0 ; set y 0.0
+	foreach l $::FLEGS {
+		lassign $l dx dy
+		set len [expr {hypot($dx, $dy)}]
+		if {$s <= $len} { set x [expr {$x + $dx*$s/$len}] ; set y [expr {$y + $dy*$s/$len}] ; break }
+		set s [expr {$s - $len}] ; set x [expr {$x + $dx}] ; set y [expr {$y + $dy}]
+	}
+	list [expr {($::FX0 + 25*$cyc + int(floor($x + 0.5))) % $::FWRAP}] [expr {$::FY0 + int(floor($y + 0.5))}]
+}
+# A pair's place from the SAT: {x (mod FWRAP) line name colour}
+proc form_sat {i} {
+	set b [expr {(5 + $i)*4}]
+	set x [sat [expr {$b+1}]] ; set c [sat [expr {$b+3}]]
+	if {$c & 0x80} { set x [expr {$x - 32}] }
+	list [expr {$x < 0 ? $x + $::FWRAP : $x}] [expr {[sat $b] + 1}] [sat [expr {$b+2}]] $c
+}
+proc wdiff {a b} { expr {($a - $b + 3*$::FWRAP/2) % $::FWRAP - $::FWRAP/2} }
+
+set form_bad 0 ; set form_first "" ; set form_frames 0 ; set form_err 0
+set form_left 0 ; set form_right 0 ; set form_laps 0 ; set form_lapbad 0
+set form_ymin 999 ; set form_ymax 0 ; set form_hist [dict create]
+proc form_bad {s} { if {!$::form_bad} { set ::form_first "frame $::n: $s" } ; incr ::form_bad }
+proc form_frame {} {
+	if {$::n < 2} return
+	# VRAM holds the SAT built after n - 2 frames' moves
+	set k [expr {$::n - 2}]
+	lassign [form_at $k] wx wy
+	set p0 [form_sat 0]
+	set x0 [expr {[lindex $p0 0] - [lindex $::FPAIRS 0 0]}]
+	set y0 [expr {[lindex $p0 1] - [lindex $::FPAIRS 0 1]}]
+	set e [expr {abs([wdiff $x0 $wx])}]
+	if {abs($y0 - $wy) > $e} { set e [expr {abs($y0 - $wy)}] }
+	if {$e > $::form_err} { set ::form_err $e }
+	if {$e > 1} { form_bad "top left ($x0, $y0), want ($wx, $wy)" }
+	if {$y0 < 8 || $y0 + 44 > $::sym(SHIP_TOP)} { form_bad "lines $y0..[expr {$y0+43}]" }
+	if {$y0 < $::form_ymin} { set ::form_ymin $y0 }
+	if {$y0 > $::form_ymax} { set ::form_ymax $y0 }
+	set i 0
+	foreach p $::FPAIRS {
+		lassign [form_sat $i] x y nm c
+		lassign $p dx dy
+		if {[wdiff $x [expr {$x0 + $dx}]] != 0 || $y != $y0 + $dy} { form_bad "pair $i at ($x, $y), not at ($dx, $dy) from pair 0's place" }
+		if {$nm != $::sym(NAME_ENEMY) || ($c & 0x7F) != 12} { form_bad "pair $i name $nm colour [format %02X $c]" }
+		if {$x > 256} { incr ::form_left }   ;# -15..-1: partly in at the left
+		if {$x < 256 && $x > 240} { incr ::form_right }
+		incr i
+	}
+	# a cycle later: 25 px east, the same lines
+	set tk [form_ticks $k]
+	dict set ::form_hist $tk [list $x0 $y0]
+	set tp [expr {$tk - $::sym(FORM_TICKS)}]
+	if {[dict exists $::form_hist $tp]} {
+		lassign [dict get $::form_hist $tp] px py
+		incr ::form_laps
+		if {[wdiff $x0 $px] != 25 || $y0 != $py} { incr ::form_lapbad ; form_bad "a cycle after ($px, $py): ($x0, $y0)" }
+	}
+	incr ::form_frames
+}
+proc check_form_pattern {} {
+	set a [expr {0x3800 + $::sym(NAME_ENEMY)*8}]
+	set bad {}
+	for {set i 0} {$i < 32} {incr i} {
+		if {[debug read VRAM [expr {$a + $i}]] != [m ENEMY_PATTERN $i]} { lappend bad $i }
+		if {$i < 16 && [debug read VRAM [expr {$a + $i}]] != [debug read VRAM [expr {$a + $i + 16}]]} { lappend bad "half $i" }
+	}
+	check {[llength $bad] == 0} "the formation's pair in VRAM: enemy 0, twice side by side (wrong: $bad)"
+}
+proc check_form_end {} {
+	check {$::form_bad == 0 && $::form_frames > 10*$::F} "formation = the spec's loop ([format %.3f [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]] s, constant speed, 25 px east a cycle), pairs in the picture's layout, colour 12, every frame ($::form_frames frames, off by $::form_err px at most; [expr {$::form_bad ? "first wrong: $::form_first" : "none wrong"}])"
+	check {$::form_laps > 0 && $::form_lapbad == 0} "a cycle later the formation is 25 px east on the same lines ($::form_laps frames checked)"
+	check {$::form_ymin >= 8 && $::form_ymax + 44 <= $::sym(SHIP_TOP) && $::form_ymin <= 39 && $::form_ymax >= 93} "formation's top from line $::form_ymin to $::form_ymax: between the status area and the front's sprites"
+	check {$::form_left > 0 && $::form_right > 0} "pairs leaving the right edge ($::form_right pair-frames) come back in from the left, early clock ($::form_left)"
 }

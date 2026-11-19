@@ -43,6 +43,18 @@ line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 column 0 comes back at column 255 on a free random line. A star isn't
 drawn in a bitmap byte a bullet is in (one colour per byte: the bullet's
 white is kept); it shows again once the bullet has left the byte.
+The enemies (movement only so far): a formation of 4 pairs of
+`images/enemy-0.png` in colour 12 (each pair one 16×16 sprite, the 8×16
+enemy twice side by side; `enemy-0..9.png` are all in the ROM), laid out
+as in `images/formation-enemy-0-color-12.png` and starting at its column
+25, flies a loop at a constant 113 px/s: northeast across a 35×29 box,
+east-southeast across 60×29, southwest and northwest across 35×29, in
+1.8 s (`CYCLE_SECS` in `path.py`, the user's choice), 25 px east a cycle
+(first 70×58 etc. in 1 s, then halved, then slowed to 1.8 s). The loop is centred between line 8 and the front's
+sprite lines (168..183): the cycle starts with the formation's top on
+line 66. x is mod 272: a pair past the right edge comes
+back in from the left (EC). Its sprites come after the front's and the
+incoming ship's in the SAT.
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -63,7 +75,11 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
 - `make` runs `png2spr.py` (→ `build/sprites.inc`: ship pattern, colour,
   art bounds, nose column; the coming ship's two patterns and where the
   ship's art is in them; the three boom patterns and their colour; the
-  reserve ship's rows, colour, art width) and `sfx.py` (→ `build/sfx.inc`: the shot and death
+  reserve ship's rows, colour, art width; the enemies' pair patterns; the
+  formation's pair offsets, from its picture) and `path.py` (→
+  `build/path.inc`: the formation loop's tunables and its table, 300
+  entries per second of cycle, stepped by Bresenham on frames; only
+  `CYCLE_SECS` sets the timing) and `sfx.py` (→ `build/sfx.inc`: the shot and death
   sound tables; the death one is Skyfighter's `BOOM_SHIP`, byte for byte), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
   `build/terrafnt.sym`). `build/` is generated; don't edit it.
 - `make run` runs the Gradiente Expert 1.1 (primary target, 60 Hz),
@@ -91,7 +107,10 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   its last ship died (the test writes `reserves` in RAM for these
   call-ups); the stars: 15 on 15 lines, all moving together 1 px every
   6 / 5 frames, wraps to 255 on a free line, a star the test puts on a
-  new volley's spawn line hiding under it. Every frame it also checks the
-  SAT against the front (ships and booms) and the incoming ship, and the
+  new volley's spawn line hiding under it; the formation's pair pattern
+  in VRAM. Every frame it also checks the SAT against the front (ships
+  and booms), the incoming ship and the formation (against the test's own
+  model of the loop from the spec, the cycle from the build: pair layout,
+  colour, ±1 px, 25 px east a cycle later, its lines clear of the front, the wrap with EC), and the
   bitmap (pixels and the playfield's colours) against the bullets in
   flight and the stars not in their bytes.

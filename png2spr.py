@@ -27,13 +27,27 @@ Writes sjasmplus source to stdout:
   RESERVE_SHAPE  8 bytes, the reserve ship's rows, its art's left column on bit 7
   RESERVE_COLOR  the MSX1 colour nearest to its art's one colour
   RESERVE_ART_W  its art width in pixels
+  ENEMY_PATTERN  ENEMIES x 32 bytes: each enemy (images/enemy-N.png, 8x16,
+                 one colour; their colour is set in main.asm) as a pair, a
+                 16x16 sprite showing it twice side by side
+  ENEMIES        how many
+  FORM_PAIRS     the formation's pairs (from images/formation-enemy-E-color-C.png,
+                 where every pair is enemy E in colour C): dx, dy each, from
+                 the formation's top left, top to bottom
+  FORM_PAIRS_N   how many
+  FORM_X0        the formation's left column in the picture
+  FORM_W, FORM_H its size in px
 """
+import glob
+import re
 import sys
 from PIL import Image
 
 PNG = 'images/player-ship.png'
 COMING_PNG = 'images/player-ship-coming.png'
 RESERVE_PNG = 'images/reserve-ship.png'
+ENEMY_PNG = 'images/enemy-{}.png'
+FORMATION_PNG = glob.glob('images/formation-enemy-*-color-*.png')
 BOOM_PNGS = [f'images/player-ship-boom-{i}.png' for i in (1, 2, 3)]
 
 # TMS9918 palette (approximate RGB), colour 1..15
@@ -129,6 +143,50 @@ def main():
     print(f'RESERVE_ART_W   equ {cols[-1] - cols[0] + 1}')
     print('RESERVE_SHAPE:')
     print('        db ' + ','.join(f'{b:#04x}' for b in shape))
+
+    enemies = sorted(int(re.search(r'(\d+)\.png$', f).group(1)) for f in glob.glob(ENEMY_PNG.format('*')))
+    assert enemies == list(range(len(enemies))), f'enemy images not numbered 0..: {enemies}'
+    pairs = []
+    print(f'ENEMIES         equ {len(enemies)}')
+    print('ENEMY_PATTERN:')
+    for e in enemies:
+        on, _ = load(ENEMY_PNG.format(e), 16, 8)
+        pair = [row + row for row in on]
+        pairs.append(pair)
+        print_pattern('; ' + ENEMY_PNG.format(e) + ', twice', sprite_pattern(pair))
+
+    # The formation: every 16x16 box in the picture where enemy E's pair
+    # is, in colour C, with no other pixel of that colour in the box
+    assert len(FORMATION_PNG) == 1, f'want one formation picture, have {FORMATION_PNG}'
+    png = FORMATION_PNG[0]
+    e, c = map(int, re.search(r'formation-enemy-(\d+)-color-(\d+)\.png$', png).groups())
+    im = Image.open(png).convert('RGB')
+    w, h = im.size
+    px = {(x, y): im.getpixel((x, y)) for y in range(h) for x in range(w)}
+    rgb = {v for v in px.values() if v != (0, 0, 0) and nearest(v) == c}
+    assert len(rgb) == 1, f'{png}: want one colour nearest MSX1 colour {c}, have {rgb}'
+    rgb = rgb.pop()
+    lit = {p for p, v in px.items() if v == rgb}
+    pair = pairs[e]
+    found = []
+    for y in range(h - 15):
+        for x in range(w - 15):
+            if all(((x + i, y + j) in lit) == pair[j][i] for j in range(16) for i in range(16)):
+                found.append((x, y))
+    cover = {(x + i, y + j) for x, y in found for j in range(16) for i in range(16) if pair[j][i]}
+    assert found and cover == lit, f'{png}: its colour-{c} pixels are not all whole pairs of enemy {e}'
+    x0 = min(x for x, _ in found)
+    y0 = min(y for _, y in found)
+    for line in range(y0, y0 + 64):
+        n = sum(1 for _, y in found if y <= line < y + 16)
+        assert n <= 4, f'{png}: {n} pairs on line {line}'
+    print(f'; {png}: pairs of enemy {e} at {found}')
+    print(f'FORM_PAIRS_N    equ {len(found)}')
+    print(f'FORM_X0         equ {x0}')
+    print(f'FORM_W          equ {max(x for x, _ in found) + 16 - x0}')
+    print(f'FORM_H          equ {max(y for _, y in found) + 16 - y0}')
+    print('FORM_PAIRS:')
+    print('        db ' + ', '.join(f'{x - x0},{y - y0}' for x, y in sorted(found, key=lambda p: (p[1], p[0]))))
 
 
 if __name__ == '__main__':
