@@ -40,6 +40,21 @@
 ; tunables and table). The loop is
 ; centred between the top status area and the front's sprite lines. Past the right
 ; edge, it comes back in from the left (x mod 256 + 16, a pair's width).
+; Every other frame the whole SAT is in reverse order: where a line has more
+; than 4 sprites (enemies on the front's lines), the ones dropped on one
+; frame show on the next, so the front and the enemies flicker but show.
+; A bullet that hits an enemy (a pixel of its art on a line the bullet
+; covered this frame) is gone. An enemy in a pair: the pair breaks up, with
+; U-boat Killer's "miss" boom on PSG channel B, and each of its two enemies
+; flies on alone, at a random one of FREE_DIRS directions, at the loop's
+; speed; at the playfield's top or bottom line it turns to a random
+; direction away from it (not a mirror), and past the right or left edge it
+; comes back on the other side, as the formation. A free enemy hit
+; explodes where it is, the ship's boom images in its colour, with the
+; ship's death sound. The enemies' sprites take turns in the SAT (its order
+; rotates every frame), so a fifth sprite on a line flickers instead of
+; staying hidden (turns of two frames: one straight, one reversed; on lines
+; of up to 7 sprites no sprite is dropped two frames running).
 ; It starts with a splash screen, images/title.png (title.py): "PRESS SPACE
 ; TO BEGIN" blinks, BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
 ; joystick's button A) starts the game. Meanwhile the keyboard and the
@@ -119,6 +134,16 @@ FORM_WRAP       equ 256+16      ; x is mod this: a pair off the right edge comes
         assert FORM_WRAP-1+FORM_PATH_DX_MAX+FORM_W-16 < 2*FORM_WRAP    ; one wrap at most
         assert FORM_TICKS*2 < 65536 && ENEMIES <= 16
 
+; The enemies: pair k is enemies 2k (left) and 2k+1 (right, 8 px on). In
+; a pair both are EN_FORM; once it breaks up, each is EN_FREE, then booms
+; (EN_BOOM.., one state a boom image), then EN_GONE.
+ENEMY_N         equ FORM_PAIRS_N*2
+EN_FORM         equ 0
+EN_FREE         equ 1
+EN_BOOM         equ 2
+EN_GONE         equ EN_BOOM+BOOM_STAGES
+        assert ENEMY_N == 8 && FREE_DIRS == 64
+
 ; A call-up: the new ship starts with its art just off screen, on the side
 ; away from the front, and flies to the front's side at CALL_SPEED px/s.
 ; The longest flight (into an empty front whose last ship died at an edge)
@@ -147,6 +172,7 @@ NAME_COMING_L   equ 8           ; ... from the left
 NAME_BOOM       equ 12          ; the boom images: 12, 16, 20
 BOOM_STAGES     equ 3
 NAME_ENEMY      equ 24          ; the formation's pair
+NAME_ENEMY1     equ 28          ; one enemy alone (in the sprite's left 8 columns)
 SPR_PARK        equ 0C0h        ; a sprite's Y off screen (lines 193..208); below D0h, the end marker
 SPR_END         equ 0D0h        ; Y that ends the sprite list
 SPR_EC          equ 80h         ; colour byte: early clock, X shifted 32 px left
@@ -168,10 +194,12 @@ PPI_B           equ 0A9h        ; the keyboard matrix row selected (read, bit = 
 PPI_C           equ 0AAh        ; bits 0..3 select the row; 4..7 cassette, CAPS LED, click (kept)
 
 PSG_TONE_A      equ 0           ; R0, R1: channel A's tone period
+PSG_TONE_B      equ 2           ; R2, R3: channel B's
 PSG_TONE_C      equ 4           ; R4, R5: channel C's
 PSG_NOISE       equ 6           ; the noise period
 PSG_MIXER       equ 7           ; bits 0..5 = 1: tone / noise off; bits 6, 7 the I/O ports' direction
 PSG_VOL_A       equ 8
+PSG_VOL_B       equ 9
 PSG_VOL_C       equ 10
 PSG_IO_A        equ 14          ; the joystick port's lines (read)
 PSG_IO_B        equ 15          ; selects the joystick port (write)
@@ -219,6 +247,16 @@ Y               byte            ; the bullets' top line, 0 = not in flight
 X               block FRONT_MAX ; each front slot's bullet's column, 0 = none
         ends
 
+        struct EN
+ST              byte            ; EN_*
+LEFT            byte            ; booming: frames its image still shows
+XF              byte            ; x's fraction (1/256 px) ...
+X               word            ; ... and x: the art's left column, mod FORM_WRAP (256..: -16.. on screen)
+YF              byte            ; y's fraction ...
+Y               byte            ; ... and y: the art box's top line (the sprite's first)
+DIR             byte            ; free: 0..FREE_DIRS-1 (path.py)
+        ends
+
         struct STAR
 X               byte            ; column
 Y               byte            ; line
@@ -241,6 +279,8 @@ form_whole:     ds 1            ; path entries a frame
 form_frac:      ds 1
 shot_sound:     ds 2            ; SHOT_60 or SHOT_50
 death_sound:    ds 2            ; DEATH_60 or DEATH_50
+brk_sound:      ds 2            ; BREAK_60 or BREAK_50
+vel_table:      ds 2            ; FREE_VEL_60 or FREE_VEL_50
 boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
 blink_on:       ds 1            ; the splash's text: frames shown ...
 blink_off:      ds 1            ; ... and hidden
@@ -277,9 +317,11 @@ star_acc:       ds 1            ; Bresenham remainder
 star_step:      ds 1            ; this frame's px (0 or 1)
 rand_seed:      ds 2            ; xorshift state, never 0
 sfx_ptr:        ds 2            ; the shot sound's next frame in its table, 0 = silent
-death_ptr:      ds 2            ; the death sound's next frame in its table, 0 = silent
 shot_mix:       ds 1            ; mixer bits the shot sound switches on now
-death_mix:      ds 1            ; ... and the death sound
+death_ptr:      ds 2            ; the death sound's next frame in its table, 0 = silent
+death_mix:      ds 1            ; ... the mixer bits it switches on now
+brk_ptr:        ds 2            ; the same for the break sound
+brk_mix:        ds 1
 psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
 frames:         ds 1            ; +1 every frame interrupt
@@ -297,7 +339,14 @@ form_tick:      ds 2
 form_acc:       ds 1            ; Bresenham remainder
 form_enemy:     ds 1            ; its enemy (0..ENEMIES-1) ...
 form_color:     ds 1            ; ... and colour, picked after the splash
-sat_buf:        ds (FRONT_MAX+1+FORM_PAIRS_N)*4+1   ; the front's slots, the incoming ship, the formation, the end marker
+form_rows:      ds 2            ; its art's 16 rows (ENEMY_PATTERN's left half)
+form_art_t:     ds 1            ; its art's first row ...
+form_art_b:     ds 1            ; ... and last
+enemies:        ds ENEMY_N*EN
+enemy_rot:      ds 1            ; the enemies' first entry in the SAT (0..ENEMY_N-1), one back every other frame
+sat_flip:       ds 1            ; nonzero: this frame's SAT is in reverse order
+enemy_sat:      ds ENEMY_N*4    ; their entries (pair k: 2k and 2k+1) before the rotation
+sat_buf:        ds (FRONT_MAX+1+ENEMY_N)*4+1    ; the front's slots, the incoming ship, the enemies, the end marker
 SAT_SIZE        equ $-sat_buf
 reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1: a ship's spill)
 RAM_SIZE        equ $-ram_start
@@ -388,7 +437,20 @@ init:
         add hl,bc
         ld bc,32
         call LDIRVM
-        assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY
+        ld hl,(GRPPAT)          ; one enemy alone: its rows, then 16 blank
+        ld de,NAME_ENEMY1*8
+        add hl,de
+        ex de,hl
+        ld hl,(form_rows)
+        ld bc,16
+        call LDIRVM
+        ld hl,(GRPPAT)
+        ld de,NAME_ENEMY1*8+16
+        add hl,de
+        ld bc,16
+        xor a
+        call FILVRM
+        assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY && NAME_ENEMY1 == NAME_ENEMY+4
 
         ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
         ld de,PLAY_TOP/8*256
@@ -409,6 +471,8 @@ init:
         ld (reserves),a
         ld hl,FORM_X0
         ld (form_x),hl
+        call form_place         ; (the enemies start EN_FORM: RAM is cleared)
+        assert EN_FORM == 0
         ld a,IN_FIRE|IN_CALL    ; armed only once released (read_input moves it to input_prev)
         ld (input),a
         ld a,KEYS_KILL
@@ -438,15 +502,19 @@ main_loop:
         call upload_sat         ; last frame's sprites, in vertical blank
         call read_input
         call booms              ; before kill: a new boom's first image shows its full count
+        call enemy_booms        ; ... and before the hits
         call kill
-        call move_bullets       ; first: in vertical blank, and a volley gone frees its slot
-        call fire
+        call move_bullets       ; first: in vertical blank, and a volley gone frees its slot; hits
+        call fire               ; (hits too; both against the enemies where they show now)
         call move_stars         ; after the bullets (fire's too): a star in their bytes hides
         call call_up            ; before move_ship: the front stays put while one runs
         call move_ship
         call move_formation
+        call form_place
+        call move_enemies       ; (a pair broken this frame: its enemies start from its place)
         call sfx
-        call death              ; after sfx: its noise period wins over the shot's
+        call brk_sfx            ; after sfx: its noise period wins over the shot's ...
+        call death              ; ... and the death sound's over both
         call build_sat
         jr main_loop
 
@@ -857,6 +925,193 @@ move_formation:
         ret
         assert FORM_TICK_RATE/50 < FORM_TICKS
 
+; HL = pair C's left column (mod FORM_WRAP), A = its top line, where the
+; loop has the formation now. Keeps C, IX.
+pair_pos:
+        ld hl,(form_tick)
+        add hl,hl
+        ld de,FORM_PATH
+        add hl,de
+        ld a,(hl)               ; the loop's dx
+        inc hl
+        ld b,(hl)               ; ... and dy (signed)
+        ld hl,(form_x)
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    push hl                 ; the formation's left column (one wrap at most)
+        ld l,c
+        ld h,0
+        add hl,hl
+        ld de,FORM_PAIRS
+        add hl,de
+        ld e,(hl)               ; the pair's dx ...
+        inc hl
+        ld a,(hl)               ; ... and dy
+        add a,b
+        add a,FORM_Y0
+        ld b,a
+        pop hl
+        ld d,0
+        add hl,de
+        ld de,-FORM_WRAP
+        add hl,de
+        jr c,.w                 ; carry: it was >= FORM_WRAP
+        ld de,FORM_WRAP
+        add hl,de
+.w:     ld a,b
+        ret
+
+; The enemies still in their pairs at their pairs' places: the left one at
+; the pair's column, the right one 8 px on (mod FORM_WRAP)
+form_place:
+        ld ix,enemies
+        ld c,0
+.p:     ld a,(ix+EN.ST)
+        or a                    ; EN_FORM: the pair's both are
+        jr nz,.next
+        call pair_pos
+        ld (ix+EN.Y),a
+        ld (ix+EN+EN.Y),a
+        ld (ix+EN.X),l
+        ld (ix+EN.X+1),h
+        ld de,8-FORM_WRAP
+        add hl,de
+        jr c,.w
+        ld de,FORM_WRAP
+        add hl,de
+.w:     ld (ix+EN+EN.X),l
+        ld (ix+EN+EN.X+1),h
+.next:  ld de,2*EN
+        add ix,de
+        inc c
+        ld a,c
+        cp FORM_PAIRS_N
+        jr c,.p
+        ret
+
+; Each free enemy one frame on, at its direction's velocity (vel_table:
+; whole and 1/256 px a frame); x mod FORM_WRAP. Its art past the playfield's
+; top or bottom line: back on it, and a random direction away from it.
+move_enemies:
+        ld ix,enemies
+        ld b,ENEMY_N
+.e:     ld a,(ix+EN.ST)
+        cp EN_FREE
+        jr nz,.next
+        push bc
+        call free_step
+        pop bc
+.next:  ld de,EN
+        add ix,de
+        djnz .e
+        ret
+
+free_step:
+        ld l,(ix+EN.DIR)
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld de,(vel_table)
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)               ; vx
+        inc hl
+        ld c,(hl)
+        inc hl
+        ld b,(hl)               ; vy
+        ld a,d
+        add a,a
+        sbc a,a                 ; vx's sign: 0 or FFh
+        ld l,(ix+EN.XF)
+        ld h,(ix+EN.X)
+        add hl,de
+        adc a,(ix+EN.X+1)
+        ld (ix+EN.XF),l
+        ld l,h
+        ld h,a                  ; HL: the new column, -1.. or ..FORM_WRAP
+        bit 7,h
+        jr z,.pos
+        ld de,FORM_WRAP
+        add hl,de
+        jr .xs
+.pos:   ld de,-FORM_WRAP
+        add hl,de
+        jr c,.xs                ; carry: it was >= FORM_WRAP
+        ld de,FORM_WRAP
+        add hl,de
+.xs:    ld (ix+EN.X),l
+        ld (ix+EN.X+1),h
+        ld l,(ix+EN.YF)
+        ld h,(ix+EN.Y)
+        add hl,bc
+        ld (ix+EN.YF),l
+        ld (ix+EN.Y),h
+        ld a,(form_art_t)
+        add a,h
+        cp PLAY_TOP
+        jr c,.top
+        ld a,(form_art_b)
+        add a,h
+        cp PLAY_BOTTOM+1
+        ret c
+        ld a,(form_art_b)       ; past the bottom line
+        ld b,a
+        ld a,PLAY_BOTTOM
+        sub b
+        ld (ix+EN.Y),a
+        ld (ix+EN.YF),0
+        call rand_half
+        or FREE_DIRS/2          ; up
+        ld (ix+EN.DIR),a
+        ret
+.top:   ld a,(form_art_t)       ; past the top line
+        ld b,a
+        ld a,PLAY_TOP
+        sub b
+        ld (ix+EN.Y),a
+        ld (ix+EN.YF),0
+        call rand_half          ; down
+        ld (ix+EN.DIR),a
+        ret
+        assert FORM_Y0-FORM_RISE >= PLAY_TOP+3  ; (no pair broken past a line)
+
+; A = a random direction 1..FREE_DIRS/2-1 (down; OR FREE_DIRS/2: up)
+rand_half:
+        call rand
+        and FREE_DIRS/2-1
+        jr z,rand_half
+        ret
+
+; Each booming enemy: the next image when one's frames are over; after the
+; last, gone
+enemy_booms:
+        ld ix,enemies
+        ld b,ENEMY_N
+.e:     ld a,(ix+EN.ST)
+        cp EN_BOOM
+        jr c,.next
+        cp EN_GONE
+        jr nc,.next
+        dec (ix+EN.LEFT)
+        jr nz,.next
+        inc a
+        ld (ix+EN.ST),a
+        cp EN_GONE
+        jr nc,.next
+        ld e,a
+        ld d,0
+        ld hl,boom_frames-EN_BOOM
+        add hl,de
+        ld a,(hl)
+        ld (ix+EN.LEFT),a
+.next:  ld de,EN
+        add ix,de
+        djnz .e
+        ret
+
 ; Each volley in flight goes up BULLET_SPEED px/s; it's gone once its top
 ; leaves the playfield. All are erased first, then drawn, so one's erase
 ; never takes a pixel of another's.
@@ -879,8 +1134,18 @@ move_bullets:
         ld a,(bullet_step)
         ld b,a
         ld a,(ix+VOLLEY.Y)
-        sub b
-        cp PLAY_TOP             ; (no borrow: Y >= PLAY_TOP > a step)
+        ld c,a
+        add a,BULLET_H-1
+        ld e,a                  ; the lines covered: up to its old bottom ...
+        ld a,c
+        sub b                   ; (no borrow: Y >= PLAY_TOP > a step)
+        ld d,a                  ; ... from its new top
+        call volley_hits        ; (a bullet that hits is gone: erased already)
+        ld a,(ix+VOLLEY.Y)
+        or a
+        jr z,.enext             ; every bullet hit
+        ld a,d
+        cp PLAY_TOP
         jr nc,.keep
         xor a                   ; gone
 .keep:  ld (ix+VOLLEY.Y),a
@@ -939,12 +1204,162 @@ fire:
 .nx:    inc hl
         add a,SHIP_ART_W
         djnz .x
+        ld de,BULLET_START*256+BULLET_START+BULLET_H-1
+        call volley_hits
         ld c,1
         call volley_px
         ld hl,(shot_sound)      ; (re)start the sound
         ld (sfx_ptr),hl
         ret
         assert VOLLEY.Y == 0 && VOLLEY.X == 1 && SHIP_NOSE_DX > 0
+
+; ---- Hits ------------------------------------------------------------------
+
+; The volley at IX against the enemies where they show now: each bullet
+; whose column has a pixel of a living enemy's art on lines D..E (the lines
+; it covered this frame) is gone and the enemy hit (bullet_hit). A volley
+; left with no bullet is free. Keeps DE, IX.
+volley_hits:
+        push ix
+        pop hl
+        inc hl                  ; X
+        ld b,FRONT_MAX
+        ld c,0                  ; bullets left
+.b:     ld a,(hl)
+        or a
+        jr z,.next
+        push bc
+        push hl
+        ld c,a
+        call bullet_hit
+        pop hl
+        pop bc
+        jr nc,.keep
+        ld (hl),0
+        jr .next
+.keep:  inc c
+.next:  inc hl
+        djnz .b
+        inc c
+        dec c
+        ret nz
+        ld (ix+VOLLEY.Y),0
+        ret
+
+; Carry: column C has a pixel of a living (in a pair or free) enemy's art
+; on lines D..E; the first such enemy (0..ENEMY_N-1) is hit: in a pair, the
+; pair breaks up (each enemy free, at a random direction; the break sound);
+; free, it starts to boom (the death sound). Keeps DE, IX.
+bullet_hit:
+        ld iy,enemies
+        ld b,ENEMY_N
+.e:     ld a,(iy+EN.ST)
+        cp EN_BOOM
+        jr nc,.next             ; booming or gone
+        ld a,(iy+EN.X+1)
+        or a
+        ld a,c
+        jr z,.on
+        cp 8                    ; at -16..-1 on screen: only columns 0..7 can be in it
+        jr nc,.next
+        add a,16
+.on:    sub (iy+EN.X)           ; the column in its art
+        jr c,.next
+        cp 8
+        jr nc,.next
+        push bc
+        call art_px
+        pop bc
+        jr c,.hit
+.next:  push de
+        ld de,EN
+        add iy,de
+        pop de
+        djnz .e
+        or a
+        ret
+.hit:   push de
+        ld a,(iy+EN.ST)
+        or a
+        jr nz,.boom
+        bit 0,b                 ; B odd: enemy ENEMY_N-B, a pair's right one
+        jr z,.pair
+        ld de,-EN
+        add iy,de
+.pair:  call free_en
+        ld de,EN
+        add iy,de
+        call free_en
+        call brk_start
+        jr .done
+.boom:  ld (iy+EN.ST),EN_BOOM
+        ld a,(boom_frames)
+        ld (iy+EN.LEFT),a
+        call death_start
+.done:  pop de
+        scf
+        ret
+        assert EN_FORM == 0 && EN_FREE < EN_BOOM
+
+; The enemy at IY leaves its pair, at its place (whole pixels), flying at a
+; random direction, never level (0 and FREE_DIRS/2 left out). Keeps DE.
+free_en:
+        ld (iy+EN.ST),EN_FREE
+        ld (iy+EN.XF),0
+        ld (iy+EN.YF),0
+.r:     call rand
+        ld c,a
+        and FREE_DIRS/2-1
+        jr z,.r                 ; level: again
+        ld a,c
+        and FREE_DIRS-1
+        ld (iy+EN.DIR),a
+        ret
+
+; Carry: the art (form_rows) of the enemy at IY has a pixel in its column A
+; (0..7) on one of lines D..E. Keeps DE, IX, IY.
+art_px:
+        ld hl,PIXEL_BIT
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld c,(hl)               ; the column's bit
+        ld b,(iy+EN.Y)          ; the art box's top line
+        ld a,d
+        cp b
+        jr nc,.lo
+        ld a,b
+.lo:    ld l,a                  ; from max(D, top) ...
+        ld a,b
+        add a,15
+        cp e
+        jr c,.hi
+        ld a,e                  ; ... to min(E, top + 15)
+.hi:    sub l
+        jr c,.none
+        inc a
+        push de
+        ld e,a                  ; lines
+        ld a,l
+        sub b                   ; the first one's row
+        ld hl,(form_rows)
+        add a,l
+        ld l,a
+        jr nc,.nc2
+        inc h
+.nc2:   ld b,e
+.row:   ld a,(hl)
+        and c
+        jr nz,.hit
+        inc hl
+        djnz .row
+        pop de
+.none:  or a
+        ret
+.hit:   pop de
+        scf
+        ret
 
 ; ---- Bitmap bullets --------------------------------------------------------
 
@@ -1235,6 +1650,25 @@ pick_formation:
         cp ENEMIES
         jr nc,.e
         ld (form_enemy),a
+        ld l,a
+        ld h,0
+        add hl,hl
+        ld de,ENEMY_ROWS
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (form_art_t),de      ; (and form_art_b)
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,ENEMY_PATTERN
+        add hl,de
+        ld (form_rows),hl
 .c:     call rand
         and 15
         cp FORM_COLORS_N
@@ -1496,9 +1930,7 @@ kill_nth:
         add hl,de
         ld a,(boom_frames)
         ld (hl),a               ; boom_left
-.sound: ld hl,(death_sound)     ; (re)start the death sound (test.tcl: it starts here)
-        ld (death_ptr),hl
-        ret
+        jp death_start
 .next:  inc hl
         jr .s
 
@@ -1654,64 +2086,154 @@ build_sat:
         ld (hl),SPR_PARK
         ld de,4
         add hl,de
-.form:  ex de,hl                ; DE: the formation's entries
-        ld hl,(form_tick)
-        add hl,hl
-        ld bc,FORM_PATH
-        add hl,bc
-        ld a,(hl)               ; the loop's dx
-        inc hl
-        ld c,(hl)               ; ... and dy (signed)
-        ld hl,(form_x)
-        add a,l
-        ld l,a
-        jr nc,.fx
-        inc h                   ; HL: the formation's left column (mod FORM_WRAP)
-.fx:    ld a,c
-        add a,FORM_Y0-1         ; a sprite's first line is Y + 1
-        ld c,a
-        ld ix,FORM_PAIRS
+.form:  ld de,enemy_sat         ; the enemies: pair k's entries 2k and 2k+1
+        ld ix,enemies
         ld b,FORM_PAIRS_N
-.pair:  push hl
-        ld a,(ix+0)
-        add a,l
-        ld l,a
-        jr nc,.px
+.pair:  push bc
+        ld a,(ix+EN.ST)
+        or a
+        jr nz,.apart
+        ld b,NAME_ENEMY         ; EN_FORM: the pair, one sprite at its left one's place
+        call en_ent
+        call park_ent
+        jr .pnext
+.apart: call en_sprite
+        ld bc,EN
+        add ix,bc
+        call en_sprite
+        ld bc,-EN
+        add ix,bc
+.pnext: ld bc,2*EN
+        add ix,bc
+        pop bc
+        djnz .pair
+        ld hl,sat_flip          ; every other frame the SAT reversed ...
+        ld a,(hl)
+        xor 1
+        ld (hl),a
+        ld a,(enemy_rot)
+        jr nz,.rot              ; ... and else the enemies' turn back by one (the
+        dec a                   ; last first: one dropped on the reversed frame,
+        and ENEMY_N-1           ; early in the list, doesn't go last now)
+.rot:   ld (enemy_rot),a        ; into sat_buf from entry enemy_rot on, round
+        add a,a
+        add a,a
+        ld c,a
+        ld b,0
+        ld hl,enemy_sat
+        add hl,bc
+        ld a,ENEMY_N*4
+        sub c
+        ld c,a
+        ld de,sat_buf+(FRONT_MAX+1)*4
+        ldir
+        ld a,(enemy_rot)
+        add a,a
+        add a,a
+        jr z,.flip
+        ld c,a
+        ld hl,enemy_sat
+        ldir
+.flip:  ld a,(sat_flip)         ; reversed: of the sprites on a line past the
+        or a                    ; 4th, the ones dropped now show next frame
+        ret z
+        ld hl,sat_buf
+        ld de,sat_buf+SAT_SIZE-1-4
+        ld b,(SAT_SIZE-1)/4/2   ; entry pairs to swap
+.swap:  ld c,4
+.byte:  ld a,(de)
+        push af
+        ld a,(hl)
+        ld (de),a
+        pop af
+        ld (hl),a
+        inc hl
+        inc de
+        dec c
+        jr nz,.byte
+        push hl
+        ld hl,-8
+        add hl,de
+        ex de,hl
+        pop hl
+        djnz .swap
+        ret
+
+; The SAT entry at DE (DE += 4) for the enemy at IX alone: free, booming
+; (the ship's boom images, where the ship's art would be with its art's
+; left column on the enemy's), or gone (parked)
+en_sprite:
+        ld a,(ix+EN.ST)
+        cp EN_FREE
+        ld b,NAME_ENEMY1
+        jr z,en_ent
+        cp EN_GONE
+        jr nc,park_ent
+        add a,a
+        add a,a
+        add a,NAME_BOOM-4*EN_BOOM
+        ld b,a
+        ld l,(ix+EN.X)
+        ld h,(ix+EN.X+1)
+        call to_screen
+        push de
+        ld de,-SHIP_ART_L
+        add hl,de
+        pop de
+        jr ent_at
+; ... name B at the enemy IX's place
+en_ent: ld l,(ix+EN.X)
+        ld h,(ix+EN.X+1)
+        call to_screen
+; ... name B at column HL (signed, -32..255; < 0: the early clock), the
+; enemy IX's line, in the formation's colour
+ent_at: ld a,(ix+EN.Y)
+        dec a                   ; a sprite's first line is Y + 1
+        ld (de),a
+        inc de
+        ld a,(form_color)
+        ld c,a
+        ld a,l
+        bit 7,h
+        jr z,.x
+        add a,32
+        set 7,c                 ; SPR_EC
+.x:     ld (de),a
+        inc de
+        ld a,b
+        ld (de),a
+        inc de
+        ld a,c
+        ld (de),a
+        inc de
+        ret
+        assert SPR_EC == 80h && SHIP_ART_L+16 <= 32
+; ... parked
+park_ent:
+        ld a,SPR_PARK
+        ld (de),a
+        inc de
+        xor a
+        ld (de),a
+        inc de
+        ld (de),a
+        inc de
+        ld (de),a
+        inc de
+        ret
+
+; HL (a column mod FORM_WRAP) := the screen column, -16..255. Keeps BC, DE.
+to_screen:
         inc h
-.px:    push de
+        dec h
+        ret z
+        push de
         ld de,-FORM_WRAP
         add hl,de
-        jr c,.wr                ; carry: it was >= FORM_WRAP
-        ld de,FORM_WRAP
-        add hl,de
-.wr:    pop de
-        ld a,c
-        add a,(ix+1)
-        ld (de),a
-        inc de
-        dec h                   ; 256..FORM_WRAP-1: -16..-1 on screen
-        ld a,(form_color)
-        ld h,a
-        ld a,l
-        jr nz,.fpx
-        add a,32+256-FORM_WRAP  ; the early clock
-        set 7,h                 ; SPR_EC
-        assert SPR_EC == 80h
-.fpx:   ld (de),a
-        inc de
-        ld a,NAME_ENEMY
-        ld (de),a
-        inc de
-        ld a,h
-        ld (de),a
-        inc de
-        pop hl
-        inc ix
-        inc ix
-        djnz .pair
+        pop de
         ret
         assert COMING_L_ART_L <= 16 && COMING_R_ART_L+SHIP_ART_W <= 16
-        assert SAT_SIZE == (FRONT_MAX+1+FORM_PAIRS_N)*4+1
+        assert SAT_SIZE == (FRONT_MAX+1+ENEMY_N)*4+1
 
 ; sat_buf to the VDP; right after halt, so OTIR is safe (vertical blank)
 upload_sat:
@@ -1820,13 +2342,19 @@ init_sound:
         ld a,PSG_VOL_A
         call psg_write
         ld e,0
+        ld a,PSG_VOL_B
+        call psg_write
+        ld e,0
         ld a,PSG_VOL_C
         jp psg_write
 
-; The mixer: all off but what the shot and death sounds switch on
-; (shot_mix, death_mix; channels A and C, so no bit in both), the I/O
-; ports' direction bits kept. Keeps HL.
+; The mixer: all off but what the shot, break and death sounds switch on
+; (shot_mix, brk_mix, death_mix; channels A, B and C, so no bit in two),
+; the I/O ports' direction bits kept. Keeps BC, HL.
 mixer:  ld a,(shot_mix)
+        ld e,a
+        ld a,(brk_mix)
+        or e
         ld e,a
         ld a,(death_mix)
         or e
@@ -1882,13 +2410,34 @@ sfx:
         ld a,PSG_VOL_A
         call psg_write
         jr mixer
-        assert ((SHOT_NOISE_BIT|MIX_TONE_A) & DEATH_MIX) == 0
+        assert ((SHOT_NOISE_BIT|MIX_TONE_A) & (DEATH_MIX|BREAK_MIX)) == 0 && (DEATH_MIX & BREAK_MIX) == 0
 
-; One frame of the death sound on channel C: volume, noise period, tone
-; period (sfx.py's table), tone and noise on; its end marker silences the
-; channel and switches them off
-death:
-        ld hl,(death_ptr)
+; (Re)start the death sound (test.tcl: it starts here)
+death_start:
+        ld hl,(death_sound)
+        ld (death_ptr),hl
+        ret
+
+; (Re)start the break sound (test.tcl: it starts here)
+brk_start:
+        ld hl,(brk_sound)
+        ld (brk_ptr),hl
+        ret
+
+; One frame of the death sound on channel C, and of the break sound on
+; channel B: volume, noise period, tone period (sfx.py's tables), tone and
+; noise on; the end marker silences the channel and switches them off
+death:  ld ix,death_ptr
+        ld bc,DEATH_MIX*256+PSG_TONE_C
+        jr boom_sfx
+brk_sfx:
+        ld ix,brk_ptr
+        ld bc,BREAK_MIX*256+PSG_TONE_B
+; ... the table pointer at IX, its mixer bits at IX+2 (B when on), the
+; channel's tone register C
+boom_sfx:
+        ld l,(ix+0)
+        ld h,(ix+1)
         ld a,h
         or l
         ret z
@@ -1902,36 +2451,42 @@ death:
         call psg_write
         inc hl
         ld e,(hl)
-        ld a,PSG_TONE_C
+        ld a,c
         call psg_write
         inc hl
         ld e,(hl)
-        ld a,PSG_TONE_C+1
+        ld a,c
+        inc a
         call psg_write
         inc hl
-        ld a,DEATH_MIX
-.put:   ld (death_ptr),hl
-        ld (death_mix),a
+        ld a,b
+.put:   ld (ix+0),l
+        ld (ix+1),h
+        ld (ix+2),a
         ld e,d
-        ld a,PSG_VOL_C
+        ld a,c
+        rrca                    ; the channel
+        add a,PSG_VOL_A
         call psg_write
         jp mixer
 .end:   ld hl,0
         xor a
         jr .put
+        assert death_mix == death_ptr+2 && brk_mix == brk_ptr+2
+        assert PSG_TONE_B == 2 && PSG_VOL_B == PSG_VOL_A+1 && PSG_VOL_C == PSG_VOL_A+2
 
 ; ---- Data ------------------------------------------------------------------
 
 RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPEED%60
                 db CALL_SPEED/60, CALL_SPEED%60, STAR_SPEED/60, STAR_SPEED%60
                 db FORM_TICK_RATE/60, FORM_TICK_RATE%60
-                dw SHOT_60, DEATH_60
+                dw SHOT_60, DEATH_60, BREAK_60, FREE_VEL_60
                 db BOOM1_60, BOOM2_60, BOOM3_60
                 db BLINK_ON_MS*60/1000, BLINK_OFF_MS*60/1000
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
-                dw SHOT_50, DEATH_50
+                dw SHOT_50, DEATH_50, BREAK_50, FREE_VEL_50
                 db BOOM1_50, BOOM2_50, BOOM3_50
                 db BLINK_ON_MS*50/1000, BLINK_OFF_MS*50/1000
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
@@ -1940,7 +2495,7 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
 
 FORM_COLORS:    db FORM_COLOR_LIST
 FORM_COLORS_N   equ $-FORM_COLORS
-        assert FORM_COLORS_N <= 16
+        assert FORM_COLORS_N <= 16 && form_art_b == form_art_t+1
 
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 

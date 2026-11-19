@@ -22,6 +22,13 @@ exponentially (down to the PSG's lowest, 27.3 Hz, where it stays), so the
 pitch drops. Per frame: volume (1..15), noise period, tone period (2
 bytes); a 0 volume ends the table. Also DEATH_MIX: the mixer bits it
 switches on (channel C's tone and noise), and DEATH_FRAMES_60/50.
+
+BREAK_60, BREAK_50: an enemy pair breaking up, U-boat Killer's "miss"
+(its BOOM_WATER, a depth charge exploding on the seabed with no sub
+near; Skyfighter's BOOM_ROCK, the same tables): the death sound's
+generator with a lower top volume, BREAK_SECS long, on channel B. The
+same table layout; BREAK_MIX its mixer bits (channel B's tone and noise),
+BREAK_FRAMES_60/50.
 Writes sjasmplus source to stdout.
 """
 import sys
@@ -43,6 +50,12 @@ DEATH_N0, DEATH_N1 = 18, 31  # noise period, start and end
 DEATH_F0, DEATH_F1 = 55.0, 22.5  # tone Hz, start and end
 DEATH_MIX = 0x24            # mixer bits 2 and 5: channel C's tone and noise
 
+BREAK_SECS = 0.8
+BREAK_TOP = 13
+BREAK_N0, BREAK_N1 = 20, 31
+BREAK_F0, BREAK_F1 = 50.0, 25.0
+BREAK_MIX = 0x12            # mixer bits 1 and 4: channel B's tone and noise
+
 
 def shot(fps):
     n = int(SHOT_SECS * fps + 0.5)
@@ -59,16 +72,16 @@ def shot(fps):
     return rows
 
 
-def death(fps):
-    n = round(DEATH_SECS * fps)
+def boom(fps, secs, top, n0, n1, f0, f1):
+    n = round(secs * fps)
     hold = round(DEATH_HOLD * fps)
     rows = []
     for i in range(n):
         u = i / (n - 1)
-        noise = round(DEATH_N0 + (DEATH_N1 - DEATH_N0) * u)
-        f = DEATH_F0 * (DEATH_F1 / DEATH_F0) ** u
+        noise = round(n0 + (n1 - n0) * u)
+        f = f0 * (f1 / f0) ** u
         period = min(4095, round(PSG_CLOCK / 16 / f))  # 27.3 Hz at the lowest
-        vol = DEATH_TOP if i < hold else round(DEATH_TOP * (n - i) / (n - hold))
+        vol = top if i < hold else round(top * (n - i) / (n - hold))
         vol = max(1, min(15, vol))
         assert 1 <= noise <= 31 and period < 4096
         rows.append((vol, noise, period, f))
@@ -86,14 +99,17 @@ def main():
         for vol, period, noise, f in rows:
             print(f'        db {vol},{period & 255},{period >> 8},{noise:#04x}   ; {f:4.0f} Hz')
         print('        db 0')
-    print(f'DEATH_MIX       equ {DEATH_MIX:#04x}')
-    for fps in (60, 50):
-        rows = death(fps)
-        print(f'DEATH_FRAMES_{fps} equ {len(rows)}')
-        print(f'DEATH_{fps}:')
-        for vol, noise, period, f in rows:
-            print(f'        db {vol},{noise},{period & 255},{period >> 8}   ; {f:5.1f} Hz')
-        print('        db 0')
+    booms = [('DEATH', DEATH_MIX, (DEATH_SECS, DEATH_TOP, DEATH_N0, DEATH_N1, DEATH_F0, DEATH_F1)),
+             ('BREAK', BREAK_MIX, (BREAK_SECS, BREAK_TOP, BREAK_N0, BREAK_N1, BREAK_F0, BREAK_F1))]
+    for name, mix, args in booms:
+        print(f'{name}_MIX       equ {mix:#04x}')
+        for fps in (60, 50):
+            rows = boom(fps, *args)
+            print(f'{name}_FRAMES_{fps} equ {len(rows)}')
+            print(f'{name}_{fps}:')
+            for vol, noise, period, f in rows:
+                print(f'        db {vol},{noise},{period & 255},{period >> 8}   ; {f:5.1f} Hz')
+            print('        db 0')
 
 
 if __name__ == '__main__':

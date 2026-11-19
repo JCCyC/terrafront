@@ -19,6 +19,13 @@ Writes sjasmplus source to stdout:
   FORM_PATH_DX_MAX  the largest dx in FORM_PATH
   FORM_PATH       FORM_TICKS x (dx, dy): the formation's offset from where
                   the cycle started, at tick i (dx 0.., dy signed; up is -)
+  FREE_DIRS       a free enemy's directions (out of a broken pair): direction
+                  d is d * 360 / FREE_DIRS degrees clockwise from east (y
+                  grows down), so 1..FREE_DIRS/2-1 go down, the rest above
+                  FREE_DIRS/2 up
+  FREE_VEL_60, FREE_VEL_50  per direction, vx and vy (signed words) in
+                  1/256 px a frame: the loop's speed (it's the same on every
+                  leg, the square ones too), at that frame rate
 """
 import math
 import sys
@@ -27,6 +34,8 @@ SQUARE = 35         # px: the square boxes' width
 RECT = 60           # px: the rectangle's width
 RISE = 29           # px: every box's height
 CYCLE_SECS = 1.8    # the only timing tunable
+
+FREE_DIRS = 64      # a free enemy's directions
 
 TICK_RATE = 300     # path entries a second: the table's resolution, at least
                     # one new place a frame at 60 Hz
@@ -73,6 +82,21 @@ def main():
     print('FORM_PATH:')
     for i in range(0, TICKS, 10):
         print('        db ' + ', '.join(f'{dx},{dy & 255:#04x}' for dx, dy in path[i:i + 10]))
+
+    # A free enemy flies at the loop's speed, the square legs' as every leg's:
+    # each leg's length over its time (its share of the cycle)
+    sq = math.hypot(SQUARE, RISE)
+    speed = sq / (TICKS / rate * sq / total)
+    print(f'FREE_DIRS       equ {FREE_DIRS}')
+    print(f'; free enemies: {speed:.2f} px/s')
+    for fps in (60, 50):
+        print(f'FREE_VEL_{fps}:')
+        for d in range(FREE_DIRS):
+            a = 2 * math.pi * d / FREE_DIRS
+            vx = rnd(speed * math.cos(a) / fps * 256)
+            vy = rnd(speed * math.sin(a) / fps * 256)
+            assert (vy > 0) == (0 < d < FREE_DIRS // 2) and (vy < 0) == (d > FREE_DIRS // 2)
+            print(f'        dw {vx}, {vy}')
 
 
 if __name__ == '__main__':

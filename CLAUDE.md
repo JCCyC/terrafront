@@ -66,7 +66,29 @@ east-southeast across 60×29, southwest and northwest across 35×29, in
 sprite lines (168..183): the cycle starts with the formation's top on
 line 66. x is mod 272: a pair past the right edge comes
 back in from the left (EC). Its sprites come after the front's and the
-incoming ship's in the SAT.
+incoming ship's in the SAT. Every other frame the whole SAT is reversed
+(`sat_flip`), and with each straight frame the enemies' order turns one
+back (`enemy_rot`, the last first): where a line has more than 4 sprites
+(e.g. enemies on a 4-ship front's lines) they flicker instead of one
+staying hidden; on lines of up to 7 sprites none is dropped two frames
+running.
+Hits: a bullet hits an enemy when its column has a pixel of the enemy's
+art on a line the bullet covered that frame (its new top to its old
+bottom), checked against where the enemies show (before they move); the
+bullet is gone (`volley_hits`, `bullet_hit`). An enemy in a pair: the pair
+breaks up, with U-boat Killer's "miss" (its `BOOM_WATER`, a depth charge on
+the seabed; Skyfighter's `BOOM_ROCK`, byte for byte; 0.8 s) on PSG channel
+B, and each of its two enemies (`enemies`, 8 records, pair k = enemies 2k
+and 2k+1) flies alone from where it was, at a random one of 64 directions (never
+level: 0 and 32 are left out),
+at the loop's speed, the square legs' (112.8 px/s; `FREE_VEL_60/50` in
+`path.py`, 1/256 px a frame). When its art passes line 8 or 183 it is put
+back on that line and turns to a random direction away from it (any of
+the 31 strictly down or up ones, not a mirror). x is mod 272 as the
+formation's. A free enemy hit: it shows the ship's three boom images in its
+own colour, where it was (the boom's art box from the enemy's left column),
+for the ship's boom frame counts, and the ship's death sound (re)starts;
+then it's gone. Noise period (R6) priority: death > break > shot.
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -87,12 +109,13 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
 - `make` runs `png2spr.py` (→ `build/sprites.inc`: ship pattern, colour,
   art bounds, nose column; the coming ship's two patterns and where the
   ship's art is in them; the three boom patterns and their colour; the
-  reserve ship's rows, colour, art width; the enemies' pair patterns; the
-  formation's pair offsets, from its picture) and `path.py` (→
+  reserve ship's rows, colour, art width; the enemies' pair patterns and
+  art rows; the formation's pair offsets, from its picture) and `path.py` (→
   `build/path.inc`: the formation loop's tunables and its table, 300
   entries per second of cycle, stepped by Bresenham on frames; only
-  `CYCLE_SECS` sets the timing) and `sfx.py` (→ `build/sfx.inc`: the shot and death
-  sound tables; the death one is Skyfighter's `BOOM_SHIP`, byte for byte) and
+  `CYCLE_SECS` sets the timing; the free enemies' velocity tables) and `sfx.py` (→ `build/sfx.inc`: the shot, death and break
+  sound tables; the death one is Skyfighter's `BOOM_SHIP`, the break one its
+  `BOOM_ROCK`, byte for byte) and
   `title.py` (→ `build/title.inc`: the splash's SCREEN 2 pattern and colour
   tables from `images/title.png`, 24 rows each RLE-packed alone, so the
   blinking row unpacks by itself; `title.py --raw` prints them unpacked,
@@ -131,9 +154,23 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   6 / 5 frames, wraps to 255 on a free line, a star the test puts on a
   new volley's spawn line hiding under it; the formation's pick (enemy and colour
   from `entropy` through `rand`, worked out by the test) and its pair
-  pattern in VRAM. Every frame it also checks the SAT against the front (ships
-  and booms), the incoming ship and the formation (against the test's own
+  pattern and the lone enemy's in VRAM. Hits are off for all of that (a
+  breakpoint makes `volley_hits` return). Then the enemies' part, hits on,
+  with four ships (three call-ups first): the test steers the front's first ship under the nearest pair and fires until
+  all 4 pairs broke up, holds fire 6 s (screenshot
+  `build/shot-<machine>-enemies.png`), then hunts the free enemies until
+  all 8 are gone; it checks the velocity table (64 directions, the square
+  legs' speed), every enemy's boom (images and frame counts), the break
+  sound's starts and length, a death-sound start per enemy boom, bounces at
+  both lines (not mirrors), no level break-up direction, the SAT's flip and
+  turn, no sprite the VDP drops (worked out from the SAT shown) dropped two
+  frames running on a line of 5..7 sprites, and no frame dropped. Every frame it also
+  checks the SAT against the front (ships and booms), the incoming ship
+  and the enemies (from RAM, rotated; the pairs against the test's own
   model of the loop from the spec, the cycle from the build: pair layout,
-  the picked colour, ±1 px, 25 px east a cycle later, its lines clear of the front, the wrap with EC), and the
+  the picked colour, ±1 px, 25 px east a cycle later, its lines clear of the front, the wrap with EC), the
   bitmap (pixels and the playfield's colours) against the bullets in
-  flight and the stars not in their bytes.
+  flight and the stars not in their bytes, channel B against the break
+  table, and the enemies and volleys against its own model of the frame
+  (booms on, every bullet's hit test against the art in game order, the
+  free enemies' flight exact to 1/256 px, wraps and bounces).

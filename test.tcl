@@ -2,7 +2,7 @@
 # -call before .png: a call-up in flight).
 # Driven by a breakpoint at main_loop (once a frame, before its halt: the
 # frame's work is done, VRAM holds the previous frame's SAT).
-after time 240 { fail "timeout" ; finish }
+after time 400 { fail "timeout" ; finish }
 set save_settings_on_exit off
 set throttle off
 
@@ -27,6 +27,11 @@ close $f
 proc m {name {ofs 0}} { debug read memory [expr {$::sym($name) + $ofs}] }
 proc rem {} { expr {[m call_rem] + 256*[m call_rem 1]} }
 proc sat {i} { debug read VRAM [expr {0x1B00 + $i}] }
+# Byte b of SAT entry e as built (0..12: the front's slots, the incoming
+# ship, the enemies), where the SAT shown has it (every other frame the
+# list is reversed: ::flipp, the SAT shown's)
+proc sate {e b} { sat [expr {($::flipp ? 12 - $e : $e)*4 + $b}] }
+set flipp 0
 proc vol {} { debug read "PSG regs" 8 }
 proc psg {r} { debug read "PSG regs" $r }
 
@@ -59,31 +64,49 @@ proc at {frame body} { lappend ::steps [list $frame $body] }
 # against the table every frame
 set dnew 0 ; set didx -1 ; set druns {} ; set dstarts 0
 set dbad 0 ; set dclash 0 ; set dframes 0 ; set dfirst ""
-debug set_bp $sym(kill_nth.sound) {} { set ::dnew 1 }
+debug set_bp $sym(death_start) {} { set ::dnew 1 }
+# The break sound: brk_start (re)starts it; brk_frame checks channel B
+set bnew 0 ; set bidx -1 ; set bruns {} ; set bstarts 0
+set bbad 0 ; set bframes 0 ; set bfirst ""
+debug set_bp $sym(brk_start) {} { set ::bnew 1 }
+# Hits are off (volley_hits returns at once) until the enemies' part
+set nohits 1 ; set nohits_was 1
+debug set_bp $sym(volley_hits) {} {
+	if {$::nohits} { reg pc [peek16 [reg sp]] ; reg sp [expr {[reg sp] + 2}] }
+}
 
 set spawns 0
-debug set_bp $sym(fire.free) {} { incr ::spawns }
+set fresh -1        ;# the volley slot fire filled this frame
+debug set_bp $sym(fire.free) {} { incr ::spawns ; set ::fresh [expr {([reg HL] - $::sym(volleys)) / $::sym(VOLLEY)}] }
 
 proc frame {} {
 	incr ::n
-	set rest {}
-	foreach s $::steps {
-		if {[lindex $s 0] == $::n} { try [lindex $s 1] } else { lappend rest $s }
-	}
-	set ::steps $rest
+	set due {} ; set rest {}
+	foreach s $::steps { if {[lindex $s 0] == $::n} { lappend due $s } else { lappend rest $s } }
+	set ::steps $rest   ;# (before running them: a step may plan more)
+	foreach s $due { try [lindex $s 1] }
 	# every frame: never more than MAX_VOLLEYS in flight, the bullet's sound in step
 	set live 0
 	for {set i 0} {$i < $::sym(MAX_VOLLEYS)} {incr i} { if {[m volleys [expr {$i*$::VOL}]]} { incr live } }
 	if {$live > $::maxlive} { set ::maxlive $live }
 	if {[info exists ::track]} { try track_frame }
-	if {[info exists ::bw]} { lappend ::bw [list [sat [expr {$::bwslot*4}]] [sat [expr {$::bwslot*4+2}]]] }
+	if {[info exists ::bw]} { lappend ::bw [list [sate $::bwslot 0] [sate $::bwslot 2]] }
+	try vis_frame
 	try check_sat
 	try star_frame
 	try check_bitmap
 	try call_frame
 	try death_frame
+	try brk_frame
 	try form_frame
+	try enemy_frame
+	if {$::ephase} { try aim_frame }
+	set ::nohits_was $::nohits
+	set fr [m frames]
+	if {[info exists ::last_frames] && (($fr - $::last_frames) & 255) != 1} { incr ::dropped ; if {$::ephase} { incr ::edropped } }
+	set ::last_frames $fr
 }
+set dropped 0 ; set edropped 0 ; set ephase 0 ; set flip_bad 0
 set maxlive 0
 
 proc plan {} {
@@ -93,7 +116,7 @@ proc plan {} {
 	say "fps $F"
 	set x0 [m ship_x]
 	check {$x0 == $::sym(SHIP_X_MAX)/2} "ship starts in the middle (x $x0)"
-	at 3 { check {[sat 0] == $::sym(SHIP_TOP) - 1} "ship sprite Y [sat 0] (art's last row on line 183)" }
+	at 3 { check {[sate 0 0] == $::sym(SHIP_TOP) - 1} "ship sprite Y [sate 0 0] (art's last row on line 183)" }
 	at 3 { check_reserves }
 	at 3 { check_stars_start }
 	at 3 { check_form_pick ; check_form_pattern }
@@ -119,7 +142,7 @@ proc plan {} {
 		check {[m ship_x] == 0} "left edge: ship_x [m ship_x]"
 	}
 	at [expr {$a+3*$F+2}] {
-		check {[sat 1] == 29 && [sat 3] == 0x8F} "left edge sprite: X [sat 1] colour [format %02X [sat 3]] (EC, art at column 0)"
+		check {[sate 0 1] == 29 && [sate 0 3] == 0x8F} "left edge sprite: X [sate 0 1] colour [format %02X [sate 0 3]] (EC, art at column 0)"
 	}
 	# 3 s of right: clamped at SHIP_X_MAX, art's right column on 255
 	set a [expr {$a+3*$F+5}]
@@ -129,7 +152,7 @@ proc plan {} {
 		check {[m ship_x] == $::sym(SHIP_X_MAX)} "right edge: ship_x [m ship_x]"
 	}
 	at [expr {$a+3*$F+2}] {
-		check {[sat 1] == 244 && [sat 3] == 0x0F} "right edge sprite: X [sat 1] colour [format %02X [sat 3]]"
+		check {[sate 0 1] == 244 && [sate 0 3] == 0x0F} "right edge sprite: X [sate 0 1] colour [format %02X [sate 0 3]]"
 	}
 	# back to the middle-ish, then one shot: spawn point, speed, removal, sound
 	set a [expr {$a+3*$F+5}]
@@ -212,7 +235,7 @@ proc plan_calls {a} {
 		check {[m ship_x] == 256 - 2*$::W} "two-ship front's right edge: ship_x [m ship_x]"
 	}
 	at [expr {$a+2}] {
-		check {[sat 5] == 256 - $::W - 3 && [sat 7] == 0x0F} "second ship's sprite at the right edge: X [sat 5] colour [format %02X [sat 7]]"
+		check {[sate 1 1] == 256 - $::W - 3 && [sate 1 3] == 0x0F} "second ship's sprite at the right edge: X [sate 1 1] colour [format %02X [sate 1 3]]"
 		set ::throttle on   ;# for the picture of the flight
 	}
 	set a [expr {$a+3}]
@@ -402,11 +425,6 @@ proc plan_kills {a} {
 	at $b {
 		check_call 0 256 0 1
 		check {[m front_mask] == 1 && [m ship_x] == 0} "empty front refilled where its last ship died (ship_x [m ship_x])"
-		check {$::bitmap_bad == 0 && $::bitmap_lit > 0} "bitmap = the bullets in flight and the stars not in their bytes, colours too, every frame ($::bitmap_frames frames, $::bitmap_lit pixels seen; [expr {$::bitmap_bad ? "first wrong: $::bitmap_first" : "none wrong"}])"
-		check {$::sat_bad == 0} "sprites = the front (ships and booms) and the incoming ship, every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
-		check {$::coming_seen > 0} "the incoming ship's sprite showed on $::coming_seen frames"
-		check_stars_end
-		check_form_end
 	}
 	# the last death sound plays out
 	at [expr {$b+5+$F*3/2}] {
@@ -414,7 +432,18 @@ proc plan_kills {a} {
 		check {$::dstarts >= 8 && $::didx == -1 && [lindex $::druns end] == $want} "death sound: $::dstarts starts, the last plays out in [lindex $::druns end] frames (want $want, 1.4 s; runs $::druns)"
 		check {$::dbad == 0 && $::dframes > 0} "death sound on channel C = DEATH table, every frame ($::dframes frames playing, $::dclash with the shot's noise on too; [expr {$::dbad ? "first wrong: $::dfirst" : "none wrong"}])"
 	}
-	at [expr {$b+10+$F*3/2}] { screenshot_and_finish }
+	at [expr {$b+8+$F*3/2}] { plan_enemies }
+}
+
+# Every frame-by-frame summary, at the end
+proc final_checks {} {
+	check {$::bitmap_bad == 0 && $::bitmap_lit > 0} "bitmap = the bullets in flight and the stars not in their bytes, colours too, every frame ($::bitmap_frames frames, $::bitmap_lit pixels seen; [expr {$::bitmap_bad ? "first wrong: $::bitmap_first" : "none wrong"}])"
+	check {$::sat_bad == 0} "sprites = the front (ships and booms), the incoming ship and the enemies (pairs, free, booming, gone; rotated), every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
+	check {$::coming_seen > 0} "the incoming ship's sprite showed on $::coming_seen frames"
+	check_stars_end
+	check_form_end
+	check {$::dbad == 0 && $::dframes > 0} "death sound on channel C = DEATH table, every frame, enemies' booms too ($::dframes frames playing; [expr {$::dbad ? "first wrong: $::dfirst" : "none wrong"}])"
+	say "frames dropped (the main loop late for a frame): $::dropped in all"
 }
 
 # The death sound, after a frame's work: started this frame -> the table's
@@ -556,7 +585,38 @@ proc want_sat {} {
 			lappend r [expr {$::sym(SHIP_TOP) - 1}] [expr {$sx < 0 ? $sx + 32 : $sx}] $nm [expr {$sx < 0 ? 0x8F : 0x0F}]
 		}
 	} else { lappend r 0xC0 - - - }
-	lappend r {*}[lrepeat 16 -]   ;# the formation: form_frame
+	# the enemies, from RAM, rotated (form_frame checks the pairs against the loop)
+	set ents {}
+	for {set p 0} {$p < 4} {incr p} {
+		lassign [en_state [expr {2*$p}]] st
+		if {$st == 0} {
+			lassign [en_state [expr {2*$p}]] st l xf x yf y
+			lappend ents [en_ent $x $y 0 $::sym(NAME_ENEMY)] [list 0xC0 0 0 0]
+			continue
+		}
+		foreach i [list [expr {2*$p}] [expr {2*$p+1}]] {
+			lassign [en_state $i] st l xf x yf y
+			if {$st == 1} {
+				lappend ents [en_ent $x $y 0 $::sym(NAME_ENEMY1)]
+			} elseif {$st < 5} {
+				lappend ents [en_ent $x $y $::sym(SHIP_ART_L) [expr {$::sym(NAME_BOOM) + 4*($st - 2)}]]
+			} else { lappend ents [list 0xC0 0 0 0] }
+		}
+	}
+	set rot [m enemy_rot]
+	for {set j 0} {$j < 8} {incr j} { lappend r {*}[lindex $ents [expr {($rot + $j) % 8}]] }
+	# every other frame reversed, entry by entry; the enemies' turn moves on
+	# with the straight ones
+	if {[m sat_flip]} {
+		set rr {}
+		for {set e 12} {$e >= 0} {incr e -1} { lappend rr {*}[lrange $r [expr {4*$e}] [expr {4*$e+3}]] }
+		set r $rr
+	}
+	if {[info exists ::lastflip]} {
+		if {[m sat_flip] == $::lastflip} { incr ::flip_bad }
+		if {[m sat_flip] && $rot != $::lastrot || ![m sat_flip] && $rot != ($::lastrot + 7) % 8} { incr ::flip_bad }
+	}
+	set ::lastflip [m sat_flip] ; set ::lastrot $rot
 	lappend r 0xD0
 	return $r
 }
@@ -573,7 +633,7 @@ proc check_sat {} {
 			}
 			incr i
 		}
-		if {[sat 16] != 0xC0 && [sat 18] > 0} { incr ::coming_seen }
+		if {[sate 4 0] != 0xC0 && [sate 4 2] > 0} { incr ::coming_seen }
 	}
 	set ::prev_sat [want_sat]
 }
@@ -953,9 +1013,12 @@ proc form_at {k} {
 	}
 	list [expr {($::FX0 + 25*$cyc + int(floor($x + 0.5))) % $::FWRAP}] [expr {$::FY0 + int(floor($y + 0.5))}]
 }
-# A pair's place from the SAT: {x (mod FWRAP) line name colour}
-proc form_sat {i} {
-	set b [expr {(5 + $i)*4}]
+# Pair p's place from the SAT (built with the enemies' rotation last
+# frame): {x (mod FWRAP) line name colour}
+proc form_sat {p} {
+	set b [expr {(5 + ((2*$p - $::rotp) & 7))}]
+	if {$::flipp} { set b [expr {12 - $b}] }
+	set b [expr {$b*4}]
 	set x [sat [expr {$b+1}]] ; set c [sat [expr {$b+3}]]
 	if {$c & 0x80} { set x [expr {$x - 32}] }
 	list [expr {$x < 0 ? $x + $::FWRAP : $x}] [expr {[sat $b] + 1}] [sat [expr {$b+2}]] $c
@@ -971,9 +1034,14 @@ proc form_frame {} {
 	# VRAM holds the SAT built after n - 2 frames' moves
 	set k [expr {$::n - 2}]
 	lassign [form_at $k] wx wy
-	set p0 [form_sat 0]
-	set x0 [expr {[lindex $p0 0] - [lindex $::FPAIRS 0 0]}]
-	set y0 [expr {[lindex $p0 1] - [lindex $::FPAIRS 0 1]}]
+	# the pairs still whole when the SAT shown was built
+	set intact {}
+	for {set p 0} {$p < 4} {incr p} { if {[lindex $::eprev [expr {2*$p}] 0] == 0} { lappend intact $p } }
+	if {![llength $intact]} return
+	set q [lindex $intact 0]
+	set p0 [form_sat $q]
+	set x0 [expr {([lindex $p0 0] - [lindex $::FPAIRS $q 0]) % $::FWRAP}]
+	set y0 [expr {[lindex $p0 1] - [lindex $::FPAIRS $q 1]}]
 	set e [expr {abs([wdiff $x0 $wx])}]
 	if {abs($y0 - $wy) > $e} { set e [expr {abs($y0 - $wy)}] }
 	if {$e > $::form_err} { set ::form_err $e }
@@ -981,18 +1049,17 @@ proc form_frame {} {
 	if {$y0 < 8 || $y0 + 44 > $::sym(SHIP_TOP)} { form_bad "lines $y0..[expr {$y0+43}]" }
 	if {$y0 < $::form_ymin} { set ::form_ymin $y0 }
 	if {$y0 > $::form_ymax} { set ::form_ymax $y0 }
-	set i 0
-	foreach p $::FPAIRS {
+	foreach i $intact {
 		lassign [form_sat $i] x y nm c
-		lassign $p dx dy
+		lassign [lindex $::FPAIRS $i] dx dy
 		if {[wdiff $x [expr {$x0 + $dx}]] != 0 || $y != $y0 + $dy} { form_bad "pair $i at ($x, $y), not at ($dx, $dy) from pair 0's place" }
 		if {$nm != $::sym(NAME_ENEMY) || ($c & 0x7F) != [m form_color]} { form_bad "pair $i name $nm colour [format %02X $c]" }
 		if {$x > 256} { incr ::form_left }   ;# -15..-1: partly in at the left
 		if {$x < 256 && $x > 240} { incr ::form_right }
-		incr i
 	}
 	# a cycle later: 25 px east, the same lines
 	set tk [form_ticks $k]
+	if {[llength $intact] < 4} { incr ::form_frames ; return }   ;# (the laps: with all four)
 	dict set ::form_hist $tk [list $x0 $y0]
 	set tp [expr {$tk - $::sym(FORM_TICKS)}]
 	if {[dict exists $::form_hist $tp]} {
@@ -1031,10 +1098,388 @@ proc check_form_pattern {} {
 		if {$i < 16 && [debug read VRAM [expr {$a + $i}]] != [debug read VRAM [expr {$a + $i + 16}]]} { lappend bad "half $i" }
 	}
 	check {[llength $bad] == 0} "the formation's pair in VRAM: enemy [m form_enemy], twice side by side (wrong: $bad)"
+	set a [expr {0x3800 + $::sym(NAME_ENEMY1)*8}]
+	set bad {}
+	for {set i 0} {$i < 32} {incr i} {
+		set w [expr {$i < 16 ? [m ENEMY_PATTERN [expr {$e*32 + $i}]] : 0}]
+		if {[debug read VRAM [expr {$a + $i}]] != $w} { lappend bad $i }
+	}
+	check {[llength $bad] == 0} "one enemy alone in VRAM: enemy $e in the left 8 columns (wrong: $bad)"
+	set ::erows {}
+	for {set i 0} {$i < 16} {incr i} { lappend ::erows [m ENEMY_PATTERN [expr {$e*32 + $i}]] }
+	set ::art_t [m ENEMY_ROWS [expr {2*$e}]] ; set ::art_b [m ENEMY_ROWS [expr {2*$e+1}]]
+	check {[m form_art_t] == $::art_t && [m form_art_b] == $::art_b} "enemy $e's art: rows $::art_t..$::art_b"
 }
 proc check_form_end {} {
 	check {$::form_bad == 0 && $::form_frames > 10*$::F} "formation = the spec's loop ([format %.3f [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]] s, constant speed, 25 px east a cycle), pairs in the picture's layout, colour [m form_color], every frame ($::form_frames frames, off by $::form_err px at most; [expr {$::form_bad ? "first wrong: $::form_first" : "none wrong"}])"
 	check {$::form_laps > 0 && $::form_lapbad == 0} "a cycle later the formation is 25 px east on the same lines ($::form_laps frames checked)"
 	check {$::form_ymin >= 8 && $::form_ymax + 44 <= $::sym(SHIP_TOP) && $::form_ymin <= 39 && $::form_ymax >= 93} "formation's top from line $::form_ymin to $::form_ymax: between the status area and the front's sprites"
 	check {$::form_left > 0 && $::form_right > 0} "pairs leaving the right edge ($::form_right pair-frames) come back in from the left, early clock ($::form_left)"
+}
+
+# ---- The enemies: hits, break-ups, free flight, booms ----------------------
+# Enemy i's record: {ST LEFT XF X YF Y DIR}
+proc en_state {i} {
+	set b [expr {$::sym(enemies) + $i*$::sym(EN)}]
+	set r {}
+	foreach f {ST LEFT XF X YF Y DIR} { lappend r [debug read memory [expr {$b + $::sym(EN.$f)}]] }
+	lset r 3 [expr {[lindex $r 3] + 256*[debug read memory [expr {$b + $::sym(EN.X) + 1}]]}]
+	return $r
+}
+proc screen_x {x} { expr {$x < 256 ? $x : $x - $::FWRAP} }
+# A SAT entry: name nm at column x (mod FWRAP) less ofs, line y, the formation's colour
+proc en_ent {x y ofs nm} {
+	set sx [expr {[screen_x $x] - $ofs}]
+	set c [m form_color]
+	if {$sx < 0} { set sx [expr {$sx + 32}] ; set c [expr {$c | 0x80}] }
+	list [expr {$y - 1}] $sx $nm $c
+}
+# Direction d's velocity {vx vy}, 1/256 px a frame (path.py's table)
+proc vel {d} {
+	set a [expr {$::sym(FREE_VEL_$::F) + 4*$d}]
+	set r {}
+	foreach o {0 2} {
+		set v [expr {[debug read memory [expr {$a+$o}]] + 256*[debug read memory [expr {$a+$o+1}]]}]
+		lappend r [expr {$v >= 32768 ? $v - 65536 : $v}]
+	}
+	return $r
+}
+# The table: every direction at the loop's speed (the square legs' too:
+# the loop is at one speed), d * 5.625 degrees clockwise from east
+proc check_vel_table {} {
+	set tot 0.0
+	foreach l $::FLEGS { set tot [expr {$tot + hypot([lindex $l 0], [lindex $l 1])}] }
+	set cyc [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]
+	set sq [expr {hypot(35, 29)}]
+	set want [expr {$sq / ($cyc * $sq / $tot)}]
+	set bad {} ; set lo 1e9 ; set hi 0
+	for {set d 0} {$d < 64} {incr d} {
+		lassign [vel $d] vx vy
+		set sp [expr {hypot($vx, $vy) * $::F / 256.0}]
+		if {$sp < $lo} { set lo $sp } ; if {$sp > $hi} { set hi $sp }
+		set ang [expr {atan2($vy, $vx) * 180 / acos(-1)}]
+		set da [expr {fmod($ang - $d*5.625 + 540, 360) - 180}]
+		if {abs($sp - $want) > 0.3 || abs($da) > 0.3} { lappend bad $d }
+	}
+	check {[llength $bad] == 0} "free enemies' velocities: 64 directions at the square legs' speed ([format %.2f $want] px/s; [format %.2f $lo]..[format %.2f $hi]; wrong: $bad)"
+}
+# Enemy art (::erows) at column x (mod FWRAP), top line y: a pixel in
+# pixel column col on lines lo..hi
+proc art_hit {x y col lo hi} {
+	set c [expr {$col - [screen_x $x]}]
+	if {$c < 0 || $c > 7} { return 0 }
+	set a [expr {$lo > $y ? $lo : $y}] ; set b [expr {$hi < $y + 15 ? $hi : $y + 15}]
+	for {set r $a} {$r <= $b} {incr r} {
+		if {([lindex $::erows [expr {$r - $y}]] >> (7 - $c)) & 1} { return 1 }
+	}
+	return 0
+}
+proc all_volleys {} {
+	set r {}
+	for {set i 0} {$i < $::sym(MAX_VOLLEYS)} {incr i} {
+		set b [expr {$i*$::VOL}]
+		set v {}
+		for {set k 0} {$k <= 4} {incr k} { lappend v [m volleys [expr {$b+$k}]] }
+		lappend r $v
+	}
+	return $r
+}
+
+set eprev {} ; set rotp 0 ; set vprev {}
+set hits 0 ; set breaks 0 ; set booms_n 0 ; set hit_bad 0 ; set hit_first ""
+set mot_bad 0 ; set mot_first "" ; set freeframes 0
+set btop 0 ; set bbottom 0 ; set nonmirror 0 ; set dirs {}
+proc hit_bad {s} { if {!$::hit_bad} { set ::hit_first "frame $::n: $s" } ; incr ::hit_bad }
+proc mot_bad {s} { if {!$::mot_bad} { set ::mot_first "frame $::n: $s" } ; incr ::mot_bad }
+
+# One bullet at column col over lines lo..hi against the living enemies (st,
+# left: the model's states, changed by the hit), in order: 1 if it hit
+proc hit_one {col lo hi} {
+	upvar st st left left broken broken
+	for {set i 0} {$i < 8} {incr i} {
+		set s [lindex $st $i]
+		if {$s > 1} continue
+		lassign [lindex $::eprev $i] - - - x - y
+		if {![art_hit $x $y $col $lo $hi]} continue
+		if {$s == 0} {
+			set p [expr {$i & ~1}]
+			lset st $p 1 ; lset st [expr {$p+1}] 1
+			lappend broken $p [expr {$p+1}]
+			incr ::breaks
+		} else {
+			lset st $i 2 ; lset left $i [m boom_frames]
+			incr ::booms_n
+		}
+		incr ::hits
+		return 1
+	}
+	return 0
+}
+
+# Every frame: the enemies and the volleys against a model of the frame
+# from the last frame's state: booms on, the hits (old volleys by the lines
+# they covered, then a new volley at its spawn lines), then the free
+# enemies' flight (exact, in 1/256 px) with their bounces
+proc enemy_frame {} {
+	set cur {}
+	for {set i 0} {$i < 8} {incr i} { lappend cur [en_state $i] }
+	set vols [all_volleys]
+	if {[llength $::eprev]} { enemy_model $cur $vols }
+	for {set i 0} {$i < 8} {incr i} { lappend ::sthist($i) [lindex $cur $i 0] }
+	set ::eprev $cur ; set ::vprev $vols ; set ::shipx_prev [m ship_x]
+	set ::rotp [m enemy_rot]
+	set ::flipp [m sat_flip]
+	set ::fresh -1
+}
+proc enemy_model {cur vols} {
+	set st {} ; set left {}
+	foreach e $::eprev { lappend st [lindex $e 0] ; lappend left [lindex $e 1] }
+	for {set i 0} {$i < 8} {incr i} {
+		set s [lindex $st $i]
+		if {$s >= 2 && $s < 5} {
+			set l [expr {[lindex $left $i] - 1}]
+			if {!$l} { incr s ; if {$s < 5} { set l [m boom_frames [expr {$s - 2}]] } }
+			lset st $i $s ; lset left $i $l
+		}
+	}
+	set broken {}
+	if {!$::nohits_was} {
+		set step [m bullet_step]
+		set want $::vprev
+		for {set v 0} {$v < 2} {incr v} {
+			set xs [lassign [lindex $::vprev $v] y]
+			if {!$y} continue
+			set lo [expr {$y - $step}] ; set hi [expr {$y + 2}] ; set nb 0
+			for {set k 0} {$k < 4} {incr k} {
+				set x [lindex $xs $k]
+				if {!$x} continue
+				if {[hit_one $x $lo $hi]} { lset xs $k 0 } else { incr nb }
+			}
+			lset want $v [concat [expr {!$nb || $lo < 8 ? 0 : $lo}] $xs]
+		}
+		if {$::fresh >= 0} {
+			set mask [m front_mask] ; set xs {} ; set nb 0
+			set y $::bstart
+			for {set k 0} {$k < 4} {incr k} {
+				set x 0
+				if {($mask >> $k & 1) && ![m boom_stage $k]} { set x [expr {$::shipx_prev + 4 + $k*$::W}] }
+				if {$x && [hit_one $x $y [expr {$y + 2}]]} { set x 0 }
+				if {$x} { incr nb }
+				lappend xs $x
+			}
+			lset want $::fresh [concat [expr {$nb ? $y : 0}] $xs]
+		}
+		for {set v 0} {$v < 2} {incr v} {
+			set w [lindex $want $v] ; set g [lindex $vols $v]
+			if {([lindex $w 0] == 0 && [lindex $g 0] != 0) || ([lindex $w 0] != 0 && $w ne $g)} { hit_bad "volley $v: $g, want $w" }
+		}
+	}
+	for {set i 0} {$i < 8} {incr i} {
+		lassign [lindex $::eprev $i] ps pl pxf px pyf py pd
+		lassign [lindex $cur $i] cs cl cxf cx cyf cy cd
+		set s [lindex $st $i]
+		if {$cs != $s || ($s >= 2 && $s < 5 && $cl != [lindex $left $i])} { hit_bad "enemy $i state $cs/$cl, want $s/[lindex $left $i]" ; continue }
+		if {$s == 0} {
+			if {$i & 1} {
+				lassign [lindex $cur [expr {$i-1}]] - - - lx - ly
+				if {$cx != ($lx + 8) % $::FWRAP || $cy != $ly} { mot_bad "enemy $i at ($cx, $cy), its pair's left one at ($lx, $ly)" }
+			}
+			continue
+		}
+		if {$s >= 2} {
+			if {$s < 5 && ($cx != $px || $cy != $py || $cxf != $pxf || $cyf != $pyf)} { mot_bad "booming enemy $i moved" }
+			continue
+		}
+		# free: from its pair's place with no fraction if it broke away now
+		if {$i in $broken} {
+			set pxf 0 ; set pyf 0 ; set pd $cd ; lappend ::dirs $cd
+			if {!($cd & 31)} { mot_bad "enemy $i broke away level (direction $cd)" }
+		}
+		lassign [vel $pd] vx vy
+		set x24 [expr {($px*256 + $pxf + $vx) % ($::FWRAP*256)}]
+		set y16 [expr {$py*256 + $pyf + $vy}]
+		set yi [expr {$y16 >> 8}]
+		if {$yi + $::art_t < 8} {
+			set y16 [expr {(8 - $::art_t)*256}]
+			if {$cd < 1 || $cd > 31} { mot_bad "enemy $i off the top, direction $cd isn't down" }
+			incr ::btop ; if {$cd != (64 - $pd) % 64} { incr ::nonmirror }
+		} elseif {$yi + $::art_b > 183} {
+			set y16 [expr {(183 - $::art_b)*256}]
+			if {$cd < 33} { mot_bad "enemy $i off the bottom, direction $cd isn't up" }
+			incr ::bbottom ; if {$cd != (64 - $pd) % 64} { incr ::nonmirror }
+		} elseif {$cd != $pd} { mot_bad "enemy $i turned ($pd -> $cd) away from a line" }
+		set w [list [expr {$x24 & 255}] [expr {$x24 >> 8}] [expr {$y16 & 255}] [expr {$y16 >> 8}]]
+		set g [list $cxf $cx $cyf $cy]
+		if {$w ne $g} { mot_bad "enemy $i (xf x yf y) $g, want $w (direction $pd)" }
+		if {$cy + $::art_t < 8 || $cy + $::art_b > 183} { mot_bad "enemy $i's art off the playfield (line $cy)" }
+		incr ::freeframes
+	}
+}
+
+# The break sound, after a frame's work, as death_frame: channel B's
+# volume, tone and mixer bits against the BREAK table; its noise period
+# too while the death sound is silent (else the death sound's wins)
+proc brk_frame {} {
+	if {$::bnew} { set ::bnew 0 ; set ::bidx 0 ; incr ::bstarts }
+	set mix [psg 7]
+	set got [list [psg 9] [psg 2] [psg 3] [expr {$mix & 0x12}]]
+	if {$::bidx >= 0} {
+		set t [expr {$::sym(BREAK_$::F) + 4*$::bidx}]
+		set v [debug read memory $t]
+		if {$v == 0} {
+			lappend ::bruns $::bidx
+			set ::bidx -1
+			set want [list 0 [lindex $got 1] [lindex $got 2] 18]
+		} else {
+			incr ::bframes
+			set want [list $v [debug read memory [expr {$t+2}]] [debug read memory [expr {$t+3}]] 0]
+			if {![psg 10] && [psg 6] != [debug read memory [expr {$t+1}]]} { lappend got "R6 [psg 6]" }
+			incr ::bidx
+		}
+	} else {
+		set want [list 0 [lindex $got 1] [lindex $got 2] 18]
+	}
+	if {$got ne $want} {
+		if {!$::bbad} { set ::bfirst "frame $::n: R9 R2 R3 mix-B $got, want $want" }
+		incr ::bbad
+	}
+}
+
+# The enemies' part. One ship at the left edge, no reserves. Hits on.
+# 1: aim at the pairs (the test holds the arrows toward the nearest
+# enemy still in a pair, and fires every 4 frames) until every pair has
+# broken up; 2: 6 s without firing, the free enemies flying and bouncing
+# (a screenshot); 3: aim at the free enemies until all are gone.
+proc plan_enemies {} {
+	check_vel_table
+	# three call-ups first (reserves written in RAM): a four-ship front, so
+	# that the enemies crowd its lines
+	debug write memory $::sym(reserves) 3
+	foreach k {0 20 40} {
+		at [expr {$::n + $k + 1}] { cdown }
+		at [expr {$::n + $k + 2}] { cup }
+	}
+	at [expr {$::n + 60}] {
+		check {[m front_mask] == 15} "four ships for the enemies' part (mask [m front_mask])"
+		start_enemies
+	}
+}
+proc start_enemies {} {
+	set ::nohits 0
+	set ::ephase 1
+	set ::edead [expr {$::n + 100*$::F}]
+	set ::dstarts0 $::dstarts
+	# the art column with the most pixels: where to aim
+	set best 0 ; set bc 0
+	for {set c 0} {$c < 8} {incr c} {
+		set k 0
+		foreach r $::erows { incr k [expr {($r >> (7 - $c)) & 1}] }
+		if {$k > $best} { set best $k ; set bc $c }
+	}
+	set ::aimcol $bc
+}
+proc keys {bits} {
+	foreach b {0x01 0x10 0x80} { if {$bits & $b} { down $b } else { up $b } }
+}
+proc aim_frame {} {
+	set sts {}
+	for {set i 0} {$i < 8} {incr i} { lappend sts [lindex $::eprev $i 0] }
+	if {$::ephase == 1 && 0 ni $sts} {
+		say "every pair broke up by frame $::n"
+		set ::ephase 2 ; set ::e2end [expr {$::n + 6*$::F}]
+		set ::throttle on
+		after realtime 0.1 {
+			set ::pause on
+			after realtime 0.3 { screenshot [regsub {\.png$} $::env(SHOT) {-enemies.png}] ; set ::pause off ; set ::throttle off }
+		}
+	}
+	if {$::ephase == 2} {
+		keys 0
+		if {$::n >= $::e2end} { set ::ephase 3 }
+		return
+	}
+	if {[lsearch -not -exact $sts 5] < 0 || $::n > $::edead} {
+		keys 0
+		set ::ephase 0
+		enemy_end
+		return
+	}
+	set want [expr {$::ephase == 1 ? 0 : 1}]
+	set nose [expr {[m ship_x] + 4}]
+	set bd 999 ; set dx 0
+	for {set i 0} {$i < 8} {incr i} {
+		lassign [lindex $::eprev $i] s - - x - y
+		if {$s != $want} continue
+		if {$want && $y + $::art_b > 150} continue
+		set c [expr {[screen_x $x] + $::aimcol}]
+		if {$c < 4 || $c > 250} continue
+		if {abs($c - $nose) < $bd} { set bd [expr {abs($c - $nose)}] ; set dx [expr {$c - $nose}] }
+	}
+	set k [expr {$dx < -1 ? 0x10 : ($dx > 1 ? 0x80 : 0)}]
+	if {$::n % 4 < 2} { set k [expr {$k | 0x01}] }
+	keys $k
+}
+# A boom's states from the enemy's history: from EN_BOOM on, {state frames ...}
+proc st_runs {h} {
+	set r {} ; set last -1
+	foreach s $h {
+		if {$s < 2 && ![llength $r]} continue
+		if {$s == $last} { lset r end [expr {[lindex $r end] + 1}] } else { lappend r $s 1 ; set last $s }
+	}
+	return $r
+}
+proc enemy_end {} {
+	set sts {}
+	for {set i 0} {$i < 8} {incr i} { lappend sts [lindex $::eprev $i 0] }
+	check {$::breaks == 4} "bullets broke up all 4 pairs ($::breaks)"
+	check {$sts eq {5 5 5 5 5 5 5 5}} "bullets blew up all 8 free enemies, all gone ($::booms_n booms; states $sts; frame $::n)"
+	check {$::hit_bad == 0 && $::hits > 0} "hits = the model (each bullet against the enemies' art on the lines it covered, the first enemy hit, the bullet gone; pairs break, free ones boom) every frame ($::hits hits; [expr {$::hit_bad ? "first wrong: $::hit_first" : "none wrong"}])"
+	check {$::mot_bad == 0 && $::freeframes > 0} "free enemies = the model (velocity table, wrap, stopped at lines 8 / 183 and turned away) every frame, booms stationary ($::freeframes enemy-frames; [expr {$::mot_bad ? "first wrong: $::mot_first" : "none wrong"}])"
+	check {$::btop > 0 && $::bbottom > 0 && $::nonmirror > 0} "bounces: $::btop at the top, $::bbottom at the bottom, $::nonmirror not a mirror's"
+	check {[llength [lsort -unique $::dirs]] >= 5 && [lsearch -exact $::dirs 0] < 0 && [lsearch -exact $::dirs 32] < 0} "break-up directions at random, never level (0, 32): $::dirs"
+	check {$::flip_bad == 0} "the SAT reversed every other frame, the enemies' turn one back every two ($::flip_bad wrong)"
+	set want [expr {$::F == 60 ? {2 6 3 4 4 5 5} : {2 5 3 3 4 4 5}}]
+	set bad {}
+	for {set i 0} {$i < 8} {incr i} {
+		set r [lrange [st_runs $::sthist($i)] 0 6]
+		if {$r ne $want} { lappend bad "$i: $r" }
+	}
+	check {[llength $bad] == 0} "each enemy's boom: images 1..3 for [lindex $want 1]/[lindex $want 3]/[lindex $want 5] frames, then gone (wrong: $bad)"
+	set bf [expr {$::F == 60 ? 48 : 40}]
+	check {$::bstarts == 4 && $bf in $::bruns && $::bidx == -1} "break sound: $::bstarts starts, played out in $bf frames (0.8 s; runs $::bruns)"
+	check {$::bbad == 0 && $::bframes > 0} "break sound on channel B = BREAK table every frame, its noise period while the death sound is silent ($::bframes frames; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
+	check {$::dstarts - $::dstarts0 == $::booms_n} "a booming enemy (re)starts the death sound ([expr {$::dstarts - $::dstarts0}] starts)"
+	check {$::vis_bad == 0 && $::frontcrowd > 0} "lines with 5..7 sprites: no sprite dropped two frames running ($::crowded crowded line-frames, $::frontcrowd frames with the front's lines crowded, $::overcrowded line-frames with 8 or more; $::vis_bad wrong)"
+	check {$::edropped == 0} "no frame dropped while the enemies are hit and fly ($::edropped)"
+	final_checks
+	screenshot_and_finish
+}
+
+# Every frame: which sprites the VDP drops (past the 4th on a line, in the
+# SAT shown's order); a sprite (front slot, incoming ship, enemy entry)
+# dropped on a line with 5..7 sprites must show there the next frame
+set vis_bad 0 ; set crowded 0 ; set overcrowded 0 ; set frontcrowd 0 ; set vprevhid [dict create]
+proc vis_frame {} {
+	set lines [dict create]
+	for {set k 0} {$k < 13} {incr k} {
+		set y [sat [expr {4*$k}]]
+		if {$y == 0xD0} break
+		set e [expr {$::flipp ? 12 - $k : $k}]
+		set o [expr {$e < 5 ? $e : 5 + ($::rotp + $e - 5) % 8}]
+		for {set l [expr {$y + 1}]} {$l <= $y + 16 && $l < 192} {incr l} { dict lappend lines $l $o }
+	}
+	set hid [dict create] ; set fc 0
+	dict for {l objs} $lines {
+		set c [llength $objs]
+		if {$c <= 4} continue
+		incr ::crowded
+		if {$l >= 168} { set fc 1 }
+		if {$c > 7} { incr ::overcrowded ; continue }
+		foreach o [lrange $objs 4 end] {
+			if {[dict exists $::vprevhid "$o,$l"]} { incr ::vis_bad }
+			dict set hid "$o,$l" 1
+		}
+	}
+	incr ::frontcrowd $fc
+	set ::vprevhid $hid
 }

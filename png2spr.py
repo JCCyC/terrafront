@@ -31,6 +31,7 @@ Writes sjasmplus source to stdout:
                  one colour; their colour is set in main.asm) as a pair, a
                  16x16 sprite showing it twice side by side
   ENEMIES        how many
+  ENEMY_ROWS     per enemy, its art's first and last rows
   FORM_PAIRS     the formation's pairs (from images/formation-enemy-E-color-C.png,
                  where every pair is enemy E in colour C): dx, dy each, from
                  the formation's top left, top to bottom
@@ -147,13 +148,18 @@ def main():
     enemies = sorted(int(re.search(r'(\d+)\.png$', f).group(1)) for f in glob.glob(ENEMY_PNG.format('*')))
     assert enemies == list(range(len(enemies))), f'enemy images not numbered 0..: {enemies}'
     pairs = []
+    rows = []
     print(f'ENEMIES         equ {len(enemies)}')
     print('ENEMY_PATTERN:')
     for e in enemies:
         on, _ = load(ENEMY_PNG.format(e), 16, 8)
         pair = [row + row for row in on]
         pairs.append(pair)
+        lit = [y for y in range(16) if any(on[y])]
+        rows.append((lit[0], lit[-1]))
         print_pattern('; ' + ENEMY_PNG.format(e) + ', twice', sprite_pattern(pair))
+    print('ENEMY_ROWS:')
+    print('        db ' + ', '.join(f'{t},{b}' for t, b in rows))
 
     # The formation: every 16x16 box in the picture where enemy E's pair
     # is, in colour C, with no other pixel of that colour in the box
