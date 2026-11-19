@@ -1,18 +1,24 @@
 ; ---------------------------------------------------------------------------
-; Terra Front - player ship step (MSX1, 16 KB ROM at 4000h)
+; Terra Front - the front (MSX1, 16 KB ROM at 4000h)
 ;
 ; SCREEN 2, all black. The top and bottom STATUS_LINES pixel lines are kept
-; out of the playfield (for the score and the reserve ships later). The
-; player ship sits at the bottom of the playfield and moves left and right
+; out of the playfield (for the score and the reserve ships). The front, up
+; to FRONT_MAX player ships side by side (their art glued, no pixel
+; between), sits at the bottom of the playfield and moves left and right
 ; at SHIP_SPEED px/s (20% faster than MSX Galaga's 90 px/s, measured on the
 ; Expert: 1.5 px a frame at 60 Hz), its art reaching both screen edges.
-; Fire shoots a 1x3 bullet straight up from the nose at BULLET_SPEED px/s,
-; at most MAX_BULLETS in flight; a press with all of them in flight is
-; ignored. Each shot plays a 0.25 s laser "cheeoom" on PSG channel A.
-; The bottom status area shows RESERVES reserve ships at its left, one
-; black pixel apart.
-; Controls: left / right arrows and space, or either joystick (either
-; button fires). Fire is edge-triggered: one shot per press.
+; Fire shoots a volley: a 1x3 bullet straight up from each ship's nose at
+; BULLET_SPEED px/s, drawn in the bitmap (the ships fill the 4 sprites a
+; line); at most MAX_VOLLEYS in flight, a press with all of them in flight
+; is ignored. Each volley plays a 0.25 s laser "cheeoom" on PSG channel A.
+; The bottom status area shows the reserve ships at its left, one black
+; pixel apart. C calls one up: it leaves the reserve and flies in from the
+; side away from the front, with woosh lines, at a constant speed that
+; takes CALL_TIME_MS from the far edge, and glues on to the front's side.
+; Meanwhile the front can shoot but not move.
+; Controls: left / right arrows, space (fire), C (call-up); or either
+; joystick (button A fires, B calls up). Fire and call-up are
+; edge-triggered: one action per press.
 ; Speeds are Bresenham on frames (whole pixels plus a remainder per frame,
 ; per frame rate), so they're the same in px/s at 50 and 60 Hz.
 ; ---------------------------------------------------------------------------
@@ -33,8 +39,10 @@ SHIP_SPEED      equ 108         ; px/s: 1.2 x MSX Galaga's 90 px/s
 BULLET_SPEED    equ 230         ; px/s, straight up
 BULLET_H        equ 3           ; the bullet is 1 px wide, BULLET_H tall
 BULLET_COLOR    equ 15          ; white
-MAX_BULLETS     equ 2           ; player bullets in flight at once
-RESERVES        equ 4           ; reserve ships shown in the bottom status area
+MAX_VOLLEYS     equ 2           ; volleys (a bullet from each ship) in flight at once
+FRONT_MAX       equ 4           ; ships in the front at most
+RESERVES        equ 4           ; reserve ships at the start
+CALL_TIME_MS    equ 250         ; a call-up's flight from the far edge takes at most this
 RESERVE_X       equ 0           ; the first reserve ship's art's left column
 RESERVE_GAP     equ 1           ; black pixels between two reserve ships
 
@@ -46,10 +54,21 @@ PLAY_BOTTOM     equ 191-STATUS_LINES        ; last playfield line
 ; SHIP_* come from build/sprites.inc (png2spr.py), SHOT_* from build/sfx.inc
 ; (sfx.py), included with the data at the end
 SHIP_TOP        equ PLAY_BOTTOM-SHIP_ART_B  ; the sprite's first line (its art's last row on PLAY_BOTTOM)
-SHIP_X_MAX      equ 256-SHIP_ART_W          ; ship_x is the art's left column: 0..SHIP_X_MAX
+SHIP_X_MAX      equ 256-SHIP_ART_W          ; one ship: ship_x is the art's left column, 0..SHIP_X_MAX
 BULLET_START    equ SHIP_TOP+SHIP_ART_T-BULLET_H    ; a new bullet's top line: right above the nose
         assert BULLET_START >= PLAY_TOP
         assert SHIP_ART_L < 32              ; the EC bit's 32 px cover the left clip
+        assert FRONT_MAX*SHIP_ART_W <= 128  ; a front left of the middle has room on its right
+
+; A call-up: the new ship starts with its art just off screen, on the side
+; away from the front, and flies to the front's side at CALL_SPEED px/s.
+; The longest flight (a one-ship front at one edge) is CALL_DIST px, which
+; must take at most CALL_TIME_MS at both rates: whole frames at 50 Hz.
+CALL_DIST       equ 256-SHIP_ART_W
+CALL_FRAMES_50  equ CALL_TIME_MS*50/1000
+CALL_SPEED      equ (CALL_DIST*50+CALL_FRAMES_50-1)/CALL_FRAMES_50
+        assert (CALL_DIST*60+CALL_SPEED-1)/CALL_SPEED*1000 <= CALL_TIME_MS*60
+        assert CALL_SPEED/50 < 256
 
 ; The reserve ships: 8x8 art in the bottom status area's one row of cells
 ; (SCREEN 2 with INIGRP's names: cell (col, row) at pattern / colour byte
@@ -63,7 +82,8 @@ RESERVE_VRAM    equ RESERVE_ROW*32*8    ; the row's first cell, from GRPCGP / GR
 
 ; Sprite names (16x16 sprites: patterns in steps of 4)
 NAME_SHIP       equ 0
-NAME_BULLET     equ 4
+NAME_COMING_R   equ 4           ; the ship coming in from the right, its woosh lines behind
+NAME_COMING_L   equ 8           ; ... from the left
 SPR_PARK        equ 0C0h        ; a sprite's Y off screen (lines 193..208); below D0h, the end marker
 SPR_END         equ 0D0h        ; Y that ends the sprite list
 SPR_EC          equ 80h         ; colour byte: early clock, X shifted 32 px left
@@ -72,6 +92,7 @@ SPR_EC          equ 80h         ; colour byte: early clock, X shifted 32 px left
 IN_LEFT         equ 04h
 IN_RIGHT        equ 08h
 IN_FIRE         equ 10h
+IN_CALL         equ 80h
 
 ; ---- Hardware and BIOS -----------------------------------------------------
 
@@ -96,6 +117,8 @@ KEY_ROW         equ 8           ; space bit 0, left bit 4, right bit 7
 KEY_SPACE       equ 01h
 KEY_LEFT        equ 10h
 KEY_RIGHT       equ 80h
+KEY_ROW_C       equ 3
+KEY_C           equ 01h
 
 MSXID1          equ 002Bh       ; bit 7 set = 50 Hz
 WRTVDP          equ 0047h
@@ -122,10 +145,9 @@ IM2_TABLE       equ 0E800h
 IM2_HI          equ 0E9h
 IM2_JUMP        equ IM2_HI*257
 
-        struct BULLET
-Y               byte            ; top line, 0 = not in flight
-X               byte
-ACC             byte            ; Bresenham remainder
+        struct VOLLEY
+Y               byte            ; the bullets' top line, 0 = not in flight
+X               block FRONT_MAX ; each front slot's bullet's column, 0 = none
         ends
 
         org 0E000h
@@ -136,18 +158,36 @@ ship_whole:     ds 1            ; SHIP_SPEED / fps
 ship_frac:      ds 1            ; ... and its remainder
 bullet_whole:   ds 1
 bullet_frac:    ds 1
+call_whole:     ds 1
+call_frac:      ds 1
 shot_sound:     ds 2            ; SHOT_60 or SHOT_50
 RATES_SIZE      equ $-rates
 
 input:          ds 1            ; IN_* this frame
 input_prev:     ds 1            ; ... and last frame (fire is edge-triggered)
-ship_x:         ds 1            ; the art's left column, 0..SHIP_X_MAX
+ship_x:         ds 1            ; front slot 0's art's left column, 0..256-front_w
 ship_acc:       ds 1            ; Bresenham remainder
-bullets:        ds MAX_BULLETS*BULLET
+; The front: FRONT_MAX slots from the left, SHIP_ART_W px apart. A mask so
+; that a front can have holes later; for now its ships are slots 0..n-1.
+front_mask:     ds 1            ; bit i set: a ship in slot i
+front_slots:    ds 1            ; slots the front spans (1..FRONT_MAX)
+front_w:        ds 1            ; ... in px: front_slots*SHIP_ART_W
+reserves:       ds 1
+; A call-up, while call_on: the new ship's art's left column is call_target
+; + call_rem (from the right) or call_target - call_rem (from the left)
+call_on:        ds 1
+call_left:      ds 1            ; nonzero: coming from the left
+call_target:    ds 1            ; its art's left column once glued
+call_rem:       ds 1            ; px still to fly
+call_acc:       ds 1            ; Bresenham remainder
+volleys:        ds MAX_VOLLEYS*VOLLEY
+bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
+bullet_step:    ds 1            ; this frame's px
+pat_hi:         ds 1            ; GRPCGP's high byte with the VDP's write bit
 sfx_ptr:        ds 2            ; the shot sound's next frame in its table, 0 = silent
 psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
-sat_buf:        ds 3*4+1        ; ship, bullets, the end marker
+sat_buf:        ds (FRONT_MAX+1)*4+1    ; the front's slots, the incoming ship, the end marker
 SAT_SIZE        equ $-sat_buf
 reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1: a ship's spill)
 RAM_SIZE        equ $-ram_start
@@ -181,17 +221,20 @@ init:
         ld c,1
         call WRTVDP
 
-        ld hl,SHIP_PATTERN
+        ld hl,SHIP_PATTERN      ; the three ship patterns follow each other
         ld de,(GRPPAT)
-        ld bc,32
+        ld bc,3*32
         call LDIRVM
-        ld hl,(GRPPAT)
-        ld de,NAME_BULLET*8
+        assert COMING_R_PATTERN == SHIP_PATTERN+32 && COMING_L_PATTERN == SHIP_PATTERN+64
+        assert NAME_COMING_R == 4 && NAME_COMING_L == 8
+
+        ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
+        ld de,PLAY_TOP/8*256
         add hl,de
-        ex de,hl
-        ld hl,BULLET_PATTERN
-        ld bc,32
-        call LDIRVM
+        ld bc,(PLAY_BOTTOM+1-PLAY_TOP)/8*256
+        ld a,BULLET_COLOR*16+BG_COLOR
+        call FILVRM
+        assert PLAY_TOP%8 == 0 && (PLAY_BOTTOM+1)%8 == 0
 
         ld hl,ram_start         ; RAM starts as anything
         ld de,ram_start+1
@@ -208,10 +251,20 @@ init:
         ld bc,RATES_SIZE
         ldir
 
-        ld a,SHIP_X_MAX/2       ; the ship in the middle
+        ld a,SHIP_X_MAX/2       ; one ship in the middle
         ld (ship_x),a
-        ld a,IN_FIRE            ; fire armed only once released
-        ld (input_prev),a
+        ld a,1
+        ld (front_mask),a
+        ld (front_slots),a
+        ld a,SHIP_ART_W
+        ld (front_w),a
+        ld a,RESERVES
+        ld (reserves),a
+        ld a,IN_FIRE|IN_CALL    ; armed only once released (read_input moves it to input_prev)
+        ld (input),a
+        ld a,(GRPCGP+1)         ; (SCREEN 2's pattern table: at 0000h or 2000h)
+        or 40h
+        ld (pat_hi),a
         ld hl,(GRPATR)
         set 6,h
         ld (sat_w),hl
@@ -242,9 +295,10 @@ main_loop:
         halt
         call upload_sat         ; last frame's sprites, in vertical blank
         call read_input
-        call move_ship
-        call move_bullets       ; first: a bullet gone this frame frees its slot
+        call move_bullets       ; first: in vertical blank, and a volley gone frees its slot
         call fire
+        call call_up            ; before move_ship: the front stays put while one runs
+        call move_ship
         call sfx
         call build_sat
         jr main_loop
@@ -259,7 +313,7 @@ isr:    push af
 ; ---- Input -----------------------------------------------------------------
 
 ; input = IN_* from the keyboard (arrows, space) and both joysticks
-; (either button fires); input_prev = the last frame's
+; (button A fires, B calls up); input_prev = the last frame's
 read_input:
         ld a,(input)
         ld (input_prev),a
@@ -282,7 +336,15 @@ read_input:
         and KEY_SPACE
         jr z,.k3
         set 4,c                 ; IN_FIRE
-.k3:    ld b,03h                ; joystick 1: (R15 and AFh) or 03h
+.k3:    in a,(PPI_C)            ; keyboard row KEY_ROW_C
+        and 0F0h
+        or KEY_ROW_C
+        out (PPI_C),a
+        in a,(PPI_B)
+        and KEY_C
+        jr nz,.k4
+        set 7,c                 ; IN_CALL
+.k4:    ld b,03h                ; joystick 1: (R15 and AFh) or 03h
         ld e,0AFh
         call read_joy
         ld b,4Ch                ; joystick 2: (R15 and DFh) or 4Ch
@@ -291,10 +353,10 @@ read_input:
         ld a,c
         ld (input),a
         ret
-        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h
+        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h
 
-; C |= the joystick's left, right and either button as IN_*; the port is
-; selected in R15 by (R15 and E) or B
+; C |= the joystick's left, right, button A (fire) and B (call-up) as IN_*;
+; the port is selected in R15 by (R15 and E) or B
 read_joy:
         di
         ld a,PSG_IO_B
@@ -306,14 +368,15 @@ read_joy:
         ld a,PSG_IO_A
         out (PSG_ADDR),a
         in a,(PSG_READ)
-        ei
+.r14:   ei
         cpl                     ; 1 = pressed: bit 2 left, 3 right, 4 A, 5 B
         ld b,a
-        rrca                    ; button B onto A's bit
-        or b
-        and IN_LEFT|IN_RIGHT|IN_FIRE
+        and IN_LEFT|IN_RIGHT|IN_FIRE    ; button A fires
         or c
         ld c,a
+        bit 5,b                 ; button B calls up
+        ret z
+        set 7,c                 ; IN_CALL
         ret
 
 ; ---- Movement --------------------------------------------------------------
@@ -333,8 +396,12 @@ bresenham:
         ld a,b
         ret
 
-; Left or right while one of them is held (not both), the art kept on screen
+; Left or right while one of them is held (not both), the front's art kept
+; on screen; not during a call-up
 move_ship:
+        ld a,(call_on)
+        or a
+        ret nz
         ld a,(input)
         and IN_LEFT|IN_RIGHT
         ret z
@@ -354,9 +421,12 @@ move_ship:
         ld a,(hl)
         jr z,.left
         add a,b                 ; no carry: SHIP_X_MAX + a step < 256
-        cp SHIP_X_MAX+1
-        jr c,.set
-        ld a,SHIP_X_MAX
+        ld c,a
+        ld a,(front_w)
+        neg                     ; 256 - front_w: the front's last x
+        cp c
+        jr c,.set               ; past it: there
+        ld a,c
         jr .set
 .left:  sub b
         jr nc,.set
@@ -365,37 +435,52 @@ move_ship:
         ret
         assert SHIP_X_MAX+(SHIP_SPEED+49)/50 < 256
 
-; Each bullet in flight goes up; it's gone once its top leaves the playfield
+; Each volley in flight goes up BULLET_SPEED px/s; it's gone once its top
+; leaves the playfield. All are erased first, then drawn, so one's erase
+; never takes a pixel of another's.
 move_bullets:
-        ld ix,bullets
-        ld c,MAX_BULLETS
-.loop:  ld a,(ix+BULLET.Y)
-        or a
-        jr z,.next
         ld a,(bullet_whole)
         ld b,a
-        push ix
-        pop hl
-        ld de,BULLET.ACC
-        add hl,de
         ld a,(bullet_frac)
         ld d,a
-        call bresenham          ; A = step
+        ld hl,bullet_acc
+        call bresenham
+        ld (bullet_step),a
+        ld ix,volleys
+        ld b,MAX_VOLLEYS
+.erase: push bc
+        ld a,(ix+VOLLEY.Y)
+        or a
+        jr z,.enext
+        ld c,0
+        call volley_px
+        ld a,(bullet_step)
         ld b,a
-        ld a,(ix+BULLET.Y)
+        ld a,(ix+VOLLEY.Y)
         sub b
         cp PLAY_TOP             ; (no borrow: Y >= PLAY_TOP > a step)
         jr nc,.keep
         xor a                   ; gone
-.keep:  ld (ix+BULLET.Y),a
-.next:  ld de,BULLET
+.keep:  ld (ix+VOLLEY.Y),a
+.enext: ld de,VOLLEY
         add ix,de
-        dec c
-        jr nz,.loop
+        pop bc
+        djnz .erase
+        ld ix,volleys
+        ld b,MAX_VOLLEYS
+.draw:  push bc
+        ld a,(ix+VOLLEY.Y)
+        or a
+        ld c,1
+        call nz,volley_px
+        ld de,VOLLEY
+        add ix,de
+        pop bc
+        djnz .draw
         ret
         assert PLAY_TOP > (BULLET_SPEED+49)/50
 
-; A new press of fire, with a bullet slot free: a bullet from the nose,
+; A new press of fire, with a volley free: a bullet from each ship's nose,
 ; and the laser sound
 fire:
         ld a,(input_prev)
@@ -405,70 +490,301 @@ fire:
         and b
         and IN_FIRE
         ret z
-        ld hl,bullets
-        ld de,BULLET
-        ld b,MAX_BULLETS
+        ld hl,volleys
+        ld de,VOLLEY
+        ld b,MAX_VOLLEYS
 .find:  ld a,(hl)
         or a
         jr z,.free
         add hl,de
         djnz .find
         ret                     ; all in flight
-.free:  ld (hl),BULLET_START    ; Y
+.free:  push hl
+        pop ix
+        ld (hl),BULLET_START    ; Y
         inc hl
+        ld a,(front_mask)
+        ld c,a
         ld a,(ship_x)
         add a,SHIP_NOSE_DX
-        ld (hl),a               ; X
-        inc hl
-        ld (hl),0               ; ACC
+        ld b,FRONT_MAX
+.x:     rr c                    ; this slot's ship
+        ld (hl),0
+        jr nc,.nx
+        ld (hl),a               ; its nose's column (> 0)
+.nx:    inc hl
+        add a,SHIP_ART_W
+        djnz .x
+        ld c,1
+        call volley_px
         ld hl,(shot_sound)      ; (re)start the sound
         ld (sfx_ptr),hl
         ret
-        assert BULLET.Y == 0 && BULLET.X == 1 && BULLET.ACC == 2
+        assert VOLLEY.Y == 0 && VOLLEY.X == 1 && SHIP_NOSE_DX > 0
+
+; ---- Bitmap bullets --------------------------------------------------------
+
+; The volley at IX (top line Y) drawn (C nonzero) or erased (C = 0) in the
+; bitmap; the cells hold nothing else, since a volley's bullets are
+; SHIP_ART_W > 8 px apart and volleys at least a frame's step + BULLET_H
+; lines apart. Keeps IX.
+volley_px:
+        ld e,(ix+VOLLEY.Y)
+        push ix
+        pop hl
+        inc hl                  ; X
+        ld b,FRONT_MAX
+.b:     ld a,(hl)
+        or a
+        jr z,.next
+        ld d,a
+        push bc
+        push de
+        push hl
+        ld a,c
+        or a
+        jr z,.px                ; C = 0: erase
+        ld a,d
+        and 7
+        ld b,a
+        ld a,80h                ; the column's bit in its byte
+        jr z,.bit
+.sh:    rrca
+        djnz .sh
+.bit:   ld c,a
+.px:    call bullet_px
+        pop hl
+        pop de
+        pop bc
+.next:  inc hl
+        djnz .b
+        ret
+        assert SHIP_ART_W > 8
+
+; Lines E..E+BULLET_H-1 of the bitmap at pixel column D's cell := C (outside
+; vertical blank too: 40 T between the VRAM writes)
+bullet_px:
+        ld b,BULLET_H
+.cell:  ld a,e                  ; byte (E/8)*256 + (D and F8h) + E%8
+        and 7
+        ld l,a
+        ld a,d
+        and 0F8h
+        or l
+        ld l,a
+        ld a,e
+        rrca
+        rrca
+        rrca
+        and 1Fh
+        ld h,a
+        ld a,(pat_hi)
+        or h
+        ld h,a
+        ld a,l
+        di
+        out (VDP_ADDR),a
+        ld a,h
+        out (VDP_ADDR),a
+        ei
+.row:   ld a,c
+        out (VDP_DATA),a
+        dec b
+        ret z
+        inc e
+        ld a,e
+        and 7
+        jr nz,.row              ; same cell: the next byte
+        jr .cell
+
+; ---- Call-up ---------------------------------------------------------------
+
+; A new press of C, with no call-up running, a reserve ship and a front
+; under FRONT_MAX: one ship leaves the reserve and comes in from the right
+; if the front's middle is left of the screen's (or on it), else from the
+; left, to glue on to that side of the front. While one runs, it flies
+; CALL_SPEED px/s; on arrival it joins the front (and move_ship moves it).
+call_up:
+        ld a,(call_on)
+        or a
+        jr nz,.fly
+        ld a,(input_prev)
+        cpl
+        ld b,a
+        ld a,(input)
+        and b
+        and IN_CALL
+        ret z
+        ld a,(reserves)
+        or a
+        ret z
+        ld a,(front_slots)
+        cp FRONT_MAX
+        ret nc
+        ld a,(ship_x)
+        ld l,a
+        ld h,0
+        add hl,hl
+        ld a,(front_w)
+        ld e,a
+        ld d,h
+        add hl,de               ; twice the front's middle
+        ld de,-257
+        add hl,de               ; carry: right of the screen's middle
+        ld a,(ship_x)
+        jr c,.left
+        ld b,a
+        ld a,(front_w)
+        add a,b
+        ld (call_target),a      ; on the front's right
+        neg                     ; from just off the right edge (256)
+        ld (call_rem),a
+        xor a
+        jr .go
+.left:  ld (call_rem),a         ; from just off the left edge (-SHIP_ART_W)
+        sub SHIP_ART_W
+        ld (call_target),a      ; on the front's left
+        ld a,1
+.go:    ld (call_left),a
+        ld (call_on),a          ; (nonzero either way: see below)
+        ld a,1
+        ld (call_on),a
+        xor a
+        ld (call_acc),a
+        ld hl,reserves
+        dec (hl)
+        ld a,(hl)
+        jp draw_reserves
+.fly:   ld a,(call_whole)
+        ld b,a
+        ld a,(call_frac)
+        ld d,a
+        ld hl,call_acc
+        call bresenham          ; A = step
+        ld b,a
+        ld a,(call_rem)
+        sub b
+        jr z,.glue
+        jr c,.glue
+        ld (call_rem),a
+        ret
+.glue:  xor a
+        ld (call_rem),a
+        ld (call_on),a
+        ld hl,front_mask
+        ld a,(call_left)
+        or a
+        jr nz,.gl
+        ld a,(front_slots)      ; on the right: slot front_slots
+        ld b,a
+        ld a,1
+.sl:    add a,a
+        djnz .sl
+        or (hl)
+        ld (hl),a
+        jr .grow
+.gl:    ld a,(hl)               ; on the left: the new slot 0
+        add a,a
+        inc a
+        ld (hl),a
+        ld a,(call_target)
+        ld (ship_x),a
+.grow:  ld hl,front_slots
+        inc (hl)
+        ld a,(front_w)
+        add a,SHIP_ART_W
+        ld (front_w),a
+        ret
+
+; HL = the incoming ship's art's left column (-SHIP_ART_W..256, signed)
+call_pos:
+        ld a,(call_target)
+        ld l,a
+        ld h,0
+        ld a,(call_rem)
+        ld e,a
+        ld d,h
+        ld a,(call_left)
+        or a
+        jr nz,.left
+        add hl,de
+        ret
+.left:  sbc hl,de               ; (no carry after the or)
+        ret
 
 ; ---- Sprites ---------------------------------------------------------------
 
-; sat_buf from the ship and the bullets (the end marker stays)
+; sat_buf from the front's slots and the incoming ship (the end marker stays)
 build_sat:
         ld hl,sat_buf
+        ld a,(front_mask)
+        ld d,a
+        ld a,(ship_x)
+        ld e,a                  ; this slot's art's left column
+        ld b,FRONT_MAX
+.slot:  ld c,SHIP_COLOR
+        rr d
+        jr nc,.park
         ld (hl),SHIP_TOP-1      ; a sprite's first line is Y + 1
         inc hl
-        ld c,SHIP_COLOR
-        ld a,(ship_x)
+        ld a,e
         sub SHIP_ART_L
         jr nc,.x
         add a,32                ; left of 0: the early clock
         ld c,SHIP_COLOR|SPR_EC
 .x:     ld (hl),a
-        inc hl
-        ld (hl),NAME_SHIP
-        inc hl
-        ld (hl),c
-        inc hl
-        ld de,bullets
-        ld b,MAX_BULLETS
-.bul:   ld a,(de)               ; Y
-        inc de
-        or a
-        jr z,.park
-        dec a
-        ld (hl),a
-        inc hl
-        ld a,(de)               ; X
-        ld (hl),a
         jr .rest
 .park:  ld (hl),SPR_PARK
         inc hl
 .rest:  inc hl
-        inc de
-        inc de
-        ld (hl),NAME_BULLET
+        ld (hl),NAME_SHIP
         inc hl
-        ld (hl),BULLET_COLOR
+        ld (hl),c
         inc hl
-        djnz .bul
+        ld a,e
+        add a,SHIP_ART_W
+        ld e,a
+        djnz .slot
+        ld a,(call_on)
+        or a
+        jr z,.nocall
+        push hl
+        call call_pos
+        ld a,(call_left)
+        or a
+        ld de,-COMING_R_ART_L
+        ld b,NAME_COMING_R
+        jr z,.side
+        ld de,-COMING_L_ART_L
+        ld b,NAME_COMING_L
+.side:  add hl,de               ; the sprite's X (signed)
+        ld a,l
+        ld c,COMING_COLOR
+        bit 7,h
+        jr z,.cx
+        add a,32                ; left of 0 (down to -16): the early clock
+        ld c,COMING_COLOR|SPR_EC
+        jr .on
+.cx:    ld a,h
+        or a
+        ld a,l
+        jr z,.on
+        pop hl                  ; X >= 256: still all off screen
+        jr .nocall
+.on:    pop hl
+        ld (hl),SHIP_TOP-1
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),b
+        inc hl
+        ld (hl),c
         ret
-        assert SAT_SIZE == (1+MAX_BULLETS)*4+1
+.nocall:
+        ld (hl),SPR_PARK
+        ret
+        assert COMING_L_ART_L <= 16 && COMING_R_ART_L+SHIP_ART_W <= 16
+        assert SAT_SIZE == (FRONT_MAX+1)*4+1
 
 ; sat_buf to the VDP; right after halt, so OTIR is safe (vertical blank)
 upload_sat:
@@ -626,15 +942,12 @@ sfx:
 ; ---- Data ------------------------------------------------------------------
 
 RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPEED%60
+                db CALL_SPEED/60, CALL_SPEED%60
                 dw SHOT_60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
+                db CALL_SPEED/50, CALL_SPEED%50
                 dw SHOT_50
         assert RATES_50-RATES_60 == RATES_SIZE
-
-; The bullet: column 0, rows 0..BULLET_H-1 of a 16x16 pattern
-BULLET_PATTERN:
-        ds BULLET_H,80h
-        ds 32-BULLET_H,0
 
         include "build/sprites.inc"
         include "build/sfx.inc"
