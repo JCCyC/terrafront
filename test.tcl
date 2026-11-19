@@ -28,6 +28,7 @@ proc m {name {ofs 0}} { debug read memory [expr {$::sym($name) + $ofs}] }
 proc rem {} { expr {[m call_rem] + 256*[m call_rem 1]} }
 proc sat {i} { debug read VRAM [expr {0x1B00 + $i}] }
 proc vol {} { debug read "PSG regs" 8 }
+proc psg {r} { debug read "PSG regs" $r }
 
 # Keyboard row 8: space 01h, left 10h, right 80h; C is row 3, 01h
 proc down {bits} { keymatrixdown 8 $bits }
@@ -54,6 +55,12 @@ set n 0
 set steps {}        ;# list of {frame script}
 proc at {frame body} { lappend ::steps [list $frame $body] }
 
+# The death sound: kill_nth (re)starts it; death_frame checks channel C
+# against the table every frame
+set dnew 0 ; set didx -1 ; set druns {} ; set dstarts 0
+set dbad 0 ; set dclash 0 ; set dframes 0 ; set dfirst ""
+debug set_bp $sym(kill_nth.sound) {} { set ::dnew 1 }
+
 set spawns 0
 debug set_bp $sym(fire.free) {} { incr ::spawns }
 
@@ -73,6 +80,7 @@ proc frame {} {
 	try check_sat
 	try check_bitmap
 	try call_frame
+	try death_frame
 }
 set maxlive 0
 
@@ -391,7 +399,45 @@ proc plan_kills {a} {
 		check {$::sat_bad == 0} "sprites = the front (ships and booms) and the incoming ship, every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
 		check {$::coming_seen > 0} "the incoming ship's sprite showed on $::coming_seen frames"
 	}
-	at [expr {$b+5}] { screenshot_and_finish }
+	# the last death sound plays out
+	at [expr {$b+5+$F*3/2}] {
+		set want [expr {$::F == 60 ? 84 : 70}]
+		check {$::dstarts >= 8 && $::didx == -1 && [lindex $::druns end] == $want} "death sound: $::dstarts starts, the last plays out in [lindex $::druns end] frames (want $want, 1.4 s; runs $::druns)"
+		check {$::dbad == 0 && $::dframes > 0} "death sound on channel C = DEATH table, every frame ($::dframes frames playing, $::dclash with the shot's noise on too; [expr {$::dbad ? "first wrong: $::dfirst" : "none wrong"}])"
+	}
+	at [expr {$b+10+$F*3/2}] { screenshot_and_finish }
+}
+
+# The death sound, after a frame's work: started this frame -> the table's
+# first row. Playing: R10 its volume, R4/R5 its tone, channel C's tone and
+# noise on, R6 its noise period (even while the shot's noise is on: the
+# death sound wins);
+# at its end marker, or idle: R10 0, channel C's tone and noise off.
+# A run's frames are counted, from its (re)start to its end marker.
+proc death_frame {} {
+	if {$::dnew} { set ::dnew 0 ; set ::didx 0 ; incr ::dstarts }
+	set mix [psg 7]
+	set got [list [psg 10] [psg 4] [psg 5] [psg 6] [expr {$mix & 0x24}]]
+	if {$::didx >= 0} {
+		set t [expr {$::sym(DEATH_$::F) + 4*$::didx}]
+		set v [debug read memory $t]
+		if {$v == 0} {
+			lappend ::druns $::didx
+			set ::didx -1
+			set want [list 0 [lindex $got 1] [lindex $got 2] [lindex $got 3] 36]
+		} else {
+			incr ::dframes
+			if {!($mix & 0x08)} { incr ::dclash }
+			set want [list $v [debug read memory [expr {$t+2}]] [debug read memory [expr {$t+3}]] [debug read memory [expr {$t+1}]] 0]
+			incr ::didx
+		}
+	} else {
+		set want [list 0 [lindex $got 1] [lindex $got 2] [lindex $got 3] 36]
+	}
+	if {$got != $want} {
+		if {!$::dbad} { set ::dfirst "frame $::n: R10 R4 R5 R6 mix-C $got, want $want" }
+		incr ::dbad
+	}
 }
 
 # A slot's SAT entries ({Y name} a frame) from the first boom name on:

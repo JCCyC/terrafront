@@ -19,9 +19,12 @@
 ; span (first to last ship, holes included) under FRONT_MAX.
 ; A dying ship shows the three boom images in turn (BOOM*_60 / BOOM*_50
 ; frames each) and doesn't fire; then its slot is empty, a hole in the
-; front, and the front is trimmed to its first and last ships. An empty
-; front stays where its last ship died, can't move or shoot, and a call-up
-; lands there.
+; front, and the front is trimmed to its first and last ships. A ship
+; starting to die plays Skyfighter's ship-blown-up sound (1.4 s, U-boat
+; Killer's "water, loud") on PSG channel C; another death starts it again.
+; It wins over the shot's sound where they clash (the PSG's one noise period).
+; An empty front stays where its last ship died, can't move or shoot, and a
+; call-up lands there.
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Test keys 1..4 kill the front's
 ; first..fourth ship. Fire, call-up and the test keys are edge-triggered:
@@ -121,9 +124,11 @@ PPI_B           equ 0A9h        ; the keyboard matrix row selected (read, bit = 
 PPI_C           equ 0AAh        ; bits 0..3 select the row; 4..7 cassette, CAPS LED, click (kept)
 
 PSG_TONE_A      equ 0           ; R0, R1: channel A's tone period
+PSG_TONE_C      equ 4           ; R4, R5: channel C's
 PSG_NOISE       equ 6           ; the noise period
 PSG_MIXER       equ 7           ; bits 0..5 = 1: tone / noise off; bits 6, 7 the I/O ports' direction
 PSG_VOL_A       equ 8
+PSG_VOL_C       equ 10
 PSG_IO_A        equ 14          ; the joystick port's lines (read)
 PSG_IO_B        equ 15          ; selects the joystick port (write)
 MIX_TONE_A      equ 01h         ; mixer bit: channel A's tone (0 = on)
@@ -179,6 +184,7 @@ bullet_frac:    ds 1
 call_whole:     ds 1
 call_frac:      ds 1
 shot_sound:     ds 2            ; SHOT_60 or SHOT_50
+death_sound:    ds 2            ; DEATH_60 or DEATH_50
 boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
 RATES_SIZE      equ $-rates
 
@@ -208,6 +214,9 @@ bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep
 bullet_step:    ds 1            ; this frame's px
 pat_hi:         ds 1            ; GRPCGP's high byte with the VDP's write bit
 sfx_ptr:        ds 2            ; the shot sound's next frame in its table, 0 = silent
+death_ptr:      ds 2            ; the death sound's next frame in its table, 0 = silent
+shot_mix:       ds 1            ; mixer bits the shot sound switches on now
+death_mix:      ds 1            ; ... and the death sound
 psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
 sat_buf:        ds (FRONT_MAX+1)*4+1    ; the front's slots, the incoming ship, the end marker
@@ -328,6 +337,7 @@ main_loop:
         call call_up            ; before move_ship: the front stays put while one runs
         call move_ship
         call sfx
+        call death              ; after sfx: its noise period wins over the shot's
         call build_sat
         jr main_loop
 
@@ -870,6 +880,8 @@ kill_nth:
         add hl,de
         ld a,(boom_frames)
         ld (hl),a               ; boom_left
+.sound: ld hl,(death_sound)     ; (re)start the death sound (test.tcl: it starts here)
+        ld (death_ptr),hl
         ret
 .next:  inc hl
         jr .s
@@ -1120,7 +1132,7 @@ psg_write:
         ret
 
 ; Mixer bits 6..7 kept from the BIOS (the I/O ports' direction); all
-; channels off, the shot's noise period
+; channels off and silent
 init_sound:
         ld a,PSG_MIXER
         call RDPSG
@@ -1133,12 +1145,29 @@ init_sound:
         ld e,0
         ld a,PSG_VOL_A
         call psg_write
-        ld e,SHOT_NOISE
-        ld a,PSG_NOISE
+        ld e,0
+        ld a,PSG_VOL_C
+        jp psg_write
+
+; The mixer: all off but what the shot and death sounds switch on
+; (shot_mix, death_mix; channels A and C, so no bit in both), the I/O
+; ports' direction bits kept. Keeps HL.
+mixer:  ld a,(shot_mix)
+        ld e,a
+        ld a,(death_mix)
+        or e
+        ld e,a
+        ld a,(psg_io)
+        or MIX_ALL_OFF
+        xor e                   ; their bits to 0 (on)
+        ld e,a
+        ld a,PSG_MIXER
         jp psg_write
 
 ; One frame of the shot sound on channel A: volume, tone period, noise
-; bit (sfx.py's table); its end marker silences the channel
+; bit (sfx.py's table; with the noise on, the noise period is the shot's
+; unless the death sound plays: it shares R6 and wins); its end marker
+; silences the channel
 sfx:
         ld hl,(sfx_ptr)
         ld a,h
@@ -1159,36 +1188,73 @@ sfx:
         ld a,PSG_TONE_A+1
         call psg_write
         inc hl
-        ld a,(psg_io)
-        or MIX_ALL_OFF-MIX_TONE_A
-        xor (hl)                ; the noise bit, if any, to 0 (on)
-        ld e,a
-        ld a,PSG_MIXER
+        ld a,(hl)               ; the noise bit, if any
+        or a
+        jr z,.mix
+        ld e,SHOT_NOISE
+        ld a,PSG_NOISE
         call psg_write
+        ld a,(hl)
+.mix:   or MIX_TONE_A
         inc hl
         ld (sfx_ptr),hl
-        ret
-.end:   ld e,0
+        ld (shot_mix),a
+        jr mixer
+.end:   ld hl,0
+        ld (sfx_ptr),hl
+        ld a,l
+        ld (shot_mix),a
+        ld e,a
         ld a,PSG_VOL_A
         call psg_write
-        ld a,(psg_io)
-        or MIX_ALL_OFF
-        ld e,a
-        ld a,PSG_MIXER
+        jr mixer
+        assert ((SHOT_NOISE_BIT|MIX_TONE_A) & DEATH_MIX) == 0
+
+; One frame of the death sound on channel C: volume, noise period, tone
+; period (sfx.py's table), tone and noise on; its end marker silences the
+; channel and switches them off
+death:
+        ld hl,(death_ptr)
+        ld a,h
+        or l
+        ret z
+        ld d,(hl)               ; volume, 0 = the end
+        inc d
+        dec d
+        jr z,.end
+        inc hl
+        ld e,(hl)
+        ld a,PSG_NOISE
         call psg_write
-        ld hl,0
-        ld (sfx_ptr),hl
-        ret
+        inc hl
+        ld e,(hl)
+        ld a,PSG_TONE_C
+        call psg_write
+        inc hl
+        ld e,(hl)
+        ld a,PSG_TONE_C+1
+        call psg_write
+        inc hl
+        ld a,DEATH_MIX
+.put:   ld (death_ptr),hl
+        ld (death_mix),a
+        ld e,d
+        ld a,PSG_VOL_C
+        call psg_write
+        jp mixer
+.end:   ld hl,0
+        xor a
+        jr .put
 
 ; ---- Data ------------------------------------------------------------------
 
 RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPEED%60
                 db CALL_SPEED/60, CALL_SPEED%60
-                dw SHOT_60
+                dw SHOT_60, DEATH_60
                 db BOOM1_60, BOOM2_60, BOOM3_60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50
-                dw SHOT_50
+                dw SHOT_50, DEATH_50
                 db BOOM1_50, BOOM2_50, BOOM3_50
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
 

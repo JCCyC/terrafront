@@ -32,7 +32,9 @@ first ship to its last, holes included: ship-gap-ship can still call one
 up (from either side), ship-gap-gap-ship can't. Test keys 1..4 kill the
 front's 1st..4th living ship: it shows `images/player-ship-boom-1..3.png`
 (9×16, the ship's art box) for 6/4/5 frames at 60 Hz, 5/3/4 at 50 Hz, and
-doesn't fire; then its slot is a hole, and the front is trimmed to its
+doesn't fire, and Skyfighter's ship-blown-up sound plays on PSG channel C
+(1.4 s, U-boat Killer's "water, loud"; another death restarts it; where
+it clashes with the shot's sound, the PSG's one noise period, it wins); then its slot is a hole, and the front is trimmed to its
 first and last ships. An emptied front stays where its last ship died,
 can't move or shoot, and a call-up lands there.
 
@@ -55,8 +57,8 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
 - `make` runs `png2spr.py` (→ `build/sprites.inc`: ship pattern, colour,
   art bounds, nose column; the coming ship's two patterns and where the
   ship's art is in them; the three boom patterns and their colour; the
-  reserve ship's rows, colour, art width) and `sfx.py` (→ `build/sfx.inc`: the shot sound
-  tables), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
+  reserve ship's rows, colour, art width) and `sfx.py` (→ `build/sfx.inc`: the shot and death
+  sound tables; the death one is Skyfighter's `BOOM_SHIP`, byte for byte), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
   `build/terrafnt.sym`). `build/` is generated; don't edit it.
 - `make run` runs the Gradiente Expert 1.1 (primary target, 60 Hz),
   `make run-cbios` C-BIOS MSX1 (50 Hz), `make run-nms8250` the Philips
@@ -75,7 +77,10 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   call-up) and B (calls up, no shot), faked by a breakpoint after
   `read_joy`'s R14 read; the test keys: a boom's images and frame counts
   in the SAT, no bullet from a dying ship, holes, C refused for
-  ship-gap-gap-ship, a key with no such ship, trims, ship-gap-ship calling
+  ship-gap-gap-ship, the death sound (every frame: channel C's volume,
+  tone, noise period and mixer bits against the table, restarted by each
+  death, its noise period winning over the shot's; the last
+  one plays out in 1.4 s), a key with no such ship, trims, ship-gap-ship calling
   up from either side, an emptied front (no move, no shot) refilled where
   its last ship died (the test writes `reserves` in RAM for these
   call-ups). Every frame it also checks the SAT against the front (ships
