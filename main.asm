@@ -9,6 +9,8 @@
 ; Fire shoots a 1x3 bullet straight up from the nose at BULLET_SPEED px/s,
 ; at most MAX_BULLETS in flight; a press with all of them in flight is
 ; ignored. Each shot plays a 0.25 s laser "cheeoom" on PSG channel A.
+; The bottom status area shows RESERVES reserve ships at its left, one
+; black pixel apart.
 ; Controls: left / right arrows and space, or either joystick (either
 ; button fires). Fire is edge-triggered: one shot per press.
 ; Speeds are Bresenham on frames (whole pixels plus a remainder per frame,
@@ -32,6 +34,9 @@ BULLET_SPEED    equ 230         ; px/s, straight up
 BULLET_H        equ 3           ; the bullet is 1 px wide, BULLET_H tall
 BULLET_COLOR    equ 15          ; white
 MAX_BULLETS     equ 2           ; player bullets in flight at once
+RESERVES        equ 4           ; reserve ships shown in the bottom status area
+RESERVE_X       equ 0           ; the first reserve ship's art's left column
+RESERVE_GAP     equ 1           ; black pixels between two reserve ships
 
 ; ---- Layout ----------------------------------------------------------------
 
@@ -45,6 +50,16 @@ SHIP_X_MAX      equ 256-SHIP_ART_W          ; ship_x is the art's left column: 0
 BULLET_START    equ SHIP_TOP+SHIP_ART_T-BULLET_H    ; a new bullet's top line: right above the nose
         assert BULLET_START >= PLAY_TOP
         assert SHIP_ART_L < 32              ; the EC bit's 32 px cover the left clip
+
+; The reserve ships: 8x8 art in the bottom status area's one row of cells
+; (SCREEN 2 with INIGRP's names: cell (col, row) at pattern / colour byte
+; (row*32 + col)*8), drawn at RESERVE_X + n*RESERVE_STEP
+RESERVE_ROW     equ 23
+        assert STATUS_LINES == 8 && RESERVE_ROW*8 == PLAY_BOTTOM+1
+RESERVE_STEP    equ RESERVE_ART_W+RESERVE_GAP
+RESERVE_CELLS   equ (RESERVE_X+(RESERVES-1)*RESERVE_STEP+RESERVE_ART_W-1)/8+1
+RESERVE_VRAM    equ RESERVE_ROW*32*8    ; the row's first cell, from GRPCGP / GRPCOL
+        assert RESERVE_X+(RESERVES-1)*RESERVE_STEP+RESERVE_ART_W <= 256
 
 ; Sprite names (16x16 sprites: patterns in steps of 4)
 NAME_SHIP       equ 0
@@ -84,6 +99,7 @@ KEY_RIGHT       equ 80h
 
 MSXID1          equ 002Bh       ; bit 7 set = 50 Hz
 WRTVDP          equ 0047h
+FILVRM          equ 0056h
 LDIRVM          equ 005Ch
 INIGRP          equ 0072h
 RDPSG           equ 0096h
@@ -93,6 +109,8 @@ CLIKSW          equ 0F3DBh
 FORCLR          equ 0F3E9h
 BAKCLR          equ 0F3EAh
 BDRCLR          equ 0F3EBh
+GRPCOL          equ 0F3C9h      ; SCREEN 2's colour table
+GRPCGP          equ 0F3CBh      ; ... pattern table
 GRPATR          equ 0F3CDh      ; SCREEN 2's sprite attribute table
 GRPPAT          equ 0F3CFh      ; ... and sprite pattern table
 
@@ -131,6 +149,7 @@ psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
 sat_buf:        ds 3*4+1        ; ship, bullets, the end marker
 SAT_SIZE        equ $-sat_buf
+reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1: a ship's spill)
 RAM_SIZE        equ $-ram_start
         assert $ <= IM2_TABLE
 
@@ -201,6 +220,8 @@ init:
 
         call init_sound
         call build_sat
+        ld a,RESERVES
+        call draw_reserves
 
         di
         ld hl,IM2_TABLE
@@ -462,6 +483,75 @@ upload_sat:
         ld bc,SAT_SIZE*256+VDP_DATA
         otir
         ret
+
+; ---- Status area -----------------------------------------------------------
+
+; A (0..RESERVES) reserve ships in the bottom status area, from its left
+; (the rest of RESERVE_CELLS blank), through the BIOS's VRAM routines
+draw_reserves:
+        ld hl,reserve_buf
+        ld de,reserve_buf+1
+        ld bc,(RESERVE_CELLS+1)*8-1
+        ld (hl),0
+        ldir
+        or a
+        jr z,.show
+        ld b,a                  ; ships left to draw
+        ld c,RESERVE_X          ; this ship's art's left column
+.ship:  push bc
+        ld a,c
+        and 0F8h                ; its cell's first byte
+        ld e,a
+        ld d,0
+        ld hl,reserve_buf
+        add hl,de
+        ld a,c
+        and 7
+        ld c,a                  ; the art's shift in the cell
+        ld de,RESERVE_SHAPE
+        ld b,8
+.row:   push bc
+        ld a,(de)
+        ld b,c
+        ld c,0
+        inc b                   ; A:C = the row shifted right C bits
+        jr .shift
+.sh:    srl a
+        rr c
+.shift: djnz .sh
+        or (hl)
+        ld (hl),a               ; this cell
+        push de
+        push hl
+        ld de,8
+        add hl,de
+        ld a,c
+        or (hl)
+        ld (hl),a               ; the cell on its right
+        pop hl
+        pop de
+        inc hl
+        inc de
+        pop bc
+        djnz .row
+        pop bc
+        ld a,c
+        add a,RESERVE_STEP
+        ld c,a
+        djnz .ship
+.show:  ld hl,(GRPCGP)
+        ld de,RESERVE_VRAM
+        add hl,de
+        ex de,hl
+        ld hl,reserve_buf
+        ld bc,RESERVE_CELLS*8
+        call LDIRVM
+        ld hl,(GRPCOL)
+        ld de,RESERVE_VRAM
+        add hl,de
+        ld bc,RESERVE_CELLS*8
+        ld a,RESERVE_COLOR*16+BG_COLOR
+        jp FILVRM
 
 ; ---- Sound -----------------------------------------------------------------
 

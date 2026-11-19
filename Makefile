@@ -21,7 +21,7 @@ all: $(ROM)
 $(ROM): main.asm $(INCS)
 	sjasmplus --nologo --lst=build/terrafnt.lst --sym=build/terrafnt.sym main.asm
 
-build/sprites.inc: png2spr.py images/player-ship.png
+build/sprites.inc: png2spr.py images/player-ship.png images/reserve-ship.png
 	@mkdir -p build
 	python3 png2spr.py > $@
 

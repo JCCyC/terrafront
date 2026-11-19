@@ -14,6 +14,9 @@ edges (EC bit on the left). Fire shoots a 1×3 white bullet up from the nose
 at 230 px/s, at most 2 in flight (a press with both in flight is ignored),
 one shot per press. Each shot plays a 0.25 s laser "cheeoom" on PSG
 channel A. Controls: arrows + space, or either joystick (either button).
+The bottom status area shows 4 reserve ships (`images/reserve-ship.png`,
+8×8, drawn in the SCREEN 2 bitmap) at its left, art from column 0, one
+black pixel apart (`draw_reserves`, A = how many).
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -32,7 +35,7 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
 ## Build / run / test
 
 - `make` runs `png2spr.py` (→ `build/sprites.inc`: ship pattern, colour,
-  art bounds, nose column) and `sfx.py` (→ `build/sfx.inc`: the shot sound
+  art bounds, nose column; the reserve ship's rows, colour, art width) and `sfx.py` (→ `build/sfx.inc`: the shot sound
   tables), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
   `build/terrafnt.sym`). `build/` is generated; don't edit it.
 - `make run` runs the Gradiente Expert 1.1 (primary target, 60 Hz),
@@ -44,4 +47,5 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `build/test-<machine>.log`, screenshot `build/shot-<machine>.png`): ship
   start, speed over 1 s, both arrows, both edge clamps and their sprite X /
   EC, bullet spawn point, speed, removal at the top, the shot sound's
-  length, the 2-bullet limit, and one shot per press.
+  length, the 2-bullet limit, one shot per press, and the reserve ships'
+  pixels and colours in VRAM.

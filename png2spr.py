@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Player ship sprite from images/player-ship.png (16x16, black = transparent).
+"""Player ship sprite from images/player-ship.png (16x16, black = transparent),
+and the reserve ship from images/reserve-ship.png (8x8, black = background).
 
 Writes sjasmplus source to stdout:
   SHIP_PATTERN   32 bytes, the 16x16 sprite layout (left 8 columns, rows 0..15,
@@ -10,11 +11,15 @@ Writes sjasmplus source to stdout:
   SHIP_NOSE_DX   the nose's column (the top row's only pixel) minus SHIP_ART_L
   SHIP_ART_T     first row with art
   SHIP_ART_B     last row with art
+  RESERVE_SHAPE  8 bytes, the reserve ship's rows, its art's left column on bit 7
+  RESERVE_COLOR  the MSX1 colour nearest to its art's one colour
+  RESERVE_ART_W  its art width in pixels
 """
 import sys
 from PIL import Image
 
 PNG = 'images/player-ship.png'
+RESERVE_PNG = 'images/reserve-ship.png'
 
 # TMS9918 palette (approximate RGB), colour 1..15
 MSX1 = {
@@ -29,14 +34,20 @@ def nearest(rgb):
     return min(MSX1, key=lambda c: sum((a - b) ** 2 for a, b in zip(MSX1[c], rgb)))
 
 
-def main():
-    im = Image.open(PNG).convert('RGB')
-    assert im.size == (16, 16), f'{PNG}: {im.size}, want 16x16'
-    on = [[im.getpixel((x, y)) != (0, 0, 0) for x in range(16)] for y in range(16)]
-    colours = {im.getpixel((x, y)) for y in range(16) for x in range(16) if on[y][x]}
-    assert len(colours) == 1, f'{PNG}: the art must have one colour, has {colours}'
+def load(png, size):
+    """The art's pixels (on[y][x]) and its MSX1 colour"""
+    im = Image.open(png).convert('RGB')
+    assert im.size == (size, size), f'{png}: {im.size}, want {size}x{size}'
+    on = [[im.getpixel((x, y)) != (0, 0, 0) for x in range(size)] for y in range(size)]
+    colours = {im.getpixel((x, y)) for y in range(size) for x in range(size) if on[y][x]}
+    assert len(colours) == 1, f'{png}: the art must have one colour, has {colours}'
     colour = nearest(colours.pop())
-    assert colour != 1, 'the art is black: it would not show'
+    assert colour != 1, f'{png}: the art is black: it would not show'
+    return on, colour
+
+
+def main():
+    on, colour = load(PNG, 16)
 
     cols = [x for x in range(16) if any(on[y][x] for y in range(16))]
     rows = [y for y in range(16) if any(on[y])]
@@ -58,6 +69,14 @@ def main():
     print('SHIP_PATTERN:')
     for i in range(0, 32, 8):
         print('        db ' + ','.join(f'{b:#04x}' for b in pattern[i:i + 8]))
+
+    on, colour = load(RESERVE_PNG, 8)
+    cols = [x for x in range(8) if any(on[y][x] for y in range(8))]
+    shape = [sum(0x80 >> (x - cols[0]) for x in cols if on[y][x]) for y in range(8)]
+    print(f'RESERVE_COLOR   equ {colour}')
+    print(f'RESERVE_ART_W   equ {cols[-1] - cols[0] + 1}')
+    print('RESERVE_SHAPE:')
+    print('        db ' + ','.join(f'{b:#04x}' for b in shape))
 
 
 if __name__ == '__main__':

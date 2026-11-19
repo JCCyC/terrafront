@@ -61,6 +61,7 @@ proc plan {} {
 	set x0 [m ship_x]
 	check {$x0 == $::sym(SHIP_X_MAX)/2} "ship starts in the middle (x $x0)"
 	at 3 { check {[sat 0] == $::sym(SHIP_TOP) - 1} "ship sprite Y [sat 0] (art's last row on line 183)" }
+	at 3 { check_reserves }
 
 	# 1 s of right: SHIP_SPEED px (+-1 for the Bresenham remainder)
 	set a 10
@@ -126,6 +127,33 @@ proc plan {} {
 	at $a { set ::spawns 0 ; down 0x01 }
 	at [expr {$a+$F}] { up 0x01 ; check {$::spawns == 1} "fire held 1 s: one shot ($::spawns)" }
 	at [expr {$a+$F+3}] { screenshot_and_finish }
+}
+
+# The bottom status row (lines 184..191): RESERVES ships, art from column
+# RESERVE_X, every RESERVE_STEP px, white on black; nothing else on it
+proc check_reserves {} {
+	set shape {}
+	for {set r 0} {$r < 8} {incr r} { lappend shape [m RESERVE_SHAPE $r] }
+	set w $::sym(RESERVE_ART_W)
+	set bad {}
+	set lit 0
+	for {set y 0} {$y < 8} {incr y} {
+		for {set x 0} {$x < 256} {incr x} {
+			set want 0
+			for {set i 0} {$i < $::sym(RESERVES)} {incr i} {
+				set dx [expr {$x - $::sym(RESERVE_X) - $i*($w + $::sym(RESERVE_GAP))}]
+				if {$dx >= 0 && $dx < $w} { set want [expr {([lindex $shape $y] >> (7 - $dx)) & 1}] }
+			}
+			set a [expr {23*256 + ($x/8)*8 + $y}]
+			set got [expr {([debug read VRAM $a] >> (7 - $x%8)) & 1}]
+			if {$got} { incr lit ; set col [expr {[debug read VRAM [expr {0x2000 + $a}]] >> 4}] } else { set col 15 }
+			if {$got != $want || $col != 15} { lappend bad "($x,$y)" }
+		}
+	}
+	check {[llength $bad] == 0 && $lit > 0} "$::sym(RESERVES) reserve ships at the bottom left, 1 px apart ($lit px lit; wrong: [lrange $bad 0 9])"
+	set names {}
+	for {set c 0} {$c < 32} {incr c} { if {[debug read VRAM [expr {0x1800 + 23*32 + $c}]] != 0xE0 + $c} { lappend names $c } }
+	check {[llength $names] == 0} "bottom row's names are INIGRP's (wrong at: $names)"
 }
 
 # The single shot: its Y each frame, until gone; the PSG channel A volume
