@@ -126,6 +126,7 @@ set maxlive 0
 proc plan {} {
 	set F [m fps]
 	set ::F $F
+	set ::wdelay [expr {$::sym(WAVE_DELAY_MS) * $F / 1000}]
 	set ::bstart [expr {$::sym(BULLET_START)}]
 	ship_px_init
 	say "fps $F"
@@ -1070,10 +1071,10 @@ proc wdiff {a b} { expr {($a - $b + 3*$::FWRAP/2) % $::FWRAP - $::FWRAP/2} }
 set form_bad 0 ; set form_first "" ; set form_frames 0 ; set form_err 0
 set form_left 0 ; set form_right 0 ; set form_laps 0 ; set form_lapbad 0
 set form_ymin 999 ; set form_ymax 0 ; set form_hist [dict create]
-set wave0 0 ; set form_w2 0
+set wave0 0 ; set form_w2 0 ; set form_skip 0
 proc form_bad {s} { if {!$::form_bad} { set ::form_first "frame $::n: $s" } ; incr ::form_bad }
 proc form_frame {} {
-	if {$::n < 2} return
+	if {$::n < 2 || $::n <= $::form_skip} return
 	# VRAM holds the SAT built after n - 2 frames' moves (since the wave
 	# began: ::wave0, the frame whose work started it)
 	set k [expr {$::n - 2 - $::wave0}]
@@ -1229,6 +1230,7 @@ set eprev {} ; set rotp 0 ; set vprev {}
 set hits 0 ; set breaks 0 ; set booms_n 0 ; set hit_bad 0 ; set hit_first ""
 set mot_bad 0 ; set mot_first "" ; set freeframes 0
 set btop 0 ; set bbottom 0 ; set nonmirror 0 ; set dirs {}
+set wgone -1 ; set wwaited 0
 set waves 0 ; set wenemy 0 ; set wcidx 0 ; set gone_sts {} ; set wave_bad 0 ; set wave_first ""
 proc wave_bad {s} { if {!$::wave_bad} { set ::wave_first "frame $::n: $s" } ; incr ::wave_bad }
 proc hit_bad {s} { if {!$::hit_bad} { set ::hit_first "frame $::n: $s" } ; incr ::hit_bad }
@@ -1317,10 +1319,19 @@ proc enemy_model {cur vols} {
 			if {([lindex $w 0] == 0 && [lindex $g 0] != 0) || ([lindex $w 0] != 0 && $w ne $g)} { hit_bad "volley $v: $g, want $w" }
 		}
 	}
-	# every enemy gone: this frame's work began the next wave (enemy and
-	# colour the next in their lists), all in their pairs at the loop's start
-	if {[lsearch -not -exact $st 5] < 0} {
-		set ::gone_sts $st
+	# every enemy gone: the frame's work that made it so starts the wait;
+	# WAVE_DELAY_MS (::wdelay frames) later a frame's work begins the next
+	# wave (enemy and colour the next in their lists), all in their pairs
+	# at the loop's start; till then all stay gone, the wave unchanged
+	if {[lsearch -not -exact $st 5] < 0 && $::wgone < 0} {
+		set ::wgone $::n ; set ::gone_sts $st
+		if {[m wave_wait] != $::wdelay} { wave_bad "the last one gone: wave_wait [m wave_wait], want $::wdelay" }
+	}
+	if {$::wgone >= 0 && $::n - $::wgone < $::wdelay} {
+		if {[m form_enemy] != $::wenemy || [lsearch -not -exact [lmap e $cur {lindex $e 0}] 5] >= 0} { wave_bad "frame [expr {$::n - $::wgone}] of the wait: enemy [m form_enemy], states [lmap e $cur {lindex $e 0}]" }
+		incr ::wwaited
+	} elseif {$::wgone >= 0} {
+		set ::wgone -1
 		if {!$::waves} { for {set i 0} {$i < 8} {incr i} { lappend ::sthist($i) 5 } }
 		incr ::waves
 		if {$::waves == 1} { set ::coll_w1 $::coll ; set ::breaks_w1 $::breaks ; set ::bstarts_w1 $::bstarts }
@@ -1542,8 +1553,10 @@ proc aim_frame {} {
 		if {$::n >= $::e2end} { set ::ephase 3 }
 		return
 	}
-	if {$::ephase < 4 && $::waves || $::n > $::edead} {
-		set ::ephase 4 ; set ::e4end [expr {$::n + 2*$::F}]
+	# every enemy gone (the wait for the next wave on): stop firing; the
+	# next wave flies 2 s before the staged collisions
+	if {$::ephase < 4 && ($::waves || $::wgone >= 0) || $::n > $::edead} {
+		set ::ephase 4 ; set ::e4end [expr {$::n + $::wdelay + 2*$::F}]
 	}
 	if {$::ephase >= 4} {
 		keys 0
@@ -1620,6 +1633,7 @@ proc stage_collisions {} {
 	# the next frame's model from the enemies as the test wrote them
 	set ::eprev {}
 	for {set i 0} {$i < 8} {incr i} { lappend ::eprev [en_state $i] }
+	set ::form_skip [expr {$::n + 2}]   ;# (the SAT shown till then: from before the writes)
 	set ::c0 [list $::coll $::coll_ships $::coll_multi $::coll_shared $::coll_near]
 	at [expr {$::n + 1}] {
 		set sts {} ; set bs {}
@@ -1649,7 +1663,7 @@ proc enemy_end {} {
 	check {$::breaks_w1 == 4} "bullets broke up all 4 pairs of the first wave ($::breaks_w1; $::breaks with the second wave's)"
 	check {$sts eq {5 5 5 5 5 5 5 5}} "bullets and the front blew up all 8 free enemies, all gone ($::booms_n by bullets, $::coll_w1 touching the front; states $sts)"
 	check {$::coll_bad == 0 && $::coll_w1 > 0} "collisions = the model (each free enemy after its move against the ships living, a pixel on a pixel; both blow up, the rest as they were) every frame ($::coll enemies touched $::coll_ships ships, $::coll_w1 in the first wave; $::coll_near near misses; $::refills call-ups to refill the front; [expr {$::coll_bad ? "first wrong: $::coll_first" : "none wrong"}])"
-	check {$::waves == 1 && $::wave_bad == 0} "the last one gone, the second wave: enemy 1, colour 3, its patterns in VRAM, the loop from its start, that frame ($::waves waves; enemy [m form_enemy], colour [m form_color]; [expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
+	check {$::waves == 1 && $::wave_bad == 0 && $::wwaited == $::wdelay} "the last one gone, the second wave: enemy 1, colour 3, its patterns in VRAM, the loop from its start, $::wdelay frames later (0.7 s; all gone for $::wwaited frames first; $::waves waves; enemy [m form_enemy], colour [m form_color]; [expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 	check {$::hit_bad == 0 && $::hits > 0} "hits = the model (each bullet against the enemies' art on the lines it covered, the first enemy hit, the bullet gone; pairs break, free ones boom) every frame ($::hits hits; [expr {$::hit_bad ? "first wrong: $::hit_first" : "none wrong"}])"
 	check {$::mot_bad == 0 && $::freeframes > 0} "free enemies = the model (velocity table, wrap, stopped at lines 8 / 183 and turned away) every frame, booms stationary ($::freeframes enemy-frames; [expr {$::mot_bad ? "first wrong: $::mot_first" : "none wrong"}])"
 	check {$::btop > 0 && $::bbottom > 0 && $::nonmirror > 0} "bounces: $::btop at the top, $::bbottom at the bottom, $::nonmirror not a mirror's"
@@ -1673,13 +1687,17 @@ proc enemy_end {} {
 	wave_step
 }
 # The lists' turns: the test makes every enemy gone (EN.ST = EN_GONE in
-# RAM), and the next frame's work begins the next wave; 19 of them (waves
-# 2..20: both lists wrap)
+# RAM); the next frame's work starts the wait, and ::wdelay frames later
+# a frame's work begins the next wave (not one frame sooner); 19 of them
+# (waves 2..20: both lists wrap)
 proc wave_step {} {
 	at [expr {$::n + 1}] {
 		for {set i 0} {$i < 8} {incr i} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 5 }
 	}
-	at [expr {$::n + 2}] {
+	at [expr {$::n + 1 + $::wdelay}] {
+		if {[m form_enemy] != ($::waves % 10) || [m wave_wait] != 1} { wave_bad "wave [expr {$::waves + 1}]: began before its wait was over (enemy [m form_enemy], wave_wait [m wave_wait])" }
+	}
+	at [expr {$::n + 2 + $::wdelay}] {
 		incr ::waves
 		set w $::waves
 		set we [expr {$w % 10}] ; set wc [expr {$w % 9}]

@@ -64,7 +64,9 @@ each next wave is the next enemy in the next colour of 2, 3, 5, 7, 8, 9,
 10, 11, 13 (`FORM_COLOR_LIST`), each list from its start again after its
 last (`form_enemy`, `form_cidx`): 0/2, 1/3, ..., 8/13, 9/2, 0/3, ....
 Once every enemy of a wave is gone (its last boom over), that frame
-begins the next wave (`next_wave`, after `move_enemies`): its patterns
+starts a 0.7 s wait (`WAVE_DELAY_MS`: 42 frames at 60 Hz, 35 at 50 Hz,
+counted down in `wave_wait`), and the frame it runs out begins the next
+wave (`next_wave`, after `move_enemies`): its patterns
 loaded (`load_formation`), all in their pairs, the loop from its start
 (column 25, line 66), shown from that frame's SAT on. Each pair
 is one 16×16 sprite, the 8×16 enemy twice side by side; laid out
@@ -183,19 +185,21 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   with four ships (three call-ups first): the test steers the front's first ship under the nearest pair and fires until
   all 4 pairs broke up, holds fire 6 s (screenshot
   `build/shot-<machine>-enemies.png`), then hunts the free enemies until
-  all 8 are gone (at the pairs it fires one aimed volley at a time, so
+  all 8 are gone, then stops firing (at the pairs it fires one aimed volley at a time, so
   that free enemies are left to fly; whenever the front spans fewer than
   4 slots and no call-up flies, it writes 3 `reserves` and calls one up,
-  as enemies touching the front kill ships); the second wave must begin that
-  frame (enemy 1, colour 3, its patterns in VRAM, the loop from its
+  as enemies touching the front kill ships); the second wave must begin
+  exactly 0.7 s later, all gone till then (enemy 1, colour 3, its patterns in VRAM, the loop from its
   start; the per-frame models follow it for 2 s); then staged collisions
-  (written in RAM: a four-ship front at column 100, enemies flying
+  (written in RAM, the formation's check skipping the 2 frames whose SAT
+  predates the writes: a four-ship front at column 100, enemies flying
   straight down placed by the test's own pixel model so that after their
   next move one is across ships 1 and 2, two are on ship 3, one's art box
   overlaps a ship's with no pixel touching: the next frame's states, booms
   and 6 death sound starts); then, with the
   per-frame models off, the test makes every enemy gone in RAM 19 times
-  and checks waves 3..21 (both lists wrap). It checks the velocity table (64 directions, the square
+  and checks waves 3..21 (both lists wrap; none begun a frame before
+  its 0.7 s). It checks the velocity table (64 directions, the square
   legs' speed), every enemy's boom (images and frame counts), the break
   sound's starts and length, a death-sound start per enemy boom, bounces at
   both lines (not mirrors), no level break-up direction, the SAT's flip and

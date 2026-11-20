@@ -33,8 +33,8 @@
 ; The enemies come in waves: a formation of FORM_PAIRS_N pairs of one enemy
 ; in one colour, the first wave enemy 0 in FORM_COLOR_LIST's first colour,
 ; each next wave the next enemy (of ENEMIES) in the next colour (each list
-; from its start again after its last); a wave begins once the last one's
-; every enemy is gone. Laid out as in images/formation-enemy-*-color-*.png (each pair
+; from its start again after its last); a wave begins WAVE_DELAY_MS after
+; the last one's every enemy is gone. Laid out as in images/formation-enemy-*-color-*.png (each pair
 ; one sprite: the enemy twice, side by side), flies a loop at a constant
 ; speed: northeast across a 35 x 29 box, east-southeast across a 60 x 29
 ; one, southwest and northwest across 35 x 29 ones, in path.py's
@@ -108,6 +108,7 @@ BLINK_ON_MS     equ 300         ; the splash's "PRESS SPACE TO BEGIN" shows this
 BLINK_OFF_MS    equ 200         ; ... then is hidden this long
 BLINK_ROW       equ 22          ; its character row (lines 176..183), centred on it
 TEXT_COLOR      equ 15          ; white: the game's text
+WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins this much later
 ; the waves' colours in turn (their enemies: images/enemy-0..9.png in turn)
         define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
 ; (the formation's loop: path.py)
@@ -288,6 +289,7 @@ vel_table:      ds 2            ; FREE_VEL_60 or FREE_VEL_50
 boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
 blink_on:       ds 1            ; the splash's text: frames shown ...
 blink_off:      ds 1            ; ... and hidden
+wave_delay:     ds 1            ; frames from a wave's last enemy gone to the next wave
 RATES_SIZE      equ $-rates
 
 input:          ds 1            ; IN_* this frame
@@ -344,6 +346,7 @@ form_acc:       ds 1            ; Bresenham remainder
 form_enemy:     ds 1            ; its enemy (0..ENEMIES-1) ...
 form_color:     ds 1            ; ... and colour (FORM_COLORS[form_cidx]), the wave's
 form_cidx:      ds 1            ; 0..FORM_COLORS_N-1
+wave_wait:      ds 1            ; every enemy gone: frames until the next wave, else 0
 form_rows:      ds 2            ; its art's 16 rows (ENEMY_PATTERN's left half)
 form_art_t:     ds 1            ; its art's first row ...
 form_art_b:     ds 1            ; ... and last
@@ -1917,11 +1920,19 @@ load_formation:
         jp FILVRM
         assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY && NAME_ENEMY1 == NAME_ENEMY+4
 
-; Every enemy gone: a new wave, the next enemy (images/enemy-0..9.png in
+; Every enemy gone: WAVE_DELAY_MS later (wave_delay frames after the frame
+; the last one went), a new wave, the next enemy (images/enemy-0..9.png in
 ; turn) in the next colour of FORM_COLOR_LIST (each list from its start
 ; again after its last), the formation in its pairs at the loop's start
 next_wave:
-        ld hl,enemies+EN.ST
+        ld hl,wave_wait
+        ld a,(hl)
+        or a
+        jr z,.idle
+        dec (hl)                ; waiting (every enemy stays gone meanwhile)
+        ret nz
+        jr .go
+.idle:  ld hl,enemies+EN.ST
         ld de,EN
         ld b,ENEMY_N
 .e:     ld a,(hl)
@@ -1929,6 +1940,10 @@ next_wave:
         ret nz
         add hl,de
         djnz .e
+        ld a,(wave_delay)       ; the last one just went: the wait starts
+        ld (wave_wait),a
+        ret
+.go:
         ld a,(form_enemy)
         inc a
         cp ENEMIES
@@ -2763,15 +2778,19 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 dw SHOT_60, DEATH_60, BREAK_60, FREE_VEL_60
                 db BOOM1_60, BOOM2_60, BOOM3_60
                 db BLINK_ON_MS*60/1000, BLINK_OFF_MS*60/1000
+                db WAVE_DELAY_MS*60/1000
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
                 dw SHOT_50, DEATH_50, BREAK_50, FREE_VEL_50
                 db BOOM1_50, BOOM2_50, BOOM3_50
                 db BLINK_ON_MS*50/1000, BLINK_OFF_MS*50/1000
+                db WAVE_DELAY_MS*50/1000
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
         assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0
+        assert WAVE_DELAY_MS*60%1000 == 0 && WAVE_DELAY_MS*50%1000 == 0
+        assert WAVE_DELAY_MS*50/1000 > 0 && WAVE_DELAY_MS*60/1000 < 256
 
 FORM_COLORS:    db FORM_COLOR_LIST
 FORM_COLORS_N   equ $-FORM_COLORS
