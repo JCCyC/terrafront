@@ -30,9 +30,11 @@
 ; at column 255 on a random line. No two stars share a line (so never a
 ; bitmap byte), and a star isn't drawn in a byte a bullet is in (each byte
 ; has one colour; the bullet's is kept).
-; The enemies: a formation of FORM_PAIRS_N pairs of one enemy in one
-; colour, both picked at random once the splash ends (the enemy among all
-; ENEMIES, the colour among FORM_COLOR_LIST, seeded from entropy), laid out as in images/formation-enemy-*-color-*.png (each pair
+; The enemies come in waves: a formation of FORM_PAIRS_N pairs of one enemy
+; in one colour, the first wave enemy 0 in FORM_COLOR_LIST's first colour,
+; each next wave the next enemy (of ENEMIES) in the next colour (each list
+; from its start again after its last); a wave begins once the last one's
+; every enemy is gone. Laid out as in images/formation-enemy-*-color-*.png (each pair
 ; one sprite: the enemy twice, side by side), flies a loop at a constant
 ; speed: northeast across a 35 x 29 box, east-southeast across a 60 x 29
 ; one, southwest and northwest across 35 x 29 ones, in path.py's
@@ -61,7 +63,7 @@
 ; joystick's button A) starts the game. Meanwhile the keyboard and the
 ; joysticks are polled as fast as the loop goes, and the time of every
 ; press and release (the polls so far, and R) is mixed into entropy, kept
-; for later.
+; for later (unused for now).
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Test keys 1..4 kill the front's
 ; first..fourth ship. Fire, call-up and the test keys are edge-triggered:
@@ -106,7 +108,7 @@ BLINK_ON_MS     equ 300         ; the splash's "PRESS SPACE TO BEGIN" shows this
 BLINK_OFF_MS    equ 200         ; ... then is hidden this long
 BLINK_ROW       equ 22          ; its character row (lines 176..183), centred on it
 TEXT_COLOR      equ 15          ; white: the game's text
-; the formation's colours, one picked at random (its enemy: any of images/enemy-N.png)
+; the waves' colours in turn (their enemies: images/enemy-0..9.png in turn)
         define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
 ; (the formation's loop: path.py)
 
@@ -340,7 +342,8 @@ form_x:         ds 2
 form_tick:      ds 2
 form_acc:       ds 1            ; Bresenham remainder
 form_enemy:     ds 1            ; its enemy (0..ENEMIES-1) ...
-form_color:     ds 1            ; ... and colour, picked after the splash
+form_color:     ds 1            ; ... and colour (FORM_COLORS[form_cidx]), the wave's
+form_cidx:      ds 1            ; 0..FORM_COLORS_N-1
 form_rows:      ds 2            ; its art's 16 rows (ENEMY_PATTERN's left half)
 form_art_t:     ds 1            ; its art's first row ...
 form_art_b:     ds 1            ; ... and last
@@ -414,7 +417,7 @@ init:
         ei
 
         call splash
-        call pick_formation
+        call load_formation     ; the first wave's (form_enemy, form_cidx: 0)
 
         ld hl,SHIP_PATTERN      ; the six ship patterns follow each other
         ld de,(GRPPAT)
@@ -423,37 +426,6 @@ init:
         assert COMING_R_PATTERN == SHIP_PATTERN+32 && COMING_L_PATTERN == SHIP_PATTERN+64
         assert BOOM_PATTERN == SHIP_PATTERN+96
         assert NAME_SHIP == 0 && NAME_COMING_R == 4 && NAME_COMING_L == 8 && NAME_BOOM == 12
-        ld hl,(GRPPAT)          ; the formation's pair
-        ld de,NAME_ENEMY*8
-        add hl,de
-        ex de,hl
-        ld a,(form_enemy)
-        ld l,a
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld bc,ENEMY_PATTERN
-        add hl,bc
-        ld bc,32
-        call LDIRVM
-        ld hl,(GRPPAT)          ; one enemy alone: its rows, then 16 blank
-        ld de,NAME_ENEMY1*8
-        add hl,de
-        ex de,hl
-        ld hl,(form_rows)
-        ld bc,16
-        call LDIRVM
-        ld hl,(GRPPAT)
-        ld de,NAME_ENEMY1*8+16
-        add hl,de
-        ld bc,16
-        xor a
-        call FILVRM
-        assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY && NAME_ENEMY1 == NAME_ENEMY+4
-
         ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
         ld de,PLAY_TOP/8*256
         add hl,de
@@ -514,6 +486,7 @@ main_loop:
         call move_formation
         call form_place
         call move_enemies       ; (a pair broken this frame: its enemies start from its place)
+        call next_wave          ; after them: a new wave shows from this frame's SAT on
         call sfx
         call brk_sfx            ; after sfx: its noise period wins over the shot's ...
         call death              ; ... and the death sound's over both
@@ -1697,20 +1670,18 @@ random_line:
         ret
         assert STAR == 3
 
-; The formation's enemy and colour at random, rand seeded from entropy
-; (the splash's key times)
-pick_formation:
-        ld hl,(entropy)
-        ld a,h
-        or l
-        jr nz,.seed
-        inc l                   ; (never 0)
-.seed:  ld (rand_seed),hl
-.e:     call rand
-        and 15
-        cp ENEMIES
-        jr nc,.e
-        ld (form_enemy),a
+; The wave's enemy (form_enemy) and colour (FORM_COLORS[form_cidx]): its
+; art's rows and bounds, its colour, its pair's and its lone enemy's
+; patterns in VRAM (no enemy sprite shows them while they change)
+load_formation:
+        ld a,(form_cidx)
+        ld e,a
+        ld d,0
+        ld hl,FORM_COLORS
+        add hl,de
+        ld a,(hl)
+        ld (form_color),a
+        ld a,(form_enemy)
         ld l,a
         ld h,0
         add hl,hl
@@ -1730,17 +1701,67 @@ pick_formation:
         ld de,ENEMY_PATTERN
         add hl,de
         ld (form_rows),hl
-.c:     call rand
-        and 15
-        cp FORM_COLORS_N
-        jr nc,.c
-        ld e,a
-        ld d,0
-        ld hl,FORM_COLORS
+        push hl
+        ld hl,(GRPPAT)          ; the formation's pair
+        ld de,NAME_ENEMY*8
         add hl,de
-        ld a,(hl)
-        ld (form_color),a
-        ret
+        ex de,hl
+        pop hl
+        ld bc,32
+        call LDIRVM
+        ld hl,(GRPPAT)          ; one enemy alone: its rows, then 16 blank
+        ld de,NAME_ENEMY1*8
+        add hl,de
+        ex de,hl
+        ld hl,(form_rows)
+        ld bc,16
+        call LDIRVM
+        ld hl,(GRPPAT)
+        ld de,NAME_ENEMY1*8+16
+        add hl,de
+        ld bc,16
+        xor a
+        jp FILVRM
+        assert NAME_BOOM+BOOM_STAGES*4 <= NAME_ENEMY && NAME_ENEMY1 == NAME_ENEMY+4
+
+; Every enemy gone: a new wave, the next enemy (images/enemy-0..9.png in
+; turn) in the next colour of FORM_COLOR_LIST (each list from its start
+; again after its last), the formation in its pairs at the loop's start
+next_wave:
+        ld hl,enemies+EN.ST
+        ld de,EN
+        ld b,ENEMY_N
+.e:     ld a,(hl)
+        cp EN_GONE
+        ret nz
+        add hl,de
+        djnz .e
+        ld a,(form_enemy)
+        inc a
+        cp ENEMIES
+        jr c,.en
+        xor a
+.en:    ld (form_enemy),a
+        ld a,(form_cidx)
+        inc a
+        cp FORM_COLORS_N
+        jr c,.cn
+        xor a
+.cn:    ld (form_cidx),a
+        call load_formation
+        ld hl,enemies           ; all EN_FORM, as at the start
+        ld de,enemies+1
+        ld bc,ENEMY_N*EN-1
+        ld (hl),0
+        ldir
+        ld hl,FORM_X0
+        ld (form_x),hl
+        ld hl,0
+        ld (form_tick),hl
+        xor a
+        ld (form_acc),a
+        jp form_place
+        assert EN_FORM == 0
 
 ; A = a random byte (16-bit xorshift, 7/9/8). Keeps BC, DE.
 rand:   ld hl,(rand_seed)

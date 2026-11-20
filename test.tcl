@@ -68,7 +68,7 @@ debug set_bp $sym(death_start) {} { incr ::dnew }  ;# each call (two booms can s
 # The break sound: brk_start (re)starts it; brk_frame checks channel B
 set bnew 0 ; set bidx -1 ; set bruns {} ; set bstarts 0
 set bbad 0 ; set bframes 0 ; set bfirst ""
-debug set_bp $sym(brk_start) {} { set ::bnew 1 }
+debug set_bp $sym(brk_start) {} { incr ::bnew }  ;# each call (two pairs can break up in one frame)
 # Hits are off (volley_hits returns at once) until the enemies' part
 set nohits 1 ; set nohits_was 1
 debug set_bp $sym(volley_hits) {} {
@@ -91,22 +91,24 @@ proc frame {} {
 	if {$live > $::maxlive} { set ::maxlive $live }
 	if {[info exists ::track]} { try track_frame }
 	if {[info exists ::bw]} { lappend ::bw [list [sate $::bwslot 0] [sate $::bwslot 2]] }
-	try vis_frame
-	try check_sat
-	try star_frame
-	try check_bitmap
-	try call_frame
-	try death_frame
-	try brk_frame
-	try form_frame
-	try enemy_frame
+	if {!$::nocheck} {
+		try vis_frame
+		try check_sat
+		try star_frame
+		try check_bitmap
+		try call_frame
+		try death_frame
+		try brk_frame
+		try form_frame
+		try enemy_frame
+	}
 	if {$::ephase} { try aim_frame }
 	set ::nohits_was $::nohits
 	set fr [m frames]
 	if {[info exists ::last_frames] && (($fr - $::last_frames) & 255) != 1} { incr ::dropped ; if {$::ephase} { incr ::edropped } }
 	set ::last_frames $fr
 }
-set dropped 0 ; set edropped 0 ; set ephase 0 ; set flip_bad 0
+set dropped 0 ; set edropped 0 ; set ephase 0 ; set flip_bad 0 ; set nocheck 0
 set maxlive 0
 
 proc plan {} {
@@ -1055,11 +1057,13 @@ proc wdiff {a b} { expr {($a - $b + 3*$::FWRAP/2) % $::FWRAP - $::FWRAP/2} }
 set form_bad 0 ; set form_first "" ; set form_frames 0 ; set form_err 0
 set form_left 0 ; set form_right 0 ; set form_laps 0 ; set form_lapbad 0
 set form_ymin 999 ; set form_ymax 0 ; set form_hist [dict create]
+set wave0 0 ; set form_w2 0
 proc form_bad {s} { if {!$::form_bad} { set ::form_first "frame $::n: $s" } ; incr ::form_bad }
 proc form_frame {} {
 	if {$::n < 2} return
-	# VRAM holds the SAT built after n - 2 frames' moves
-	set k [expr {$::n - 2}]
+	# VRAM holds the SAT built after n - 2 frames' moves (since the wave
+	# began: ::wave0, the frame whose work started it)
+	set k [expr {$::n - 2 - $::wave0}]
 	lassign [form_at $k] wx wy
 	# the pairs still whole when the SAT shown was built
 	set intact {}
@@ -1085,6 +1089,7 @@ proc form_frame {} {
 		if {$x < 256 && $x > 240} { incr ::form_right }
 	}
 	# a cycle later: 25 px east, the same lines
+	if {$::wave0} { incr ::form_w2 }
 	set tk [form_ticks $k]
 	if {[llength $intact] < 4} { incr ::form_frames ; return }   ;# (the laps: with all four)
 	dict set ::form_hist $tk [list $x0 $y0]
@@ -1096,51 +1101,46 @@ proc form_frame {} {
 	}
 	incr ::form_frames
 }
-# rand (16-bit xorshift 7/9/8): {h l} -> {h l byte}
-proc xs {h l} {
-	set h1 [expr {((($h & 1) << 7) | ($l >> 1)) ^ $h}]
-	set l1 [expr {((($l & 1) << 7) | ($h1 >> 1)) ^ $l}]
-	set h2 [expr {$l1 ^ $h1}]
-	list $h2 $l1 $h2
-}
-# The enemy and colour the game picked: rand seeded from entropy, the
-# enemy (rand & 15) < 10, then the colour's index (rand & 15) < 9 into
-# the spec's list
+# The waves' enemies and colours, in turn: wave w (0 first) is enemy
+# w mod 10 in colour COLS[w mod 9]
+set COLS {2 3 5 7 8 9 10 11 13}
 proc check_form_pick {} {
-	set COLS {2 3 5 7 8 9 10 11 13}
-	set h [m entropy 1] ; set l [m entropy]
-	if {!$h && !$l} { set l 1 }
-	while 1 { lassign [xs $h $l] h l r ; if {($r & 15) < 10} break }
-	set e [expr {$r & 15}]
-	while 1 { lassign [xs $h $l] h l r ; if {($r & 15) < 9} break }
-	set c [lindex $COLS [expr {$r & 15}]]
-	check {[m form_enemy] == $e && [m form_color] == $c} "formation picked from entropy [format %04X [entropy]]: enemy [m form_enemy], colour [m form_color] (want enemy $e, colour $c)"
+	check {[m form_enemy] == 0 && [m form_cidx] == 0 && [m form_color] == 2} "the first wave: enemy [m form_enemy], colour [m form_color] (index [m form_cidx]; want enemy 0, colour 2)"
 }
-proc check_form_pattern {} {
-	set a [expr {0x3800 + $::sym(NAME_ENEMY)*8}]
+# The wave's enemy's patterns in VRAM, against ENEMY_PATTERN: wrong bytes
+proc form_pattern_bad {} {
 	set e [m form_enemy]
 	set bad {}
+	set a [expr {0x3800 + $::sym(NAME_ENEMY)*8}]
 	for {set i 0} {$i < 32} {incr i} {
-		if {[debug read VRAM [expr {$a + $i}]] != [m ENEMY_PATTERN [expr {$e*32 + $i}]]} { lappend bad $i }
+		if {[debug read VRAM [expr {$a + $i}]] != [m ENEMY_PATTERN [expr {$e*32 + $i}]]} { lappend bad "pair $i" }
 		if {$i < 16 && [debug read VRAM [expr {$a + $i}]] != [debug read VRAM [expr {$a + $i + 16}]]} { lappend bad "half $i" }
 	}
-	check {[llength $bad] == 0} "the formation's pair in VRAM: enemy [m form_enemy], twice side by side (wrong: $bad)"
 	set a [expr {0x3800 + $::sym(NAME_ENEMY1)*8}]
-	set bad {}
 	for {set i 0} {$i < 32} {incr i} {
 		set w [expr {$i < 16 ? [m ENEMY_PATTERN [expr {$e*32 + $i}]] : 0}]
-		if {[debug read VRAM [expr {$a + $i}]] != $w} { lappend bad $i }
+		if {[debug read VRAM [expr {$a + $i}]] != $w} { lappend bad "lone $i" }
 	}
-	check {[llength $bad] == 0} "one enemy alone in VRAM: enemy $e in the left 8 columns (wrong: $bad)"
+	if {[m form_art_t] != [m ENEMY_ROWS [expr {2*$e}]] || [m form_art_b] != [m ENEMY_ROWS [expr {2*$e+1}]]} { lappend bad "art rows" }
+	return $bad
+}
+# The wave's enemy's art for the model: ::erows, ::art_t, ::art_b
+proc load_art {} {
+	set e [m form_enemy]
 	set ::erows {}
 	for {set i 0} {$i < 16} {incr i} { lappend ::erows [m ENEMY_PATTERN [expr {$e*32 + $i}]] }
 	set ::art_t [m ENEMY_ROWS [expr {2*$e}]] ; set ::art_b [m ENEMY_ROWS [expr {2*$e+1}]]
-	check {[m form_art_t] == $::art_t && [m form_art_b] == $::art_b} "enemy $e's art: rows $::art_t..$::art_b"
+}
+proc check_form_pattern {} {
+	set bad [form_pattern_bad]
+	check {[llength $bad] == 0} "enemy [m form_enemy] in VRAM: the formation's pair (twice side by side), the lone one (left 8 columns), its art's rows (wrong: $bad)"
+	load_art
 }
 proc check_form_end {} {
 	check {$::form_bad == 0 && $::form_frames > 10*$::F} "formation = the spec's loop ([format %.3f [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]] s, constant speed, 25 px east a cycle), pairs in the picture's layout, colour [m form_color], every frame ($::form_frames frames, off by $::form_err px at most; [expr {$::form_bad ? "first wrong: $::form_first" : "none wrong"}])"
 	check {$::form_laps > 0 && $::form_lapbad == 0} "a cycle later the formation is 25 px east on the same lines ($::form_laps frames checked)"
 	check {$::form_ymin >= 8 && $::form_ymax + 44 <= $::sym(SHIP_TOP) && $::form_ymin <= 39 && $::form_ymax >= 93} "formation's top from line $::form_ymin to $::form_ymax: between the status area and the front's sprites"
+	check {$::form_w2 > $::F} "the second wave's formation checked too ($::form_w2 frames)"
 	check {$::form_left > 0 && $::form_right > 0} "pairs leaving the right edge ($::form_right pair-frames) come back in from the left, early clock ($::form_left)"
 }
 
@@ -1216,6 +1216,8 @@ set eprev {} ; set rotp 0 ; set vprev {}
 set hits 0 ; set breaks 0 ; set booms_n 0 ; set hit_bad 0 ; set hit_first ""
 set mot_bad 0 ; set mot_first "" ; set freeframes 0
 set btop 0 ; set bbottom 0 ; set nonmirror 0 ; set dirs {}
+set waves 0 ; set wenemy 0 ; set wcidx 0 ; set gone_sts {} ; set wave_bad 0 ; set wave_first ""
+proc wave_bad {s} { if {!$::wave_bad} { set ::wave_first "frame $::n: $s" } ; incr ::wave_bad }
 proc hit_bad {s} { if {!$::hit_bad} { set ::hit_first "frame $::n: $s" } ; incr ::hit_bad }
 proc mot_bad {s} { if {!$::mot_bad} { set ::mot_first "frame $::n: $s" } ; incr ::mot_bad }
 
@@ -1252,7 +1254,7 @@ proc enemy_frame {} {
 	for {set i 0} {$i < 8} {incr i} { lappend cur [en_state $i] }
 	set vols [all_volleys]
 	if {[llength $::eprev]} { enemy_model $cur $vols }
-	for {set i 0} {$i < 8} {incr i} { lappend ::sthist($i) [lindex $cur $i 0] }
+	if {!$::waves} { for {set i 0} {$i < 8} {incr i} { lappend ::sthist($i) [lindex $cur $i 0] } }
 	set ::eprev $cur ; set ::vprev $vols ; set ::shipx_prev [m ship_x]
 	set ::rotp [m enemy_rot]
 	set ::flipp [m sat_flip]
@@ -1301,6 +1303,25 @@ proc enemy_model {cur vols} {
 			if {([lindex $w 0] == 0 && [lindex $g 0] != 0) || ([lindex $w 0] != 0 && $w ne $g)} { hit_bad "volley $v: $g, want $w" }
 		}
 	}
+	# every enemy gone: this frame's work began the next wave (enemy and
+	# colour the next in their lists), all in their pairs at the loop's start
+	if {[lsearch -not -exact $st 5] < 0} {
+		set ::gone_sts $st
+		if {!$::waves} { for {set i 0} {$i < 8} {incr i} { lappend ::sthist($i) 5 } }
+		incr ::waves
+		set ::wave0 [expr {$::n - 1}]
+		set ::form_hist [dict create]
+		set ::wenemy [expr {($::wenemy + 1) % 10}] ; set ::wcidx [expr {($::wcidx + 1) % 9}]
+		if {[m form_enemy] != $::wenemy || [m form_cidx] != $::wcidx || [m form_color] != [lindex $::COLS $::wcidx]} {
+			wave_bad "wave $::waves: enemy [m form_enemy], colour [m form_color], want enemy $::wenemy, colour [lindex $::COLS $::wcidx]"
+		}
+		set bad [form_pattern_bad]
+		if {[llength $bad]} { wave_bad "wave $::waves: VRAM patterns wrong: $bad" }
+		if {[m form_tick] || [m form_tick 1] || [m form_acc] || [m form_x] != $::FX0 || [m form_x 1]} { wave_bad "wave $::waves: the loop not at its start" }
+		load_art
+		set st {0 0 0 0 0 0 0 0}
+		say "wave $::waves began at frame $::n: enemy [m form_enemy], colour [m form_color]"
+	} elseif {[m form_enemy] != $::wenemy} { wave_bad "a new wave (enemy [m form_enemy]) with enemies left: $st" }
 	for {set i 0} {$i < 8} {incr i} {
 		lassign [lindex $::eprev $i] ps pl pxf px pyf py pd
 		lassign [lindex $cur $i] cs cl cxf cx cyf cy cd
@@ -1347,7 +1368,7 @@ proc enemy_model {cur vols} {
 # volume, tone and mixer bits against the BREAK table; its noise period
 # too while the death sound is silent (else the death sound's wins)
 proc brk_frame {} {
-	if {$::bnew} { set ::bnew 0 ; set ::bidx 0 ; incr ::bstarts }
+	if {$::bnew} { incr ::bstarts $::bnew ; set ::bnew 0 ; set ::bidx 0 }
 	set mix [psg 7]
 	set got [list [psg 9] [psg 2] [psg 3] [expr {$mix & 0x12}]]
 	if {$::bidx >= 0} {
@@ -1425,10 +1446,15 @@ proc aim_frame {} {
 		if {$::n >= $::e2end} { set ::ephase 3 }
 		return
 	}
-	if {[lsearch -not -exact $sts 5] < 0 || $::n > $::edead} {
+	if {$::ephase < 4 && $::waves || $::n > $::edead} {
+		set ::ephase 4 ; set ::e4end [expr {$::n + 2*$::F}]
+	}
+	if {$::ephase == 4} {
 		keys 0
-		set ::ephase 0
-		enemy_end
+		if {$::n >= $::e4end} {
+			set ::ephase 0
+			enemy_end
+		}
 		return
 	}
 	set want [expr {$::ephase == 1 ? 0 : 1}]
@@ -1443,7 +1469,9 @@ proc aim_frame {} {
 		if {abs($c - $nose) < $bd} { set bd [expr {abs($c - $nose)}] ; set dx [expr {$c - $nose}] }
 	}
 	set k [expr {$dx < -1 ? 0x10 : ($dx > 1 ? 0x80 : 0)}]
-	if {$::n % 4 < 2} { set k [expr {$k | 0x01}] }
+	# at the pairs: one volley at a time, aimed (so that the last pair's
+	# break-up leaves free enemies for the next phase)
+	if {$::n % 4 < 2 && ($::ephase == 3 || (!$k && $bd < 999 && ![llength [volley_live]]))} { set k [expr {$k | 0x01}] }
 	keys $k
 }
 # A boom's states from the enemy's history: from EN_BOOM on, {state frames ...}
@@ -1456,10 +1484,10 @@ proc st_runs {h} {
 	return $r
 }
 proc enemy_end {} {
-	set sts {}
-	for {set i 0} {$i < 8} {incr i} { lappend sts [lindex $::eprev $i 0] }
+	set sts $::gone_sts
 	check {$::breaks == 4} "bullets broke up all 4 pairs ($::breaks)"
-	check {$sts eq {5 5 5 5 5 5 5 5}} "bullets blew up all 8 free enemies, all gone ($::booms_n booms; states $sts; frame $::n)"
+	check {$sts eq {5 5 5 5 5 5 5 5}} "bullets blew up all 8 free enemies, all gone ($::booms_n booms; states $sts)"
+	check {$::waves == 1 && $::wave_bad == 0} "the last one gone, the second wave: enemy 1, colour 3, its patterns in VRAM, the loop from its start, that frame ($::waves waves; enemy [m form_enemy], colour [m form_color]; [expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 	check {$::hit_bad == 0 && $::hits > 0} "hits = the model (each bullet against the enemies' art on the lines it covered, the first enemy hit, the bullet gone; pairs break, free ones boom) every frame ($::hits hits; [expr {$::hit_bad ? "first wrong: $::hit_first" : "none wrong"}])"
 	check {$::mot_bad == 0 && $::freeframes > 0} "free enemies = the model (velocity table, wrap, stopped at lines 8 / 183 and turned away) every frame, booms stationary ($::freeframes enemy-frames; [expr {$::mot_bad ? "first wrong: $::mot_first" : "none wrong"}])"
 	check {$::btop > 0 && $::bbottom > 0 && $::nonmirror > 0} "bounces: $::btop at the top, $::bbottom at the bottom, $::nonmirror not a mirror's"
@@ -1477,9 +1505,35 @@ proc enemy_end {} {
 	check {$::bbad == 0 && $::bframes > 0} "break sound on channel B = BREAK table every frame, its noise period while the death sound is silent ($::bframes frames; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
 	check {$::dstarts - $::dstarts0 == $::booms_n} "a booming enemy (re)starts the death sound ([expr {$::dstarts - $::dstarts0}] starts)"
 	check {$::vis_bad == 0 && $::frontcrowd > 0} "lines with 5..7 sprites: no sprite dropped two frames running ($::crowded crowded line-frames, $::frontcrowd frames with the front's lines crowded, $::overcrowded line-frames with 8 or more; $::vis_bad wrong)"
-	check {$::edropped == 0} "no frame dropped while the enemies are hit and fly ($::edropped)"
-	final_checks
-	screenshot_and_finish
+	check {$::edropped == 0} "no frame dropped while the enemies are hit and fly, a new wave too ($::edropped)"
+	set ::nocheck 1
+	set ::wseq {}
+	wave_step
+}
+# The lists' turns: the test makes every enemy gone (EN.ST = EN_GONE in
+# RAM), and the next frame's work begins the next wave; 19 of them (waves
+# 2..20: both lists wrap)
+proc wave_step {} {
+	at [expr {$::n + 1}] {
+		for {set i 0} {$i < 8} {incr i} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 5 }
+	}
+	at [expr {$::n + 2}] {
+		incr ::waves
+		set w $::waves
+		set we [expr {$w % 10}] ; set wc [expr {$w % 9}]
+		set sts {}
+		for {set i 0} {$i < 8} {incr i} { lappend sts [lindex [en_state $i] 0] }
+		set bad [form_pattern_bad]
+		if {[m form_enemy] != $we || [m form_cidx] != $wc || [m form_color] != [lindex $::COLS $wc] || $sts ne {0 0 0 0 0 0 0 0} || [llength $bad]} {
+			wave_bad "wave $w: enemy [m form_enemy], colour [m form_color], states $sts, VRAM wrong: $bad (want enemy $we, colour [lindex $::COLS $wc])"
+		}
+		lappend ::wseq "[m form_enemy]/[m form_color]"
+		if {$w < 20} { wave_step } else {
+			check {$::wave_bad == 0} "waves 3..21 (enemy/colour): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
+			final_checks
+			screenshot_and_finish
+		}
+	}
 }
 
 # Every frame: which sprites the VDP drops (past the 4th on a line, in the
