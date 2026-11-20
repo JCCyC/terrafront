@@ -64,7 +64,7 @@ proc at {frame body} { lappend ::steps [list $frame $body] }
 # against the table every frame
 set dnew 0 ; set didx -1 ; set druns {} ; set dstarts 0
 set dbad 0 ; set dclash 0 ; set dframes 0 ; set dfirst ""
-debug set_bp $sym(death_start) {} { set ::dnew 1 }
+debug set_bp $sym(death_start) {} { incr ::dnew }  ;# each call (two booms can start in one frame)
 # The break sound: brk_start (re)starts it; brk_frame checks channel B
 set bnew 0 ; set bidx -1 ; set bruns {} ; set bstarts 0
 set bbad 0 ; set bframes 0 ; set bfirst ""
@@ -453,7 +453,7 @@ proc final_checks {} {
 # at its end marker, or idle: R10 0, channel C's tone and noise off.
 # A run's frames are counted, from its (re)start to its end marker.
 proc death_frame {} {
-	if {$::dnew} { set ::dnew 0 ; set ::didx 0 ; incr ::dstarts }
+	if {$::dnew} { set ::didx 0 ; incr ::dstarts $::dnew ; set ::dnew 0 }
 	set mix [psg 7]
 	set got [list [psg 10] [psg 4] [psg 5] [psg 6] [expr {$mix & 0x24}]]
 	if {$::didx >= 0} {
@@ -865,31 +865,55 @@ proc screenshot_and_finish {} {
 # starting; space starts the game, and the plan above runs.
 set ROOT [file dirname [file dirname $::env(SYMFILE)]]
 set TITLE [exec sh -c "cd '$ROOT' && python3 title.py --raw"]
+set FONT [exec sh -c "cd '$ROOT' && python3 font.py --raw"]
 set BROW $sym(BLINK_ROW)
+# the text, from the ROM, centred on BLINK_ROW in font.py's glyphs (rows
+# on the cell's lines 0..5, 6..7 blank), white on black: TITLE_ON; its
+# cells' colours black instead: TITLE_OFF
+set f [open $ROOT/terrafnt.rom rb] ; set rom [read $f] ; close $f
+set a [expr {$sym(PRESS_TEXT) - 0x4000}]
+set PRESS [string range $rom $a [expr {[string first "\0" $rom $a] - 1}]]
+check {$PRESS eq "PRESS SPACE TO BEGIN"} "splash: the text is \"$PRESS\""
+check {[lrange $FONT 0 5] eq {00 00 00 00 00 00} && [lsearch -not $FONT 00] >= 0} "font: the space glyph is blank (ink is the PNG's black), others aren't"
+set TCOL [expr {(32 - [string length $PRESS]) / 2}]
+set TITLE_ON $TITLE
+set TITLE_OFF $TITLE
+for {set i 0} {$i < [string length $PRESS]} {incr i} {
+	scan [string index $PRESS $i] %c c
+	set p [expr {$BROW*256 + ($TCOL + $i)*8}]
+	for {set y 0} {$y < 8} {incr y} {
+		set g [expr {$y < 6 ? [lindex $FONT [expr {($c - 32)*6 + $y}]] : "00"}]
+		set TITLE_ON [lreplace $TITLE_ON [expr {$p + $y}] [expr {$p + $y}] $g]
+		set TITLE_OFF [lreplace $TITLE_OFF [expr {$p + $y}] [expr {$p + $y}] $g]
+		set TITLE_ON [lreplace $TITLE_ON [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] [format %02x [expr {$sym(TEXT_COLOR)*16 + 1}]]]
+		set TITLE_OFF [lreplace $TITLE_OFF [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] 11]
+	}
+}
 set phase 1
 set sn 0
 proc vdp_r1 {} { debug read "VDP regs" 1 }
-# the blinking row's colours: 1 = the picture's, 0 = all black, -1 neither
+# the blinking row's colours: 1 = the text shown, 0 = hidden, -1 neither
 proc blink_state {} {
-	set pic 1 ; set blk 1
+	set on 1 ; set off 1
 	set a [expr {0x2000 + $::BROW*256}]
 	for {set i 0} {$i < 256} {incr i} {
 		set v [debug read VRAM [expr {$a + $i}]]
-		if {$v != "0x[lindex $::TITLE [expr {6144 + $::BROW*256 + $i}]]"} { set pic 0 }
-		if {$v != 0x11} { set blk 0 }
+		set j [expr {6144 + $::BROW*256 + $i}]
+		if {$v != "0x[lindex $::TITLE_ON $j]"} { set on 0 }
+		if {$v != "0x[lindex $::TITLE_OFF $j]"} { set off 0 }
 	}
-	expr {$pic ? 1 : ($blk ? 0 : -1)}
+	expr {$on ? 1 : ($off ? 0 : -1)}
 }
-# VRAM's tables against the picture (the blinking row's colours as $shown)
+# VRAM's tables against the picture and the text ($shown or hidden)
 proc check_title {shown what} {
 	set bad {}
+	set want [expr {$shown ? $::TITLE_ON : $::TITLE_OFF}]
 	for {set i 0} {$i < 12288} {incr i} {
-		set w [expr 0x[lindex $::TITLE $i]]
-		if {$i >= 6144 + $::BROW*256 && $i < 6144 + ($::BROW+1)*256 && !$shown} { set w 0x11 }
+		set w [expr 0x[lindex $want $i]]
 		set a [expr {$i < 6144 ? $i : 0x2000 + $i - 6144}]
 		if {[debug read VRAM $a] != $w} { lappend bad [format %04X $a] ; if {[llength $bad] > 5} break }
 	}
-	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png (wrong at: $bad)"
+	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::PRESS\" in images/font.png, centred on row $::BROW (wrong at: $bad)"
 }
 proc entropy {} { expr {[m entropy] + 256*[m entropy 1]} }
 set blinks {}        ;# {state time} each splash frame
@@ -906,7 +930,7 @@ proc splash_frame {} {
 		return
 	}
 	set F [m fps]
-	lappend ::blinks [list [blink_state] [machine_info time]]
+	lappend ::blinks [list [blink_state] $::isr_time]
 	if {$::sn == 3} {
 		check {[vdp_r1] & 0x40} "splash: display on (R1 [format %02X [vdp_r1]])"
 		check_title 1 "(text shown)"
@@ -953,6 +977,9 @@ proc check_blinks {F} {
 	check {$::frames_bad == 0} "splash: the poll loop sees every frame, one at a time"
 }
 debug set_bp $sym(splash.blink) {} { try splash_frame }
+# the frame's time: its interrupt's (not when the poll loop sees it)
+set isr_time 0
+debug set_bp $sym(isr) {} { if {$::phase == 2 && $::sn < 3*[m fps]} { set ::isr_time [machine_info time] } }
 # blank after the splash: the top status row, and the bottom one past the reserves
 proc check_cleared {} {
 	set bad {}

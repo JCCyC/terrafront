@@ -55,8 +55,9 @@
 ; rotates every frame), so a fifth sprite on a line flickers instead of
 ; staying hidden (turns of two frames: one straight, one reversed; on lines
 ; of up to 7 sprites no sprite is dropped two frames running).
-; It starts with a splash screen, images/title.png (title.py): "PRESS SPACE
-; TO BEGIN" blinks, BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
+; It starts with a splash screen, images/title.png (title.py), and "PRESS
+; SPACE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
+; font.py; print_text, for all the game's text) on it, blinking BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
 ; joystick's button A) starts the game. Meanwhile the keyboard and the
 ; joysticks are polled as fast as the loop goes, and the time of every
 ; press and release (the polls so far, and R) is mixed into entropy, kept
@@ -103,7 +104,8 @@ STAR_SPEED      equ 10          ; px/s to the left: 1 px every 6 frames at 60 Hz
         assert STAR_SPEED < 50  ; at most 1 px a frame
 BLINK_ON_MS     equ 300         ; the splash's "PRESS SPACE TO BEGIN" shows this long ...
 BLINK_OFF_MS    equ 200         ; ... then is hidden this long
-BLINK_ROW       equ 22          ; its character row in images/title.png (lines 176..183)
+BLINK_ROW       equ 22          ; its character row (lines 176..183), centred on it
+TEXT_COLOR      equ 15          ; white: the game's text
 ; the formation's colours, one picked at random (its enemy: any of images/enemy-N.png)
         define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
 ; (the formation's loop: path.py)
@@ -542,6 +544,8 @@ splash:
         ld hl,TITLE_COL_ROWS
         ld de,(GRPCOL)
         call unpack_rows
+        ld c,TEXT_COLOR*16+BG_COLOR
+        call print_press
         call display_on
         ld a,(blink_on)
         ld (blink_left),a
@@ -590,8 +594,7 @@ splash:
         jp FILVRM
 
 ; One frame of the splash's blinking text: after blink_on frames shown,
-; its character row's colours go all black for blink_off frames, then
-; come back from the picture
+; its cells' colours go all black for blink_off frames, then white again
 blink:
         ld hl,blink_left
         dec (hl)
@@ -599,23 +602,81 @@ blink:
         ld a,(blink_shown)
         xor 1
         ld (blink_shown),a
-        jr z,.hide
+        ld c,TEXT_COLOR*16+BG_COLOR
         ld a,(blink_on)
-        ld (hl),a
-        ld hl,(TITLE_COL_ROWS+BLINK_ROW*2)
-        ld de,(GRPCOL)
-        ld a,d
-        add a,BLINK_ROW
-        ld d,a
-        jp unpack
-.hide:  ld a,(blink_off)
-        ld (hl),a
-        ld hl,(GRPCOL)
-        ld de,BLINK_ROW*256
+        jr nz,.set
+        ld c,BG_COLOR*16+BG_COLOR
+        ld a,(blink_off)
+.set:   ld (hl),a
+; "PRESS SPACE TO BEGIN", centred on BLINK_ROW, in colour C
+print_press:
+        ld hl,PRESS_TEXT
+        ld de,BLINK_ROW*256+(32-PRESS_LEN)/2*8
+; Text in the game's font (font.py) on SCREEN 2: HL = the text, ASCII
+; 20h..5Fh, 0-terminated; DE = its first cell (row*256 + column*8); C = the
+; colour byte (foreground*16 + background) for all 8 lines of its cells.
+; A glyph's FONT_ROWS rows go on its cell's lines 0..5, lines 6..7 blank.
+; At least 29 T a byte: safe outside vertical blank. Keeps C.
+print_text:
+.ch:    ld a,(hl)
+        or a
+        ret z
+        inc hl
+        push hl
+        push de
+        sub ' '
+        ld l,a
+        ld h,0
+        add hl,hl
+        push hl
+        add hl,hl
+        pop de
+        add hl,de               ; FONT_ROWS = 6 bytes a glyph
+        ld de,FONT
         add hl,de
-        ld bc,256
-        ld a,BG_COLOR*16+BG_COLOR
-        jp FILVRM
+        ex (sp),hl              ; HL = the cell, the glyph on the stack
+        push hl
+        ld de,(GRPCGP)
+        add hl,de
+        call vdp_write
+        pop de
+        pop hl
+        ld b,FONT_ROWS
+.row:   ld a,(hl)               ; 37 T a byte
+        out (VDP_DATA),a
+        inc hl
+        djnz .row
+        xor a
+        ld b,8-FONT_ROWS
+.gap:   out (VDP_DATA),a        ; 32 T
+        nop
+        nop
+        djnz .gap
+        ld hl,(GRPCOL)
+        add hl,de
+        call vdp_write
+        ld a,c
+        ld b,8
+.col:   out (VDP_DATA),a        ; 32 T
+        nop
+        nop
+        djnz .col
+        ld hl,8                 ; the next cell
+        add hl,de
+        ex de,hl
+        pop hl
+        jr .ch
+
+; The VDP's write address := HL. Keeps BC, DE, HL.
+vdp_write:
+        ld a,l
+        di
+        out (VDP_ADDR),a
+        ld a,h
+        or 40h
+        out (VDP_ADDR),a
+        ei
+        ret
 
 ; key_prev = key_state; key_state = the keyboard's rows 0..KEY_ROWS-1 and
 ; both joysticks' R14 (bit = 0 when pressed); each byte that changed
@@ -2497,12 +2558,16 @@ FORM_COLORS:    db FORM_COLOR_LIST
 FORM_COLORS_N   equ $-FORM_COLORS
         assert FORM_COLORS_N <= 16 && form_art_b == form_art_t+1
 
+PRESS_TEXT:     db "PRESS SPACE TO BEGIN",0
+PRESS_LEN       equ $-PRESS_TEXT-1
+
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 
         include "build/sprites.inc"
         include "build/sfx.inc"
         include "build/path.inc"
         include "build/title.inc"
+        include "build/font.inc"
 
         assert $ <= 8000h
         ds 8000h-$,0FFh         ; a 16 KB ROM

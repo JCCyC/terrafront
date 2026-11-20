@@ -8,9 +8,15 @@ cartridge ROM at 4000h..7FFFh (`terrafnt.rom`, an 8.3 name). RAM at E000h.
 
 **Current state:** it starts with a splash screen, `images/title.png`
 (256×192, the user may retouch it: MSX1 colours, at most two per 8×1
-byte), the logo solid cyan, "PRESS SPACE TO BEGIN" (Expert BIOS font,
-character row 22, `BLINK_ROW`) blinking 0.3 s on, 0.2 s off by its row's
-colours. Space or either joystick's button A starts the game (a press;
+byte), the logo solid cyan, and "PRESS SPACE TO BEGIN" printed on it in
+white (`TEXT_COLOR`), centred on character row 22 (`BLINK_ROW`; the
+picture's row is blank), blinking 0.3 s on, 0.2 s off by its cells'
+colours. **Text:** all the game's text (scores later too) is in U-boat
+Killer's font (`images/font.png`, copied from `../ubhunter/images/Font.png`:
+8×6 glyphs for ASCII 20h..5Fh, black letters on blue, black = ink), drawn
+in the SCREEN 2 bitmap by `print_text` (HL = text, 0-terminated; DE = first
+cell, row·256 + column·8; C = colour byte), a glyph's 6 rows on its cell's
+lines 0..5, lines 6..7 blank. Space or either joystick's button A starts the game (a press;
 held from before doesn't count). Meanwhile `splash` busy-polls the 11
 keyboard rows and both joysticks (about 22 polls a frame on the Expert)
 and mixes every press's and release's time (polls so far, R) into
@@ -116,6 +122,8 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `CYCLE_SECS` sets the timing; the free enemies' velocity tables) and `sfx.py` (→ `build/sfx.inc`: the shot, death and break
   sound tables; the death one is Skyfighter's `BOOM_SHIP`, the break one its
   `BOOM_ROCK`, byte for byte) and
+  `font.py` (→ `build/font.inc`: `FONT`, 6 bytes a glyph; `font.py --raw`
+  prints them for the test) and
   `title.py` (→ `build/title.inc`: the splash's SCREEN 2 pattern and colour
   tables from `images/title.png`, 24 rows each RLE-packed alone, so the
   blinking row unpacks by itself; `title.py --raw` prints them unpacked,
@@ -131,8 +139,9 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `build/shot-<machine>-call.png`, a call-up in flight). It boots twice:
   first space held from power-on (then let go) doesn't start, joystick 1's
   button A does, then a reset; then the splash's VRAM against
-  `title.py --raw` (text shown and hidden), the blink every frame (on/off
-  frame counts, 0.5 s period in emulated time, no frame missed), A, C and
+  `title.py --raw` with the text (read from the ROM) overlaid in
+  `font.py --raw`'s glyphs (text shown and hidden; the space glyph blank), the blink every frame (on/off
+  frame counts, 0.5 s period between frame interrupts in emulated time, no frame missed), A, C and
   button B changing `entropy` without starting, and space starting; then
   the status rows blank after it. Then: ship start, speed
   over 1 s, both arrows, edge clamps for 1, 2 and 4 ships and their sprite
