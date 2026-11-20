@@ -24,7 +24,10 @@
 ; Killer's "water, loud") on PSG channel C; another death starts it again.
 ; It wins over the shot's sound where they clash (the PSG's one noise period).
 ; An empty front stays where its last ship died, can't move or shoot, and a
-; call-up lands there.
+; call-up lands there: one starts by itself the frame the front empties. With
+; no reserve left, GAME OVER shows on the top status row, centred, and the
+; game runs on for GAME_OVER_MS (a press of fire, space or either joystick's
+; button A, from OVER_SKIP_MS on cuts it short); then it's back to the title.
 ; Behind it all, STARS one-pixel STAR_COLOR stars in the playfield's bitmap
 ; scroll left at STAR_SPEED px/s; one that leaves past column 0 comes back
 ; at column 255 on a random line. No two stars share a line (so never a
@@ -58,7 +61,7 @@
 ; staying hidden (turns of two frames: one straight, one reversed; on lines
 ; of up to 7 sprites no sprite is dropped two frames running).
 ; It starts with a splash screen, images/title.png (title.py), and "PRESS
-; SPACE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
+; SPACE OR FIRE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
 ; font.py; print_text, for all the game's text) on it, blinking BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
 ; joystick's button A) starts the game. Meanwhile the keyboard and the
 ; joysticks are polled as fast as the loop goes, and the time of every
@@ -104,11 +107,14 @@ STARS           equ 15          ; one-pixel stars in the background
 STAR_COLOR      equ 14          ; light grey
 STAR_SPEED      equ 10          ; px/s to the left: 1 px every 6 frames at 60 Hz, every 5 at 50 Hz
         assert STAR_SPEED < 50  ; at most 1 px a frame
-BLINK_ON_MS     equ 300         ; the splash's "PRESS SPACE TO BEGIN" shows this long ...
+BLINK_ON_MS     equ 300         ; the splash's "PRESS SPACE OR FIRE TO BEGIN" shows this long ...
 BLINK_OFF_MS    equ 200         ; ... then is hidden this long
 BLINK_ROW       equ 22          ; its character row (lines 176..183), centred on it
 TEXT_COLOR      equ 15          ; white: the game's text
 WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins this much later
+GAME_OVER_MS    equ 10000       ; GAME OVER shows this long, the game running on, then the title
+OVER_SKIP_MS    equ 3000        ; ... a press of fire from this much on: the title at once
+OVER_ROW        equ 0           ; GAME OVER's character row (the top status area), centred on it
 ; the waves' colours in turn (their enemies: images/enemy-0..9.png in turn)
         define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
 ; (the formation's loop: path.py)
@@ -290,8 +296,15 @@ boom_frames:    ds BOOM_STAGES  ; frames each boom image shows
 blink_on:       ds 1            ; the splash's text: frames shown ...
 blink_off:      ds 1            ; ... and hidden
 wave_delay:     ds 1            ; frames from a wave's last enemy gone to the next wave
+over_end:       ds 2            ; frames GAME OVER shows
+over_skip:      ds 2            ; ... and from which fire cuts it short
 RATES_SIZE      equ $-rates
+frames:         ds 1            ; +1 every frame interrupt
+entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
+polls:          ds 2            ; the splash's input polls so far
 
+; From here on, cleared for every new game
+game_ram:
 input:          ds 1            ; IN_* this frame
 input_prev:     ds 1            ; ... and last frame (fire is edge-triggered)
 kill_keys:      ds 1            ; the test keys 1..4 held (bits 1..4) this frame
@@ -313,6 +326,8 @@ call_left:      ds 1            ; nonzero: coming from the left
 call_target:    ds 1            ; its art's left column once glued
 call_rem:       ds 2            ; px still to fly (up to CALL_DIST)
 call_acc:       ds 1            ; Bresenham remainder
+over_on:        ds 1            ; nonzero: game over (GAME OVER shows)
+over_time:      ds 2            ; ... frames since it began
 volleys:        ds MAX_VOLLEYS*VOLLEY
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
 bullet_step:    ds 1            ; this frame's px
@@ -330,9 +345,6 @@ brk_ptr:        ds 2            ; the same for the break sound
 brk_mix:        ds 1
 psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
-frames:         ds 1            ; +1 every frame interrupt
-entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
-polls:          ds 2            ; the splash's input polls so far
 key_state:      ds KEY_ROWS+2   ; the splash's last poll: keyboard rows 0.., joysticks 1 and 2 (R14)
 key_prev:       ds KEY_ROWS+2   ; ... and the one before
 frames_seen:    ds 1            ; frames when the splash last blinked
@@ -365,6 +377,7 @@ sat_buf:        ds (FRONT_MAX+1+ENEMY_N)*4+1    ; the front's slots, the incomin
 SAT_SIZE        equ $-sat_buf
 reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1: a ship's spill)
 RAM_SIZE        equ $-ram_start
+GAME_RAM_SIZE   equ $-game_ram
         assert $ <= IM2_TABLE
 
 ; ---- Cartridge header -------------------------------------------------------
@@ -425,7 +438,21 @@ init:
         ld i,a
         im 2
         ei
+        jr new_game
 
+; Game over's end: back to the title, the game's RAM as at power-on
+restart:
+        call display_off
+        ld hl,(GRPATR)          ; no sprites on the title
+        call vdp_write
+        ld a,SPR_END
+        out (VDP_DATA),a
+        ld hl,game_ram
+        ld de,game_ram+1
+        ld bc,GAME_RAM_SIZE-1
+        ld (hl),0
+        ldir
+new_game:
         call splash
         call load_formation     ; the first wave's (form_enemy, form_cidx: 0)
 
@@ -492,6 +519,8 @@ main_loop:
         call fire               ; (hits too; both against the enemies where they show now)
         call move_stars         ; after the bullets (fire's too): a star in their bytes hides
         call call_up            ; before move_ship: the front stays put while one runs
+        call game_over          ; after it: an empty front with none flying has no reserve
+        jp c,restart
         call move_ship
         call move_formation
         call form_place
@@ -548,7 +577,7 @@ splash:
         and (hl)
         and KEY_SPACE
         jr nz,.go
-        inc hl
+        ld hl,key_prev+KEY_ROWS ; either joystick's button A: the same
         ld a,(key_state+KEY_ROWS)
         cpl
         and (hl)
@@ -592,7 +621,7 @@ blink:
         ld c,BG_COLOR*16+BG_COLOR
         ld a,(blink_off)
 .set:   ld (hl),a
-; "PRESS SPACE TO BEGIN", centred on BLINK_ROW, in colour C
+; "PRESS SPACE OR FIRE TO BEGIN", centred on BLINK_ROW, in colour C
 print_press:
         ld hl,PRESS_TEXT
         ld de,BLINK_ROW*256+(32-PRESS_LEN)/2*8
@@ -1992,8 +2021,9 @@ rand:   ld hl,(rand_seed)
 
 ; ---- Call-up ---------------------------------------------------------------
 
-; A new press of C, with no call-up running, a reserve ship and a front
-; spanning under FRONT_MAX slots: one ship leaves the reserve and comes in
+; A new press of C (or an empty front: no press needed), with no call-up
+; running, a reserve ship and a front spanning under FRONT_MAX slots: one
+; ship leaves the reserve and comes in
 ; from the right if the front's middle is left of the screen's (or on it),
 ; else from the left, to glue on to that side of the front (an empty front:
 ; to where its last ship died). While one runs, it flies CALL_SPEED px/s;
@@ -2002,6 +2032,9 @@ call_up:
         ld a,(call_on)
         or a
         jr nz,.fly
+        ld a,(front_mask)
+        or a
+        jr z,.force             ; empty: one comes by itself
         ld a,(input_prev)
         cpl
         ld b,a
@@ -2009,7 +2042,7 @@ call_up:
         and b
         and IN_CALL
         ret z
-        ld a,(reserves)
+.force: ld a,(reserves)
         or a
         ret z
         ld a,(front_slots)
@@ -2114,6 +2147,53 @@ call_up:
         ld hl,front_mask
         set 0,(hl)
         jp front_span
+
+; Carry: game over's end, back to the title. The front empty with no
+; call-up flying (none left in reserve: call_up sends one by itself) is
+; game over: GAME OVER centred on the top status row, the game running on
+; (the front can't move, shoot or call up) until GAME_OVER_MS later, or a
+; press of fire (space or either joystick's button A) from OVER_SKIP_MS on.
+game_over:
+        ld a,(over_on)
+        or a
+        jr nz,.on
+        ld a,(front_mask)
+        or a
+        ret nz                  ; (no carry after the or)
+        ld a,(call_on)
+        or a
+        ret nz
+        inc a
+        ld (over_on),a          ; (over_time: 0)
+        ld hl,OVER_TEXT
+        ld de,OVER_ROW*256+(32-OVER_LEN)/2*8
+        ld c,TEXT_COLOR*16+BG_COLOR
+        call print_text
+        or a
+        ret
+.on:    ld hl,(over_time)
+        inc hl
+        ld (over_time),hl
+        ld de,(over_end)
+        or a
+        sbc hl,de
+        ccf
+        ret c                   ; its time is over
+        ld hl,(over_time)
+        ld de,(over_skip)
+        or a
+        sbc hl,de
+        ccf
+        ret nc                  ; too soon for fire
+        ld a,(input_prev)
+        cpl
+        ld b,a
+        ld a,(input)
+        and b
+        and IN_FIRE
+        ret z                   ; (no carry after the and)
+        scf
+        ret
 
 ; HL = the incoming ship's art's left column (-SHIP_ART_W..256, signed)
 call_pos:
@@ -2779,6 +2859,7 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 db BOOM1_60, BOOM2_60, BOOM3_60
                 db BLINK_ON_MS*60/1000, BLINK_OFF_MS*60/1000
                 db WAVE_DELAY_MS*60/1000
+                dw GAME_OVER_MS*60/1000, OVER_SKIP_MS*60/1000
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
@@ -2786,18 +2867,25 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
                 db BOOM1_50, BOOM2_50, BOOM3_50
                 db BLINK_ON_MS*50/1000, BLINK_OFF_MS*50/1000
                 db WAVE_DELAY_MS*50/1000
+                dw GAME_OVER_MS*50/1000, OVER_SKIP_MS*50/1000
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
         assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0
         assert WAVE_DELAY_MS*60%1000 == 0 && WAVE_DELAY_MS*50%1000 == 0
         assert WAVE_DELAY_MS*50/1000 > 0 && WAVE_DELAY_MS*60/1000 < 256
+        assert GAME_OVER_MS*60%1000 == 0 && GAME_OVER_MS*50%1000 == 0
+        assert OVER_SKIP_MS*60%1000 == 0 && OVER_SKIP_MS*50%1000 == 0
+        assert OVER_SKIP_MS < GAME_OVER_MS && GAME_OVER_MS*60/1000 < 65536
 
 FORM_COLORS:    db FORM_COLOR_LIST
 FORM_COLORS_N   equ $-FORM_COLORS
         assert FORM_COLORS_N <= 16 && form_art_b == form_art_t+1
 
-PRESS_TEXT:     db "PRESS SPACE TO BEGIN",0
+PRESS_TEXT:     db "PRESS SPACE OR FIRE TO BEGIN",0
 PRESS_LEN       equ $-PRESS_TEXT-1
+        assert PRESS_LEN <= 32
+OVER_TEXT:      db "GAME OVER",0
+OVER_LEN        equ $-OVER_TEXT-1
 
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 

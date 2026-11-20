@@ -2,7 +2,7 @@
 # -call before .png: a call-up in flight).
 # Driven by a breakpoint at main_loop (once a frame, before its halt: the
 # frame's work is done, VRAM holds the previous frame's SAT).
-after time 400 { fail "timeout" ; finish }
+after time 440 { fail "timeout" ; finish }
 set save_settings_on_exit off
 set throttle off
 
@@ -102,6 +102,8 @@ proc frame {} {
 	for {set i 0} {$i < $::sym(MAX_VOLLEYS)} {incr i} { if {[m volleys [expr {$i*$::VOL}]]} { incr live } }
 	if {$live > $::maxlive} { set ::maxlive $live }
 	if {[info exists ::track]} { try track_frame }
+	if {[info exists ::emptywatch]} { try empty_frame }
+	if {$::ostate ne ""} { try over_frame }
 	if {[info exists ::bw]} { lappend ::bw [list [sate $::bwslot 0] [sate $::bwslot 2]] }
 	if {!$::nocheck} {
 		try vis_frame
@@ -121,6 +123,7 @@ proc frame {} {
 	set ::last_frames $fr
 }
 set dropped 0 ; set edropped 0 ; set ephase 0 ; set flip_bad 0 ; set nocheck 0
+set ostate ""
 set maxlive 0
 
 proc plan {} {
@@ -411,37 +414,18 @@ proc plan_kills {a} {
 	at $b {
 		check_call 0 [expr {256 - 3*$::W}] [expr {3*$::W}] 4
 		check {[m front_mask] == 13 && [m reserves] == 0} "ship-gap-ship: one more from the right (mask [m front_mask])"
+		debug write memory $::sym(reserves) 1
 		kdown 3
 	}
-	# keys 3, 2, 1: all three die, the front is empty where its last died
+	# keys 3, 2, 1: all three die; the frame the front is empty (where its
+	# last died), the last reserve (1, written in RAM) is called up by
+	# itself, no C pressed (empty_frame)
 	at [expr {$b+1}] { kup 3 }
 	at [expr {$b+3}] { kdown 2 }
 	at [expr {$b+4}] { kup 2 }
 	at [expr {$b+6}] { kdown 1 }
-	at [expr {$b+7}] { kup 1 }
-	at [expr {$b+40}] {
-		check {[m front_mask] == 0 && [m front_slots] == 0 && [m front_w] == 0 && [m ship_x] == 0} "keys 3, 2, 1: the front is empty at x [m ship_x]"
-		set ::spawns 0
-		down 0x81
-	}
-	at [expr {$b+41}] { up 0x01 }
-	at [expr {$b+50}] {
-		up 0x80
-		check {[m ship_x] == 0 && $::spawns == 0 && [llength [volley_live]] == 0} "empty front: no move, no shot (ship_x [m ship_x], $::spawns shots)"
-		set ::calls {} ; cdown
-	}
-	at [expr {$b+51}] { cup }
-	at [expr {$b+54}] {
-		check {[m call_on] == 0 && [llength $::calls] == 0} "empty front, no reserves: C does nothing"
-		debug write memory $::sym(reserves) 1
-		cdown
-	}
-	at [expr {$b+55}] { cup }
-	set b [expr {$b+54+$F/2}]
-	at $b {
-		check_call 0 256 0 1
-		check {[m front_mask] == 1 && [m ship_x] == 0} "empty front refilled where its last ship died (ship_x [m ship_x])"
-	}
+	at [expr {$b+7}] { kup 1 ; set ::calls {} ; set ::emptywatch 1 }
+	at [expr {$b+40}] { if {[info exists ::emptywatch]} { fail "keys 3, 2, 1: the front never emptied (mask [m front_mask])" ; unset ::emptywatch } }
 	# the last death sound plays out
 	at [expr {$b+5+$F*3/2}] {
 		set want [expr {$::F == 60 ? 84 : 70}]
@@ -449,6 +433,25 @@ proc plan_kills {a} {
 		check {$::dbad == 0 && $::dframes > 0} "death sound on channel C = DEATH table, every frame ($::dframes frames playing, $::dclash with the shot's noise on too; [expr {$::dbad ? "first wrong: $::dfirst" : "none wrong"}])"
 	}
 	at [expr {$b+8+$F*3/2}] { plan_enemies }
+}
+
+# Every frame from keys 3, 2, 1 on: the frame the front is empty, a
+# call-up starts by itself (the last reserve); meanwhile the front can't
+# move or shoot (right held, fire pressed); it lands where the last died
+proc empty_frame {} {
+	if {[m front_mask]} return
+	unset ::emptywatch
+	check {[m front_slots] == 0 && [m front_w] == 0 && [m ship_x] == 0} "keys 3, 2, 1: the front is empty at x [m ship_x]"
+	check {[m call_on] && ![m call_left] && [rem] == 256 && [m call_target] == 0 && [m reserves] == 0} "the front emptied: a call-up starts that frame by itself, no C pressed (on [m call_on], from the [expr {[m call_left] ? "left" : "right"}], [rem] px, target [m call_target], [m reserves] left in reserve)"
+	set ::spawns 0
+	down 0x80
+	at [expr {$::n+1}] { down 0x01 }
+	at [expr {$::n+2}] { up 0x01 }
+	at [expr {$::n+4}] { up 0x80 }
+	at [expr {$::n+$::F/2}] {
+		check_call 0 256 0 1
+		check {[m front_mask] == 1 && [m ship_x] == 0 && $::spawns == 0} "empty front refilled where its last ship died (ship_x [m ship_x]); meanwhile no move, no shot ($::spawns shots)"
+	}
 }
 
 # Every frame-by-frame summary, at the end
@@ -889,7 +892,7 @@ set BROW $sym(BLINK_ROW)
 set f [open $ROOT/terrafnt.rom rb] ; set rom [read $f] ; close $f
 set a [expr {$sym(PRESS_TEXT) - 0x4000}]
 set PRESS [string range $rom $a [expr {[string first "\0" $rom $a] - 1}]]
-check {$PRESS eq "PRESS SPACE TO BEGIN"} "splash: the text is \"$PRESS\""
+check {$PRESS eq "PRESS SPACE OR FIRE TO BEGIN"} "splash: the text is \"$PRESS\""
 check {[lrange $FONT 0 5] eq {00 00 00 00 00 00} && [lsearch -not $FONT 00] >= 0} "font: the space glyph is blank (ink is the PNG's black), others aren't"
 set TCOL [expr {(32 - [string length $PRESS]) / 2}]
 set TITLE_ON $TITLE
@@ -943,6 +946,17 @@ proc splash_frame {} {
 		if {$::sn == 4} { up 0x01 }
 		if {$::sn == 8} { joydown 1 0x10 }
 		if {$::sn == 12} { fail "joystick 1's button A doesn't start the game" ; finish }
+		return
+	}
+	if {$::phase == 3} {
+		if {$::sn == 1} { up 0x01 ; joyup 1 ; joyup 2 }
+		if {$::sn == 3} {
+			check {[vdp_r1] & 0x40} "back at the title after game over $::games: display on (R1 [format %02X [vdp_r1]])"
+			check_title 1 "after game over $::games (text shown)"
+			check {[sat 0] == 0xD0} "back at the title: no sprites (the SAT's first Y [format %02X [sat 0]])"
+		}
+		if {$::sn == 6} { down 0x01 }
+		if {$::sn == 9} { fail "space doesn't start a new game after game over $::games" ; finish }
 		return
 	}
 	set F [m fps]
@@ -1017,6 +1031,12 @@ debug set_bp $sym(main_loop) {} {
 		set ::phase 2 ; set ::sn 0
 		reset
 		return
+	}
+	if {$::phase == 3} {
+		check {$::sn == 6} "after game over $::games, a new press of space starts a new game (splash frame $::sn; want 6)"
+		up 0x01
+		set ::phase 4
+		try new_game_checks
 	}
 	if {!$::started} {
 		check {$::sn == 3*[m fps]} "space starts the game (splash frame $::sn)"
@@ -1561,6 +1581,7 @@ proc aim_frame {} {
 	if {$::ephase >= 4} {
 		keys 0
 		if {$::cheld} { cup ; set ::cheld 0 }
+		if {$::ephase == 6} { stage_bounces ; set ::ephase 7 ; at [expr {$::n + $::F}] { set ::ephase 0 ; enemy_end } }
 		if {$::ephase == 4 && $::n >= $::e4end && ![m call_on] && ![llength [volley_live]]} {
 			set ::ephase 5
 			stage_collisions
@@ -1629,6 +1650,8 @@ proc stage_collisions {} {
 	}
 	for {set i 4} {$i < 8} {incr i} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 0 }
 	foreach {v k} {15 front_mask 4 front_slots 36 front_w 100 ship_x} { debug write memory $::sym($k) $v }
+	# (reserves, so that the near miss's enemy, flying on, can't end the game)
+	debug write memory $::sym(reserves) 3
 	for {set k 0} {$k < 4} {incr k} { debug write memory [expr {$::sym(boom_stage) + $k}] 0 ; debug write memory [expr {$::sym(boom_left) + $k}] 0 }
 	# the next frame's model from the enemies as the test wrote them
 	set ::eprev {}
@@ -1646,7 +1669,25 @@ proc stage_collisions {} {
 		foreach v [list $::coll $::coll_ships $::coll_multi $::coll_shared $::coll_near] c $::c0 { lappend d [expr {$v - $c}] }
 		check {$d eq {3 3 1 1 1}} "staged collisions as modelled: 3 enemies touched 3 ships, one across two ships, one ship touched by two enemies (dying once), one near miss (got $d)"
 	}
-	at [expr {$::n + $::F}] { set ::ephase 0 ; enemy_end }
+	at [expr {$::n + $::F}] { set ::ephase 6 }
+}
+
+# The staged bounces (free flight's own may all end on the front first):
+# enemies 0 and 2 (gone by now) written free at column 200, away from the
+# front, one 2 lines under the top line flying straight up, one 2 lines
+# over the bottom line flying straight down; the model checks the bounces
+proc stage_bounces {} {
+	set top [expr {$::sym(PLAY_TOP) - $::art_t + 2}]
+	set bot [expr {183 - $::art_b - 2}]
+	foreach {i y d} [list 0 $top 48 2 $bot 16] {
+		set r [expr {$::sym(enemies) + $i*$::sym(EN)}]
+		foreach {f v} [list ST 1 LEFT 0 XF 0 X 200 YF 0 Y $y DIR $d] { debug write memory [expr {$r + $::sym(EN.$f)}] $v }
+		debug write memory [expr {$r + $::sym(EN.X) + 1}] 0
+	}
+	set ::eprev {}
+	for {set i 0} {$i < 8} {incr i} { lappend ::eprev [en_state $i] }
+	set ::b0 [list $::btop $::bbottom]
+	at [expr {$::n + 5}] { check {$::btop > [lindex $::b0 0] && $::bbottom > [lindex $::b0 1]} "staged bounces: one at the top, one at the bottom (as modelled)" }
 }
 
 # A boom's states from the enemy's history: from EN_BOOM on, {state frames ...}
@@ -1711,7 +1752,7 @@ proc wave_step {} {
 		if {$w < 20} { wave_step } else {
 			check {$::wave_bad == 0} "waves 3..21 (enemy/colour): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 			final_checks
-			screenshot_and_finish
+			plan_over 1
 		}
 	}
 }
@@ -1743,4 +1784,138 @@ proc vis_frame {} {
 	}
 	incr ::frontcrowd $fc
 	set ::vprevhid $hid
+}
+
+# Game over, twice, after the waves (per-frame models off). 1: the test
+# leaves 1 reserve (RAM) and kills the front (test keys 1..4 at once): the
+# last reserve is called up by itself, no game over; killed again: GAME
+# OVER that frame, and the game runs on (the front can't move, shoot or
+# call up; the formation and stars move); space and joystick 2's button A
+# pressed one frame before 3 s and held past it change nothing; back to
+# the title after exactly 10 s. A new game: as at power-on. 2 and 3: no
+# reserves, the front killed: GAME OVER; a press of joystick 1's button A
+# (2) or space (3) seen exactly at 3 s: the title at once. Then a fourth
+# game, for the screenshot.
+set a [expr {$sym(OVER_TEXT) - 0x4000}]
+set OVER [string range $rom $a [expr {[string first "\0" $rom $a] - 1}]]
+check {$OVER eq "GAME OVER"} "game over: the text is \"$OVER\""
+# The top status row (OVER_ROW): the text centred in font.py's glyphs,
+# white on black ($shown), or all blank
+proc check_over_text {shown what} {
+	set len [string length $::OVER]
+	set c0 [expr {(32 - $len) / 2}]
+	set base [expr {$::sym(OVER_ROW)*256}]
+	set bad {}
+	for {set i 0} {$i < 256} {incr i} {
+		set k [expr {$i/8 - $c0}] ; set y [expr {$i % 8}]
+		set p 0 ; set cc 0x11
+		if {$shown && $k >= 0 && $k < $len} {
+			scan [string index $::OVER $k] %c ch
+			if {$y < 6} { set p [expr 0x[lindex $::FONT [expr {($ch - 32)*6 + $y}]]] }
+			set cc [expr {$::sym(TEXT_COLOR)*16 + 1}]
+		}
+		if {[debug read VRAM [expr {$base + $i}]] != $p || [debug read VRAM [expr {0x2000 + $base + $i}]] != $cc} { lappend bad [format %04X [expr {$base + $i}]] }
+	}
+	check {[llength $bad] == 0} "$what (wrong at: [lrange $bad 0 5])"
+}
+proc kill_all {} {
+	keymatrixdown 0 0x1E
+	at [expr {$::n+1}] { keymatrixup 0 0x1E }
+}
+proc plan_over {g} {
+	if {[m call_on]} { at [expr {$::n+1}] [list plan_over $g] ; return }
+	set ::games $g
+	debug write memory $::sym(reserves) [expr {$g == 1 ? 1 : 0}]
+	set ::ostate [expr {$g == 1 ? "kill" : "wait"}]
+	kill_all
+}
+# Every frame from plan_over until game over begins
+proc over_frame {} {
+	switch $::ostate {
+		kill {
+			if {[m front_mask]} return
+			check {[m call_on] && [m reserves] == 0 && ![m over_on]} "game over 1, first: the front emptied with 1 in reserve: called up by itself, no game over (call_on [m call_on], over_on [m over_on])"
+			check_over_text 0 "... the top status row blank"
+			set ::ostate land
+		}
+		land {
+			if {[m call_on] || ![m front_mask]} return
+			kill_all
+			set ::ostate wait
+		}
+		wait {
+			if {[m front_mask]} return
+			set ::N0 $::n ; set ::odropped $::dropped ; set ::ostate on
+			check {![m call_on] && [m reserves] == 0 && [m over_on]} "game over $::games: the front emptied with none in reserve (frame $::n): no call-up, game over (call_on [m call_on], over_on [m over_on])"
+			check_over_text 1 "game over $::games: \"$::OVER\" centred on the top status row, white on black, from that frame"
+			if {$::games == 1} over_plan_10 else over_plan_skip
+		}
+	}
+}
+proc over_plan_10 {} {
+	set N0 $::N0 ; set F $::F
+	set ::ox [m ship_x] ; set ::ostar [m stars]
+	set ::oform [list [m form_tick] [m form_tick 1] [m form_x]]
+	set ::owant [expr {10*$F}]
+	set ::owhy "10 s; space and joystick 2's button A pressed one frame before 3 s and held past it ignored"
+	at [expr {$N0+$F}] {
+		set ::spawns 0 ; down 0x81 ; cdown
+		set ::throttle on
+		after realtime 0.1 {
+			set ::pause on
+			after realtime 0.3 { screenshot [regsub {\.png$} $::env(SHOT) {-over.png}] ; set ::pause off ; set ::throttle off }
+		}
+	}
+	at [expr {$N0+$F+1}] { up 0x01 ; cup }
+	at [expr {$N0+2*$F}] {
+		up 0x80
+		check {[m ship_x] == $::ox && $::spawns == 0 && [llength [volley_live]] == 0 && ![m call_on] && [m front_mask] == 0 && [m reserves] == 0} "game over: right, fire and C do nothing (ship_x [m ship_x], $::spawns shots, call_on [m call_on], mask [m front_mask])"
+		check {[list [m form_tick] [m form_tick 1] [m form_x]] ne $::oform && [m stars] != $::ostar} "game over: the game runs on (the formation and the stars move)"
+	}
+	at [expr {$N0+3*$F-2}] { down 0x01 ; joydown 2 0x10 }
+	at [expr {$N0+3*$F+5}] { up 0x01 ; joyup 2 }
+	at [expr {$N0+10*$F-1}] {
+		check {[m over_on]} "game over: still on in its last frame"
+		check_over_text 1 "game over: \"$::OVER\" still shows in its last frame"
+	}
+	at [expr {$N0+10*$F+2}] { if {$::ostate eq "on"} { fail "game over: no return to the title after 10 s" ; finish } }
+}
+proc over_plan_skip {} {
+	set ::owant [expr {3*$::F}]
+	if {$::games == 2} {
+		set ::owhy "joystick 1's button A pressed, seen exactly at 3 s: at once"
+		at [expr {$::N0+3*$::F-1}] { joydown 1 0x10 }
+	} else {
+		set ::owhy "space pressed, seen exactly at 3 s: at once"
+		at [expr {$::N0+3*$::F-1}] { down 0x01 }
+	}
+	at [expr {$::N0+3*$::F+2}] { if {$::ostate eq "on"} { fail "game over $::games: fire at 3 s didn't return to the title" ; finish } }
+}
+# Game over's end (restart): frames from the one it began in to this one
+# (whose work stops here)
+debug set_bp $sym(restart) {} { try over_restart }
+proc over_restart {} {
+	set k [expr {$::n - $::N0 + 1}]
+	check {$::ostate eq "on" && $k == $::owant} "game over $::games: back to the title $k frames after it began (want $::owant: $::owhy)"
+	check {$::dropped == $::odropped} "game over $::games: the game ran every frame of it ([expr {$::dropped - $::odropped}] dropped)"
+	set ::ostate "" ; set ::phase 3 ; set ::sn 0
+	unset -nocomplain ::last_frames
+}
+# A new game after a game over, before its first frame: as at power-on
+proc new_game_checks {} {
+	set en {}
+	for {set i 0} {$i < 8} {incr i} { lappend en [lindex [en_state $i] 0] }
+	set st {}
+	for {set k 0} {$k < 4} {incr k} { lappend st [m boom_stage $k] }
+	check {[m front_mask] == 1 && [m ship_x] == $::sym(SHIP_X_MAX)/2 && $st eq {0 0 0 0} && [m reserves] == 4 && ![m call_on] && ![m over_on] && ![m volleys] && ![m volleys $::VOL]} "new game $::games: one ship in the middle, 4 in reserve, nothing flying, not over (mask [m front_mask], ship_x [m ship_x], [m reserves] in reserve)"
+	set bad [form_pattern_bad]
+	check {[m form_enemy] == 0 && [m form_cidx] == 0 && [m form_color] == 2 && ![m wave_wait] && $en eq {0 0 0 0 0 0 0 0} && [llength $bad] == 0} "new game $::games: the first wave again (enemy [m form_enemy], colour [m form_color], states $en; VRAM wrong: $bad)"
+	check {[psg 8] == 0 && [psg 9] == 0 && [psg 10] == 0} "new game $::games: silent"
+	check_cleared
+	check_reserves 4
+	at [expr {$::n+3}] {
+		set x [expr {$::sym(SHIP_X_MAX)/2 - $::sym(SHIP_ART_L)}] ; set y [expr {$::sym(SHIP_TOP) - 1}]
+		check {[sat 0] == $y && [sat 1] == $x || [sat 48] == $y && [sat 49] == $x} "new game $::games: the ship's sprite in the middle"
+	}
+	if {$::games < 3} { at [expr {$::n+$::F}] { plan_over [expr {$::games + 1}] } } else { at [expr {$::n+$::F}] { screenshot_and_finish } }
 }

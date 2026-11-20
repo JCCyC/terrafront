@@ -8,7 +8,7 @@ cartridge ROM at 4000h..7FFFh (`terrafnt.rom`, an 8.3 name). RAM at E000h.
 
 **Current state:** it starts with a splash screen, `images/title.png`
 (256×192, the user may retouch it: MSX1 colours, at most two per 8×1
-byte), the logo solid cyan, and "PRESS SPACE TO BEGIN" printed on it in
+byte), the logo solid cyan, and "PRESS SPACE OR FIRE TO BEGIN" printed on it in
 white (`TEXT_COLOR`), centred on character row 22 (`BLINK_ROW`; the
 picture's row is blank), blinking 0.3 s on, 0.2 s off by its cells'
 colours. **Text:** all the game's text (scores later too) is in U-boat
@@ -51,7 +51,18 @@ doesn't fire, and Skyfighter's ship-blown-up sound plays on PSG channel C
 (1.4 s, U-boat Killer's "water, loud"; another death restarts it; where
 it clashes with the shot's sound, the PSG's one noise period, it wins); then its slot is a hole, and the front is trimmed to its
 first and last ships. An emptied front stays where its last ship died,
-can't move or shoot, and a call-up lands there. Behind it all, 15
+can't move or shoot, and a call-up lands there: the frame the front is
+empty (its last boom over), with no call-up flying, one starts by itself
+(no C needed; `call_up`). With no reserve left, that frame is game over
+(`game_over`, after `call_up`): "GAME OVER" (`OVER_TEXT`) in the font,
+white, on the top status row (`OVER_ROW` 0), centred to the cell (columns
+11..19), and the game runs on (enemies, waves, stars; the front can't
+move, shoot or call up) for 10 s (`GAME_OVER_MS`; 600 / 500 frames), or
+until a press of fire (`IN_FIRE`: space or either joystick's button A)
+seen from 3 s on (`OVER_SKIP_MS`; held from before doesn't count); then
+`restart`: display off, no sprites, the game's RAM (from `game_ram`; the
+rates, `frames`, `entropy`, `polls` kept) cleared, the splash, and a new
+game as at power-on. Behind it all, 15
 one-pixel light grey stars (random columns, random lines, never two on a
 line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 50 Hz), drawn in the bitmap (`move_stars`, after `fire`); one leaving past
@@ -175,8 +186,9 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   tone, noise period and mixer bits against the table, restarted by each
   death, its noise period winning over the shot's; the last
   one plays out in 1.4 s), a key with no such ship, trims, ship-gap-ship calling
-  up from either side, an emptied front (no move, no shot) refilled where
-  its last ship died (the test writes `reserves` in RAM for these
+  up from either side, an emptied front's call-up of the last reserve
+  starting by itself that frame (no move, no shot meanwhile), landing
+  where its last ship died (the test writes `reserves` in RAM for these
   call-ups); the stars: 15 on 15 lines, all moving together 1 px every
   6 / 5 frames, wraps to 255 on a free line, a star the test puts on a
   new volley's spawn line hiding under it; the first wave's enemy 0 and colour 2
@@ -196,10 +208,22 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   straight down placed by the test's own pixel model so that after their
   next move one is across ships 1 and 2, two are on ship 3, one's art box
   overlaps a ship's with no pixel touching: the next frame's states, booms
-  and 6 death sound starts); then, with the
+  and 6 death sound starts); then staged bounces (two free enemies written
+  2 lines short of lines 8 and 183, flying straight at them, away from
+  the front: a bounce at each, as modelled); then, with the
   per-frame models off, the test makes every enemy gone in RAM 19 times
   and checks waves 3..21 (both lists wrap; none begun a frame before
-  its 0.7 s). It checks the velocity table (64 directions, the square
+  its 0.7 s). Then game over, twice: 1 reserve left (RAM), the front
+  killed (keys 1..4 at once): it's called up, no game over; killed again:
+  GAME OVER on the top row that frame (VRAM against `font.py --raw`), the
+  front can't move, shoot or call up, the formation and stars move
+  (screenshot `build/shot-<machine>-over.png`), space and joystick 2's
+  button A pressed a frame before 3 s and held past it ignored, the title exactly 10 s on; the
+  title's VRAM, no sprites, a held space not starting; the new game as at
+  power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
+  Then twice no reserves, the front killed: joystick 1's button A, then
+  space, seen exactly at 3 s goes to the title at once; a fourth game for
+  the final screenshot. It checks the velocity table (64 directions, the square
   legs' speed), every enemy's boom (images and frame counts), the break
   sound's starts and length, a death-sound start per enemy boom, bounces at
   both lines (not mirrors), no level break-up direction, the SAT's flip and
