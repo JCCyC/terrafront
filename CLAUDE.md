@@ -123,6 +123,27 @@ one enemy across two ships kills both; two enemies on one ship both boom
 (the ship dies once, one death sound start). Pairs never reach the
 front's lines (assert); dying ships, booming enemies and the incoming
 ship don't collide.
+Enemy bullets (`enemy_fire`, after `fire`): every 0.25 s (`EB_ROLL_MS`;
+a clock in 1/300 s: 15 frames at 60 Hz, 13/12 at 50 Hz) a roll; one in 4
+(`EB_CHANCE`) hits; then, with fewer in flight than the wave's most
+(`EB_MAX_LIST`: 3 in waves 1..3, 4 in 4..6, 5 from 7 on), a random one of
+the enemies that can shoot fires: in a pair or free, its art's last row
+at least 8 lines over the front's art's first (`EB_CLEAR`: line 160 or
+above), its column 3 (`EB_DX`, the art's middle) on screen; none, no
+bullet. The bullet: the player's shape and colour (1×3, white, in the
+bitmap), its top right under the art's last row, going down at
+`EB_SPEED_LIST`% of the player's 230 px/s (70% in wave 1, +10% a wave,
+140% from wave 8 on; `wave_n` counts the waves, stopping at 255),
+Bresenham in 1/100 px (one table for both rates); gone once its bottom
+would pass line 183. It hits nothing yet. When a wave begins
+(`next_wave`, `eb_wipe`), all enemy bullets go: the next frame's
+`eb_move` erases them, the frame the new wave first shows. All bullets are erased before
+any is drawn; an enemy bullet sharing a bitmap byte with another (a
+volley's or an enemy's) is drawn as the bits of all of them (`eb_draw`,
+after the volleys); stars hide in their bytes as in the volleys'. The
+SAT's reversal every other frame is done by `upload_sat` (the entries
+sent backwards, in vertical blank). The worst frame's work is about
+15 ms on the Expert (16.7 ms a frame).
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -213,7 +234,14 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   the front: a bounce at each, as modelled); then, with the
   per-frame models off, the test makes every enemy gone in RAM 19 times
   and checks waves 3..21 (both lists wrap; none begun a frame before
-  its 0.7 s). Then game over, twice: 1 reserve left (RAM), the front
+  its 0.7 s; the frame before each begins, the test puts 3 enemy
+  bullets in flight: the model has them gone the frame after). Then the
+  enemy bullets' levels (rolls forced to hit): the
+  wave then (21) and waves 1..8 (`wave_n` written): the speed, and with
+  one fewer than the most in flight (the test's own bullets, two sharing
+  bytes) a roll fires, with the most it doesn't; then the 8-line rule at
+  its edge (free enemies flying level, art's last row on 161, one on 160:
+  only that one shoots; all on 161: none does). Then game over, twice: 1 reserve left (RAM), the front
   killed (keys 1..4 at once): it's called up, no game over; killed again:
   GAME OVER on the top row that frame (VRAM against `font.py --raw`), the
   front can't move, shoot or call up, the formation and stars move
@@ -228,13 +256,21 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   sound's starts and length, a death-sound start per enemy boom, bounces at
   both lines (not mirrors), no level break-up direction, the SAT's flip and
   turn, no sprite the VDP drops (worked out from the SAT shown) dropped two
-  frames running on a line of 5..7 sprites, and no frame dropped. Every frame it also
+  frames running on a line of 5..7 sprites, and no frame dropped. Enemy
+  bullets: a roll exactly every 0.25 s, about one in 4 hitting, each
+  hit's outcome against the test's model (room under the wave's most,
+  the enemies able to shoot from RAM, the bullet's place one of theirs,
+  the picks spread). Every frame it also
   checks the SAT against the front (ships and booms), the incoming ship
   and the enemies (from RAM, rotated; the pairs against the test's own
   model of the loop from the spec, the cycle from the build: pair layout,
   the picked colour, ±1 px, 25 px east a cycle later, its lines clear of the front, the wrap with EC), the
   bitmap (pixels and the playfield's colours) against the bullets in
-  flight and the stars not in their bytes, channel B against the break
+  flight (the enemies' too; a shared byte holds both) and the stars not
+  in their bytes, the enemy bullets against its own model (each down the
+  frame's step, Bresenham exact for the wave's %, gone past line 183, a
+  new one in the first free slot, never more than the wave's most),
+  channel B against the break
   table, and the enemies and volleys against its own model of the frame
   (booms on, every bullet's hit test against the art in game order, the
   free enemies' flight exact to 1/256 px, wraps and bounces; the

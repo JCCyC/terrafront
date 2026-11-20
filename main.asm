@@ -60,6 +60,13 @@
 ; rotates every frame), so a fifth sprite on a line flickers instead of
 ; staying hidden (turns of two frames: one straight, one reversed; on lines
 ; of up to 7 sprites no sprite is dropped two frames running).
+; The enemies shoot: every EB_ROLL_MS a roll, one in EB_CHANCE, fires a
+; bullet (the player's shape, going down) from a random enemy, in a pair or
+; free, whose art's last line is at least EB_CLEAR lines above the front's
+; art's first (none: no bullet), with fewer in flight than the wave's most
+; (EB_MAX_LIST); their speed is a share of BULLET_SPEED that grows with the
+; wave (EB_SPEED_LIST). They're gone at the playfield's bottom (they don't
+; hit anything yet), and all of them as a new wave shows. A bitmap byte two bullets share holds both.
 ; It starts with a splash screen, images/title.png (title.py), and "PRESS
 ; SPACE OR FIRE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
 ; font.py; print_text, for all the game's text) on it, blinking BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
@@ -115,6 +122,18 @@ WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins 
 GAME_OVER_MS    equ 10000       ; GAME OVER shows this long, the game running on, then the title
 OVER_SKIP_MS    equ 3000        ; ... a press of fire from this much on: the title at once
 OVER_ROW        equ 0           ; GAME OVER's character row (the top status area), centred on it
+;
+; Enemy bullets: every EB_ROLL_MS a roll; one in EB_CHANCE fires one
+EB_ROLL_MS      equ 250
+EB_CHANCE       equ 4           ; (a power of 2)
+EB_CLEAR        equ 8           ; a shooter's art's last line at least this many lines above the front's art's first
+EB_DX           equ 3           ; a bullet's column in its enemy's 8 (3 and 4: the art's middle)
+; their speed in % of BULLET_SPEED, in waves 1, 2, ...; the last from then on
+        define EB_SPEED_LIST 70, 80, 90, 100, 110, 120, 130, 140
+; at most this many in flight, in waves 1, 2, ...; the last from then on
+        define EB_MAX_LIST 3, 3, 3, 4, 4, 4, 5
+EB_N            equ 5           ; slots: EB_MAX_LIST's largest
+;
 ; the waves' colours in turn (their enemies: images/enemy-0..9.png in turn)
         define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
 ; (the formation's loop: path.py)
@@ -140,6 +159,13 @@ BULLET_START    equ SHIP_TOP+SHIP_ART_T-BULLET_H    ; a new bullet's top line: r
 ; playfield's first line and the front's sprites' first
 FORM_Y0         equ (PLAY_TOP+SHIP_TOP-FORM_H)/2
         assert FORM_Y0-FORM_RISE >= PLAY_TOP && FORM_Y0+FORM_RISE+FORM_H <= SHIP_TOP
+; Enemy bullets: a shooter's art's last line at most EB_LAST; the roll
+; clock counts 1/300 s (a whole number of them a frame at 50 and 60 Hz)
+EB_LAST         equ SHIP_TOP+SHIP_ART_T-EB_CLEAR
+EB_TICKS        equ EB_ROLL_MS*300/1000
+        assert EB_ROLL_MS*300%1000 == 0 && EB_TICKS+300/50 < 256 && EB_LAST >= PLAY_TOP
+        assert (EB_CHANCE & (EB_CHANCE-1)) == 0 && EB_CHANCE <= 256 && EB_DX < 8
+        assert BULLET_SPEED*255+100*60 < 65536  ; eb_move's sums (a % up to 255)
 FORM_WRAP       equ 256+16      ; x is mod this: a pair off the right edge comes in from the left
         assert FORM_X0 < FORM_WRAP && FORM_ADVANCE < FORM_WRAP
         assert FORM_WRAP-1+FORM_PATH_DX_MAX+FORM_W-16 < 2*FORM_WRAP    ; one wrap at most
@@ -268,6 +294,11 @@ Y               byte            ; ... and y: the art box's top line (the sprite'
 DIR             byte            ; free: 0..FREE_DIRS-1 (path.py)
         ends
 
+        struct EB
+Y               byte            ; an enemy bullet's top line, 0 = not in flight
+X               byte            ; ... its column
+        ends
+
         struct STAR
 X               byte            ; column
 Y               byte            ; line
@@ -298,6 +329,8 @@ blink_off:      ds 1            ; ... and hidden
 wave_delay:     ds 1            ; frames from a wave's last enemy gone to the next wave
 over_end:       ds 2            ; frames GAME OVER shows
 over_skip:      ds 2            ; ... and from which fire cuts it short
+eb_tick:        ds 1            ; 1/300 s a frame (the enemy bullets' roll clock)
+eb_unit:        ds 2            ; 100 * fps (their Bresenham: 1/100 px a second)
 RATES_SIZE      equ $-rates
 frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
@@ -329,6 +362,16 @@ call_acc:       ds 1            ; Bresenham remainder
 over_on:        ds 1            ; nonzero: game over (GAME OVER shows)
 over_time:      ds 2            ; ... frames since it began
 volleys:        ds MAX_VOLLEYS*VOLLEY
+ebullets:       ds EB_N*EB      ; the enemies' bullets
+eb_acc:         ds 2            ; ... their Bresenham remainder (1/100 px), one for all
+eb_step:        ds 1            ; ... this frame's px
+eb_clock:       ds 1            ; ... 1/300 s since the last roll
+eb_wipe:        ds 1            ; ... nonzero: a new wave began, all of them go (eb_move)
+eb_slot:        ds 2            ; enemy_fire: a free slot
+eb_cand:        ds ENEMY_N*2    ; ... the enemies that can shoot: their bullets' {Y X}
+eb_cells:       ds 4            ; the 8-px columns (cells) enemy bullets are in: bit (X/8)%8 of byte X/64
+bb_bits:        ds 1            ; bullet_bits: the bits so far
+wave_n:         ds 1            ; the wave: 0 the first, up to 255 (then it stays)
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
 bullet_step:    ds 1            ; this frame's px
 pat_hi:         ds 1            ; GRPCGP's high byte with the VDP's write bit
@@ -517,6 +560,8 @@ main_loop:
         call kill
         call move_bullets       ; first: in vertical blank, and a volley gone frees its slot; hits
         call fire               ; (hits too; both against the enemies where they show now)
+        call enemy_fire         ; from the enemies where they show now
+        call eb_draw            ; after the volleys are drawn: a shared byte holds both
         call move_stars         ; after the bullets (fire's too): a star in their bytes hides
         call call_up            ; before move_ship: the front stays put while one runs
         call game_over          ; after it: an empty front with none flying has no reserve
@@ -1187,8 +1232,8 @@ enemy_booms:
         ret
 
 ; Each volley in flight goes up BULLET_SPEED px/s; it's gone once its top
-; leaves the playfield. All are erased first, then drawn, so one's erase
-; never takes a pixel of another's.
+; leaves the playfield. All are erased first (the enemies' bullets too),
+; then drawn, so one's erase never takes a pixel of another's.
 move_bullets:
         ld a,(bullet_whole)
         ld b,a
@@ -1227,6 +1272,7 @@ move_bullets:
         add ix,de
         pop bc
         djnz .erase
+        call eb_move            ; erased too before anything is drawn
         ld ix,volleys
         ld b,MAX_VOLLEYS
 .draw:  push bc
@@ -1286,6 +1332,369 @@ fire:
         ld (sfx_ptr),hl
         ret
         assert VOLLEY.Y == 0 && VOLLEY.X == 1 && SHIP_NOSE_DX > 0
+
+; ---- Enemy bullets ---------------------------------------------------------
+
+; A = this wave's (wave_n's) entry in the table HL of B entries (the last
+; from then on). Keeps C, DE.
+wave_entry:
+        ld a,(wave_n)
+        cp b
+        jr c,.in
+        ld a,b
+        dec a
+.in:    add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld a,(hl)
+        ret
+
+; Each enemy bullet in flight erased and moved down this wave's speed
+; (BULLET_SPEED * EB_SPEED_LIST's % / 100 px/s); gone once its bottom
+; would leave the playfield, or if a new wave began last frame (eb_wipe:
+; its sprites show from this frame on)
+eb_move:
+        ld hl,EB_PCTS
+        ld b,EB_PCTS_N
+        call wave_entry
+        ld de,BULLET_SPEED
+        ld hl,0
+        ld b,8
+.mul:   add hl,hl               ; HL = BULLET_SPEED * the %: 1/100 px a second
+        rla
+        jr nc,.m0
+        add hl,de
+.m0:    djnz .mul
+        ld de,(eb_acc)
+        add hl,de
+        ld de,(eb_unit)         ; 100 * fps: a px
+        ld b,0
+.div:   or a
+        sbc hl,de
+        jr c,.dn
+        inc b
+        jr .div
+.dn:    add hl,de
+        ld (eb_acc),hl
+        ld a,b
+        ld (eb_step),a
+        ld a,(eb_wipe)
+        ld c,a
+        ld ix,ebullets
+        ld b,EB_N
+.e:     ld a,(ix+EB.Y)
+        or a
+        jr z,.next
+        push bc
+        ld e,a
+        ld d,(ix+EB.X)
+        ld c,0
+        call bullet_px          ; erased
+        pop bc
+        ld a,(eb_step)
+        add a,(ix+EB.Y)
+        cp PLAY_BOTTOM+2-BULLET_H
+        jr nc,.gone             ; its bottom off the playfield
+        inc c
+        dec c
+        jr z,.keep
+.gone:  xor a
+.keep:  ld (ix+EB.Y),a
+.next:  inc ix
+        inc ix
+        djnz .e
+        xor a
+        ld (eb_wipe),a
+        ret
+        assert EB == 2 && PLAY_BOTTOM+(BULLET_SPEED*255/100+49)/50 < 256
+
+; Every EB_ROLL_MS a roll: one in EB_CHANCE, with fewer enemy bullets in
+; flight than this wave's most (EB_MAX_LIST) and an enemy that can shoot
+; (eb_can), one of those at random fires a bullet from its art's column
+; EB_DX, its top right under the art's last row (eb_draw draws it)
+enemy_fire:
+        ld a,(eb_tick)
+        ld hl,eb_clock
+        add a,(hl)
+        cp EB_TICKS
+        jr nc,.roll
+        ld (hl),a
+        ret
+.roll:  sub EB_TICKS
+        ld (hl),a
+        call rand
+.rolled:                        ; (test.tcl: A = the roll)
+        and EB_CHANCE-1
+        ret nz
+        ld hl,ebullets+(EB_N-1)*EB  ; C = in flight; eb_slot = the first free slot
+        ld b,EB_N               ; (from the last: the first free one is kept)
+        ld c,0
+.cnt:   ld a,(hl)
+        or a
+        jr z,.free
+        inc c
+        jr .cn
+.free:  ld (eb_slot),hl
+.cn:    dec hl
+        dec hl
+        djnz .cnt
+        ld hl,EB_MAXES
+        ld b,EB_MAXES_N
+        call wave_entry
+        cp c
+        ret z                   ; as many in flight as the wave's most
+        ret c
+        ld iy,enemies           ; C = the enemies that can shoot, their
+        ld hl,eb_cand           ; bullets' places in eb_cand
+        ld b,ENEMY_N
+        ld c,0
+.can:   push hl
+        call eb_can
+        pop hl
+        jr nc,.cnext
+        inc c
+        ld e,a                  ; the column
+        ld a,(form_art_b)
+        add a,(iy+EN.Y)
+        inc a
+        ld (hl),a               ; Y: under its art
+        inc hl
+        ld (hl),e
+        inc hl
+.cnext: ld de,EN
+        add iy,de
+        djnz .can
+        ld a,c
+        or a
+        ret z                   ; none
+        ld b,a
+.pick:  call rand
+        and ENEMY_N-1
+        cp b
+        jr nc,.pick
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,eb_cand
+        add hl,de
+.shoot:                         ; (test.tcl: HL = the bullet's {Y X})
+        ld de,(eb_slot)
+        ldi
+        ldi
+        ret
+        assert ENEMY_N == 8 && (ebullets+EB_N*EB)/256 == ebullets/256
+
+; Carry: the enemy at IY can shoot: in a pair or free, its art's last line
+; on EB_LAST or above, its column EB_DX on screen (A = that column). Keeps
+; BC, IY.
+eb_can:
+        ld a,(iy+EN.ST)
+        cp EN_BOOM
+        ret nc                  ; booming or gone
+        ld a,(form_art_b)
+        add a,(iy+EN.Y)
+        cp EB_LAST+1
+        ret nc                  ; too close to the front
+        ld l,(iy+EN.X)
+        ld h,(iy+EN.X+1)
+        call to_screen
+        ld de,EB_DX
+        add hl,de
+        ld a,h
+        or a
+        ld a,l
+        scf
+        ret z                   ; 0..255
+        or a
+        ret
+        assert EN_FORM < EN_BOOM && EN_FREE < EN_BOOM
+
+; Every enemy bullet in flight drawn: its pixels alone, or, where another
+; bullet (a volley's or an enemy's) shares a byte with it, each of its bytes
+; as the bits of every bullet in it; eb_cells from them all
+eb_draw:
+        ld hl,eb_cells
+        xor a
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        ld hl,ebullets
+        ld b,EB_N
+.e:     ld a,(hl)
+        inc hl
+        or a
+        jr z,.next
+        push bc
+        push hl
+        ld e,a
+        ld d,(hl)
+        call eb_cell
+        or (hl)
+        ld (hl),a
+        call eb_alone
+        jr nz,.shared
+        ld a,d
+        and 7
+        add a,low PIXEL_BIT
+        ld l,a
+        ld h,high PIXEL_BIT
+        ld c,(hl)
+        call bullet_px          ; its bit alone
+        jr .done
+.shared:
+        ld b,BULLET_H
+.row:   call bullet_bits
+        ld c,a
+        ld a,(pat_hi)
+        call vdp_at
+        ld a,c
+        out (VDP_DATA),a
+        inc e
+        djnz .row
+.done:  pop hl
+        pop bc
+.next:  inc hl
+        djnz .e
+        ret
+
+; HL = column D's byte in eb_cells, A = its bit there. Keeps BC, DE.
+eb_cell:
+        ld a,d
+        rlca
+        rlca
+        and 3
+        add a,low eb_cells
+        ld l,a
+        ld h,high eb_cells
+        ld a,d
+        rrca
+        rrca
+        rrca
+        and 7
+        push hl
+        add a,low PIXEL_BIT
+        ld l,a
+        ld h,high PIXEL_BIT
+        ld a,(hl)
+        pop hl
+        ret
+        assert eb_cells/256 == (eb_cells+3)/256
+
+; Z: no other bullet in flight (a volley's or an enemy's) shares a bitmap
+; byte with the enemy bullet at column D, top line E. Keeps DE.
+eb_alone:
+        ld hl,volleys
+        ld b,MAX_VOLLEYS
+.v:     ld a,(hl)
+        or a
+        jr z,.nv
+        sub e
+        add a,BULLET_H-1
+        cp 2*BULLET_H-1
+        jr nc,.nv               ; their lines apart
+        push hl
+        ld c,FRONT_MAX
+.x:     inc hl
+        ld a,(hl)
+        or a
+        jr z,.nx
+        xor d
+        and 0F8h
+        jr z,.shared
+.nx:    dec c
+        jr nz,.x
+        pop hl
+.nv:    ld a,l
+        add a,VOLLEY
+        ld l,a
+        djnz .v
+        ld hl,ebullets
+        ld bc,EB_N*256          ; C = those in its bytes (itself one)
+.e:     ld a,(hl)
+        inc hl
+        or a
+        jr z,.ne
+        sub e
+        add a,BULLET_H-1
+        cp 2*BULLET_H-1
+        jr nc,.ne
+        ld a,(hl)
+        xor d
+        and 0F8h
+        jr nz,.ne
+        inc c
+.ne:    inc hl
+        djnz .e
+        dec c
+        ret
+.shared:
+        pop hl
+        or 1                    ; (NZ)
+        ret
+
+; A = the bits of every bullet in flight (the volleys' and the enemies') in
+; pixel (D, E)'s bitmap byte. Keeps BC, DE.
+bullet_bits:
+        push bc
+        xor a
+        ld (bb_bits),a
+        ld hl,volleys
+        ld b,MAX_VOLLEYS
+.v:     ld a,e
+        sub (hl)                ; line - the volley's top (0 = none: E is more than BULLET_H)
+        cp BULLET_H
+        jr nc,.nv
+        push hl
+        ld c,FRONT_MAX
+.x:     inc hl
+        ld a,(hl)
+        or a
+        jr z,.nx                ; no bullet from this slot
+        xor d
+        and 0F8h
+        call z,.bit
+.nx:    dec c
+        jr nz,.x
+        pop hl
+.nv:    ld a,l
+        add a,VOLLEY
+        ld l,a
+        djnz .v
+        ld hl,ebullets
+        ld b,EB_N
+.e:     ld a,e
+        sub (hl)                ; (0 = none, as above)
+        inc hl
+        cp BULLET_H
+        jr nc,.ne
+        ld a,(hl)
+        xor d
+        and 0F8h
+        call z,.bit
+.ne:    inc hl
+        djnz .e
+        pop bc
+        ld a,(bb_bits)
+        ret
+; bb_bits |= column (HL)'s bit. Keeps BC, DE, HL.
+.bit:   push hl
+        ld a,(hl)
+        and 7
+        add a,low PIXEL_BIT
+        ld l,a
+        ld h,high PIXEL_BIT
+        ld a,(hl)
+        ld hl,bb_bits
+        or (hl)
+        ld (hl),a
+        pop hl
+        ret
+        assert PIXEL_BIT/256 == (PIXEL_BIT+7)/256
 
 ; ---- Hits ------------------------------------------------------------------
 
@@ -1786,8 +2195,8 @@ star:
         ld (ix+STAR.Y),e
         ret
 
-; Carry: a bullet in flight is in pixel (D, E)'s bitmap byte (line E, the
-; 8-px cell of column D). Keeps BC, DE.
+; Carry: a bullet in flight (a volley's or an enemy's) is in pixel (D, E)'s
+; bitmap byte (line E, the 8-px cell of column D). Keeps BC, DE.
 bullet_at:
         push bc
         ld hl,volleys
@@ -1812,11 +2221,27 @@ bullet_at:
         add a,VOLLEY
         ld l,a
         djnz .v
-        pop bc
+        call eb_cell            ; no enemy bullet in its column's cell: none
+        and (hl)
+        jr z,.none
+        ld hl,ebullets
+        ld b,EB_N
+.e:     ld a,e
+        sub (hl)                ; (0 = none, as above)
+        inc hl
+        cp BULLET_H
+        jr nc,.ne
+        ld a,(hl)
+        xor d
+        and 0F8h
+        jr z,.ehit
+.ne:    inc hl
+        djnz .e
+.none:  pop bc
         or a
         ret
 .hit:   pop hl
-        pop bc
+.ehit:  pop bc
         scf
         ret
         assert PLAY_TOP >= BULLET_H
@@ -1972,8 +2397,13 @@ next_wave:
         ld a,(wave_delay)       ; the last one just went: the wait starts
         ld (wave_wait),a
         ret
-.go:
-        ld a,(form_enemy)
+.go:    ld a,1                  ; the last wave's enemy bullets go (next frame's eb_move)
+        ld (eb_wipe),a
+        ld hl,wave_n            ; (stays at 255)
+        inc (hl)
+        jr nz,.wn
+        dec (hl)
+.wn:    ld a,(form_enemy)
         inc a
         cp ENEMIES
         jr c,.en
@@ -2482,7 +2912,7 @@ build_sat:
         add ix,bc
         pop bc
         djnz .pair
-        ld hl,sat_flip          ; every other frame the SAT reversed ...
+        ld hl,sat_flip          ; every other frame the SAT reversed (upload_sat) ...
         ld a,(hl)
         xor 1
         ld (hl),a
@@ -2505,33 +2935,10 @@ build_sat:
         ld a,(enemy_rot)
         add a,a
         add a,a
-        jr z,.flip
+        ret z
         ld c,a
         ld hl,enemy_sat
         ldir
-.flip:  ld a,(sat_flip)         ; reversed: of the sprites on a line past the
-        or a                    ; 4th, the ones dropped now show next frame
-        ret z
-        ld hl,sat_buf
-        ld de,sat_buf+SAT_SIZE-1-4
-        ld b,(SAT_SIZE-1)/4/2   ; entry pairs to swap
-.swap:  ld c,4
-.byte:  ld a,(de)
-        push af
-        ld a,(hl)
-        ld (de),a
-        pop af
-        ld (hl),a
-        inc hl
-        inc de
-        dec c
-        jr nz,.byte
-        push hl
-        ld hl,-8
-        add hl,de
-        ex de,hl
-        pop hl
-        djnz .swap
         ret
 
 ; The SAT entry at DE (DE += 4) for the enemy at IX alone: free, booming
@@ -2610,7 +3017,9 @@ to_screen:
         assert COMING_L_ART_L <= 16 && COMING_R_ART_L+SHIP_ART_W <= 16
         assert SAT_SIZE == (FRONT_MAX+1+ENEMY_N)*4+1
 
-; sat_buf to the VDP; right after halt, so OTIR is safe (vertical blank)
+; sat_buf to the VDP, its entries in reverse order when sat_flip is set
+; (where a line has more than 4 sprites, the ones dropped on one frame show
+; on the next); right after halt, so OTIR / OUTI are safe (vertical blank)
 upload_sat:
         ld hl,(sat_w)
         di
@@ -2619,10 +3028,31 @@ upload_sat:
         ld a,h
         out (VDP_ADDR),a
         ei
+        ld a,(sat_flip)
+        or a
+        jr nz,.rev
         ld hl,sat_buf
         ld bc,SAT_SIZE*256+VDP_DATA
         otir
         ret
+.rev:   ld hl,sat_buf+SAT_SIZE-1-4  ; the last entry first
+        ld c,VDP_DATA
+        ld d,(SAT_SIZE-1)/4
+.ent:   outi
+        outi
+        outi
+        outi
+        ld a,l                  ; back to the entry before
+        sub 8
+        ld l,a
+        jr nc,.nc
+        dec h
+.nc:    dec d
+        jr nz,.ent
+        ld a,SPR_END
+        out (c),a
+        ret
+        assert (SAT_SIZE-1)%4 == 0
 
 ; ---- Status area -----------------------------------------------------------
 
@@ -2860,6 +3290,8 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 db BLINK_ON_MS*60/1000, BLINK_OFF_MS*60/1000
                 db WAVE_DELAY_MS*60/1000
                 dw GAME_OVER_MS*60/1000, OVER_SKIP_MS*60/1000
+                db 300/60
+                dw 100*60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
@@ -2868,6 +3300,8 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
                 db BLINK_ON_MS*50/1000, BLINK_OFF_MS*50/1000
                 db WAVE_DELAY_MS*50/1000
                 dw GAME_OVER_MS*50/1000, OVER_SKIP_MS*50/1000
+                db 300/50
+                dw 100*50
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
         assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0
@@ -2880,6 +3314,12 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
 FORM_COLORS:    db FORM_COLOR_LIST
 FORM_COLORS_N   equ $-FORM_COLORS
         assert FORM_COLORS_N <= 16 && form_art_b == form_art_t+1
+
+EB_PCTS:        db EB_SPEED_LIST
+EB_PCTS_N       equ $-EB_PCTS
+EB_MAXES:       db EB_MAX_LIST
+EB_MAXES_N      equ $-EB_MAXES
+        assert EB_PCTS_N < 256 && EB_MAXES_N < 256
 
 PRESS_TEXT:     db "PRESS SPACE OR FIRE TO BEGIN",0
 PRESS_LEN       equ $-PRESS_TEXT-1

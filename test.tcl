@@ -105,6 +105,12 @@ proc frame {} {
 	if {[info exists ::emptywatch]} { try empty_frame }
 	if {$::ostate ne ""} { try over_frame }
 	if {[info exists ::bw]} { lappend ::bw [list [sate $::bwslot 0] [sate $::bwslot 2]] }
+	if {$::eb_expect ne ""} { eb_bad "a roll for a bullet hit, with room and enemies able to shoot ($::eb_expect), but none fired" ; set ::eb_expect "" }
+	set ::eb_rolled_now $::eb_rolled ; set ::eb_rolled 0
+	if {$::ebon} { try eb_frame }
+	if {[info exists ::lv_on]} { try lv_frame }
+	if {$::cs_on} { try cs_frame }
+	if {$::nocheck && $::ebon} { try check_bitmap }
 	if {!$::nocheck} {
 		try vis_frame
 		try check_sat
@@ -132,6 +138,7 @@ proc plan {} {
 	set ::wdelay [expr {$::sym(WAVE_DELAY_MS) * $F / 1000}]
 	set ::bstart [expr {$::sym(BULLET_START)}]
 	ship_px_init
+	set ::ebon 1
 	say "fps $F"
 	set x0 [m ship_x]
 	check {$x0 == $::sym(SHIP_X_MAX)/2} "ship starts in the middle (x $x0)"
@@ -456,7 +463,7 @@ proc empty_frame {} {
 
 # Every frame-by-frame summary, at the end
 proc final_checks {} {
-	check {$::bitmap_bad == 0 && $::bitmap_lit > 0} "bitmap = the bullets in flight and the stars not in their bytes, colours too, every frame ($::bitmap_frames frames, $::bitmap_lit pixels seen; [expr {$::bitmap_bad ? "first wrong: $::bitmap_first" : "none wrong"}])"
+	check {$::bitmap_bad == 0 && $::bitmap_lit > 0 && $::bitmap_shared > 0} "bitmap = the bullets in flight (volleys' and enemies'; a byte two share holds both) and the stars not in their bytes, colours too, every frame ($::bitmap_frames frames, $::bitmap_lit pixels seen, $::bitmap_shared frames with a shared byte; [expr {$::bitmap_bad ? "first wrong: $::bitmap_first" : "none wrong"}])"
 	check {$::sat_bad == 0} "sprites = the front (ships and booms), the incoming ship and the enemies (pairs, free, booming, gone; rotated), every frame ($::sat_frames frames; [expr {$::sat_bad ? "first wrong: $::sat_first" : "none wrong"}])"
 	check {$::coming_seen > 0} "the incoming ship's sprite showed on $::coming_seen frames"
 	check_stars_end
@@ -657,12 +664,16 @@ proc check_sat {} {
 	set ::prev_sat [want_sat]
 }
 
-# A bullet in flight in pixel (x, y)'s bitmap byte
+# A bullet in flight (a volley's or an enemy's) in pixel (x, y)'s bitmap byte
 proc bullet_in {x y} {
 	foreach v [volley_live] {
 		set t [lindex $v 0]
 		if {$y < $t || $y >= $t + $::sym(BULLET_H)} continue
 		foreach bx [lrange $v 1 end] { if {$bx && $bx/8 == $x/8} { return 1 } }
+	}
+	foreach b [eb_list] {
+		lassign $b t bx
+		if {$t && $y >= $t && $y < $t + $::sym(BULLET_H) && $bx/8 == $x/8} { return 1 }
 	}
 	return 0
 }
@@ -745,7 +756,8 @@ proc put_star0 {} {
 }
 
 # Every frame: the bitmap's playfield and top status rows (lines 0..183)
-# hold exactly the volleys' bullets, BULLET_COLOR on black, and the stars
+# hold exactly the volleys' and the enemies' bullets, BULLET_COLOR on black
+# (a byte two share: both), and the stars
 # not in a bullet's byte, STAR_COLOR on black; the rest of the playfield's
 # colour bytes are BULLET_COLOR on black
 set bitmap_bad 0
@@ -753,23 +765,29 @@ set bitmap_frames 0
 set bitmap_lit 0
 set star_hidden 0
 set bitmap_skip 0
+set bitmap_shared 0
 proc check_bitmap {} {
 	if {$::n == 1} return   ;# before the main loop's first frame: no star drawn yet
 	if {$::bitmap_skip} { set ::bitmap_skip 0 ; return }   ;# put_star0 just undrew star 0
 	set bad0 {}
 	set want [dict create]
+	set bl {}
 	foreach v [volley_live] {
 		set y [lindex $v 0]
-		foreach x [lrange $v 1 end] {
-			if {!$x} continue
-			for {set r $y} {$r < $y + $::sym(BULLET_H)} {incr r} {
-				set a [expr {($r/8)*256 + ($x/8)*8 + $r%8}]
-				set b [expr {0x80 >> ($x%8)}]
-				if {[dict exists $want $a]} { set b [expr {$b | [dict get $want $a]}] }
-				dict set want $a $b
-			}
+		foreach x [lrange $v 1 end] { if {$x} { lappend bl [list $y $x] } }
+	}
+	foreach b [eb_list] { if {[lindex $b 0]} { lappend bl $b } }
+	set shared 0
+	foreach e $bl {
+		lassign $e y x
+		for {set r $y} {$r < $y + $::sym(BULLET_H)} {incr r} {
+			set a [expr {($r/8)*256 + ($x/8)*8 + $r%8}]
+			set b [expr {0x80 >> ($x%8)}]
+			if {[dict exists $want $a]} { set b [expr {$b | [dict get $want $a]}] ; set shared 1 }
+			dict set want $a $b
 		}
 	}
+	incr ::bitmap_shared $shared
 	set starb [dict create]
 	set i 0
 	foreach e [star_list] {
@@ -1364,6 +1382,7 @@ proc enemy_model {cur vols} {
 		set bad [form_pattern_bad]
 		if {[llength $bad]} { wave_bad "wave $::waves: VRAM patterns wrong: $bad" }
 		if {[m form_tick] || [m form_tick 1] || [m form_acc] || [m form_x] != $::FX0 || [m form_x 1]} { wave_bad "wave $::waves: the loop not at its start" }
+		if {[m wave_n] != $::waves} { wave_bad "wave $::waves: wave_n [m wave_n]" }
 		load_art
 		set st {0 0 0 0 0 0 0 0}
 		say "wave $::waves began at frame $::n: enemy [m form_enemy], colour [m form_color]"
@@ -1703,7 +1722,7 @@ proc enemy_end {} {
 	set sts $::gone_sts
 	check {$::breaks_w1 == 4} "bullets broke up all 4 pairs of the first wave ($::breaks_w1; $::breaks with the second wave's)"
 	check {$sts eq {5 5 5 5 5 5 5 5}} "bullets and the front blew up all 8 free enemies, all gone ($::booms_n by bullets, $::coll_w1 touching the front; states $sts)"
-	check {$::coll_bad == 0 && $::coll_w1 > 0} "collisions = the model (each free enemy after its move against the ships living, a pixel on a pixel; both blow up, the rest as they were) every frame ($::coll enemies touched $::coll_ships ships, $::coll_w1 in the first wave; $::coll_near near misses; $::refills call-ups to refill the front; [expr {$::coll_bad ? "first wrong: $::coll_first" : "none wrong"}])"
+	check {$::coll_bad == 0 && $::coll > 0} "collisions = the model (each free enemy after its move against the ships living, a pixel on a pixel; both blow up, the rest as they were) every frame ($::coll enemies touched $::coll_ships ships, $::coll_w1 in the first wave; $::coll_near near misses; $::refills call-ups to refill the front; [expr {$::coll_bad ? "first wrong: $::coll_first" : "none wrong"}])"
 	check {$::waves == 1 && $::wave_bad == 0 && $::wwaited == $::wdelay} "the last one gone, the second wave: enemy 1, colour 3, its patterns in VRAM, the loop from its start, $::wdelay frames later (0.7 s; all gone for $::wwaited frames first; $::waves waves; enemy [m form_enemy], colour [m form_color]; [expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 	check {$::hit_bad == 0 && $::hits > 0} "hits = the model (each bullet against the enemies' art on the lines it covered, the first enemy hit, the bullet gone; pairs break, free ones boom) every frame ($::hits hits; [expr {$::hit_bad ? "first wrong: $::hit_first" : "none wrong"}])"
 	check {$::mot_bad == 0 && $::freeframes > 0} "free enemies = the model (velocity table, wrap, stopped at lines 8 / 183 and turned away) every frame, booms stationary ($::freeframes enemy-frames; [expr {$::mot_bad ? "first wrong: $::mot_first" : "none wrong"}])"
@@ -1730,12 +1749,14 @@ proc enemy_end {} {
 # The lists' turns: the test makes every enemy gone (EN.ST = EN_GONE in
 # RAM); the next frame's work starts the wait, and ::wdelay frames later
 # a frame's work begins the next wave (not one frame sooner); 19 of them
-# (waves 2..20: both lists wrap)
+# (waves 2..20: both lists wrap). The frame before each begins, the test
+# puts 3 enemy bullets in flight (the model: gone the frame after).
 proc wave_step {} {
 	at [expr {$::n + 1}] {
 		for {set i 0} {$i < 8} {incr i} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 5 }
 	}
 	at [expr {$::n + 1 + $::wdelay}] {
+		eb_set [eb_some 3]     ;# (in flight as the next wave begins: they must go)
 		if {[m form_enemy] != ($::waves % 10) || [m wave_wait] != 1} { wave_bad "wave [expr {$::waves + 1}]: began before its wait was over (enemy [m form_enemy], wave_wait [m wave_wait])" }
 	}
 	at [expr {$::n + 2 + $::wdelay}] {
@@ -1748,11 +1769,11 @@ proc wave_step {} {
 		if {[m form_enemy] != $we || [m form_cidx] != $wc || [m form_color] != [lindex $::COLS $wc] || $sts ne {0 0 0 0 0 0 0 0} || [llength $bad]} {
 			wave_bad "wave $w: enemy [m form_enemy], colour [m form_color], states $sts, VRAM wrong: $bad (want enemy $we, colour [lindex $::COLS $wc])"
 		}
+		if {[m wave_n] != $w} { wave_bad "wave $w: wave_n [m wave_n]" }
 		lappend ::wseq "[m form_enemy]/[m form_color]"
 		if {$w < 20} { wave_step } else {
 			check {$::wave_bad == 0} "waves 3..21 (enemy/colour): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
-			final_checks
-			plan_over 1
+			at [expr {$::n + 3}] plan_eb_levels    ;# (after this wave's wipe of the test's bullets)
 		}
 	}
 }
@@ -1784,6 +1805,260 @@ proc vis_frame {} {
 	}
 	incr ::frontcrowd $fc
 	set ::vprevhid $hid
+}
+
+# ---- The enemies' bullets ---------------------------------------------------
+# From the spec: wave w (0 the first): speed 70% of the player's bullet's
+# (230 px/s) in the first wave, +10% a wave, from the 8th on 140%; at most
+# 3 in flight in waves 1..3, 4 in 4..6, 5 from the 7th on. A roll every
+# 0.25 s; one in 4 fires, from a random enemy (in a pair or free) whose
+# art's last row is at least 8 lines above the front's art's first, if
+# fewer than the most are in flight.
+proc eb_spec {w} {
+	set pct [expr {70 + 10*($w < 7 ? $w : 7)}]
+	set mx [expr {$w < 3 ? 3 : ($w < 6 ? 4 : 5)}]
+	list $pct $mx
+}
+# The slots: {Y X} each (Y 0: none)
+proc eb_list {} {
+	set r {}
+	for {set i 0} {$i < $::sym(EB_N)} {incr i} { lappend r [list [m ebullets [expr {2*$i}]] [m ebullets [expr {2*$i+1}]]] }
+	return $r
+}
+proc eb_live {} { set k 0 ; foreach b [eb_list] { if {[lindex $b 0]} { incr k } } ; return $k }
+# The enemies that can shoot, from RAM now: their bullets' places {Y X}
+# (under the art's last row, the art's column EB_DX, on screen)
+proc eb_cands {} {
+	set e [m form_enemy]
+	set ab [m ENEMY_ROWS [expr {2*$e+1}]]
+	set last [expr {$::sym(SHIP_TOP) + $::sym(SHIP_ART_T) - 8}]
+	set r {}
+	for {set i 0} {$i < 8} {incr i} {
+		lassign [en_state $i] st - - x - y
+		if {$st > 1 || $y + $ab > $last} continue
+		set c [expr {[screen_x $x] + $::sym(EB_DX)}]
+		if {$c < 0 || $c > 255} continue
+		lappend r [list [expr {$y + $ab + 1}] $c]
+	}
+	return $r
+}
+set ebon 0 ; set eb_bad 0 ; set eb_first "" ; set eb_force 0 ; set eb_expect "" ; set eb_cands {}
+set eb_rolls {} ; set eb_nat 0 ; set eb_nathit 0 ; set eb_full 0 ; set eb_none 0 ; set eb_spawns 0
+set eb_spawned {} ; set eb_prev {} ; set eb_w 0 ; set eb_epoch -1 ; set eb_S 0 ; set eb_k 0
+set eb_speed [dict create] ; set eb_ranks [dict create] ; set eb_last "" ; set eb_rolled 0 ; set eb_rolled_now 0
+set eb_gone 0 ; set eb_maxseen [dict create] ; set eb_frames 0 ; set cs_on 0 ; set lv_res {}
+proc eb_bad {s} { if {!$::eb_bad} { set ::eb_first "frame $::n: $s" } ; incr ::eb_bad }
+# A new wave begun (next_wave): the next frame, every enemy bullet goes
+set eb_fresh 0 ; set eb_began 0 ; set eb_wipe 0 ; set eb_wiped 0 ; set eb_wipes 0
+debug set_bp $sym(next_wave.go) {} { if {$::started} { set ::eb_began 1 } }
+# The roll (A, after rand): the decision against the model
+debug set_bp $sym(enemy_fire.rolled) {} { try eb_roll }
+proc eb_roll {} {
+	if {!$::started} return     ;# (the MSX2 BIOS boots with ROM code at these addresses too)
+	if {$::eb_force} { reg A [expr {[reg A] & 0xFC}] } else { incr ::eb_nat }
+	set a [reg A]
+	if {$::ebon} { lappend ::eb_rolls $::n }
+	set ::eb_rolled 1
+	set ::eb_last ""
+	if {$a & 3} return
+	if {!$::eb_force} { incr ::eb_nathit }
+	set n [eb_live]
+	lassign [eb_spec [m wave_n]] - mx
+	set c [eb_cands]
+	set ::eb_cands $c
+	if {$n >= $mx} { incr ::eb_full ; set ::eb_last [list full $n $mx] ; return }
+	if {![llength $c]} { incr ::eb_none ; set ::eb_last [list none $n $mx] ; return }
+	set ::eb_expect $c
+	set ::eb_last [list spawn $n $mx]
+}
+# The bullet fired: its place {Y X} (at HL), one of the model's
+debug set_bp $sym(enemy_fire.shoot) {} { try eb_shoot }
+proc eb_shoot {} {
+	if {!$::started} return
+	set hl [reg HL]
+	set b [list [debug read memory $hl] [debug read memory [expr {$hl+1}]]]
+	set k [lsearch -exact $::eb_expect $b]
+	if {$k < 0} { eb_bad "a bullet at $b, not from an enemy able to shoot ($::eb_expect; last roll $::eb_last)" ; return }
+	dict incr ::eb_ranks "$k/[llength $::eb_expect]"
+	set ::eb_expect ""
+	incr ::eb_spawns
+	lappend ::eb_spawned $b
+}
+# Every frame: the slots from last frame's, each moved down this frame's
+# step (gone once its bottom would pass line 183), then a new one in the
+# first free slot; the step: Bresenham at the wave's speed (the wave as
+# when the step was worked out: last frame's end), exact; at most the
+# wave's most in flight
+proc eb_frame {} {
+	set cur [eb_list]
+	set step [m eb_step]
+	set w $::eb_w
+	if {[llength $::eb_prev]} {
+		incr ::eb_frames
+		set fresh $::eb_fresh
+		lassign [eb_spec $w] pct mx
+		set v [expr {230*$pct}] ; set U [expr {100*$::F}]
+		if {$w != $::eb_epoch} { set ::eb_epoch $w ; set ::eb_S 0 ; set ::eb_k 0 }
+		incr ::eb_S $step ; incr ::eb_k
+		if {abs($::eb_S*$U - $::eb_k*$v) >= $U} { eb_bad "wave $w: $::eb_S px in $::eb_k frames, want [format %.2f [expr {double($::eb_k)*$v/$U}]]" }
+		dict set ::eb_speed $w [list $::eb_S $::eb_k]
+		set want {}
+		set wiped 0
+		foreach p $::eb_prev {
+			lassign $p y x
+			if {$y && $::eb_wipe} { set y 0 ; incr wiped }
+			if {$y} { set y [expr {$y + $step}] ; if {$y + 2 > 183} { set y 0 ; incr ::eb_gone } }
+			lappend want [list $y $x]
+		}
+		if {$wiped && !$fresh} { incr ::eb_wipes ; incr ::eb_wiped $wiped }
+		foreach b $::eb_spawned {
+			set k [lsearch -index 0 -exact $want 0]
+			if {$k < 0} { eb_bad "a bullet fired with no free slot" ; break }
+			lset want $k $b
+		}
+		foreach wb $want cb $cur {
+			if {$fresh} break
+			if {[lindex $wb 0] == 0 ? [lindex $cb 0] != 0 : $wb ne $cb} { eb_bad "slots $cur, want $want (step $step)" ; break }
+		}
+		set n [eb_live]
+		lassign [eb_spec [m wave_n]] - mx2
+		if {$n > $mx2} { eb_bad "$n in flight, wave [m wave_n]'s most $mx2" }
+		if {![dict exists $::eb_maxseen $mx2] || $n > [dict get $::eb_maxseen $mx2]} { dict set ::eb_maxseen $mx2 $n }
+	}
+	foreach b $cur { lassign $b y ; if {$y && ($y < 8 || $y + 2 > 183)} { eb_bad "a bullet at line $y" } }
+	set ::eb_spawned {}
+	set ::eb_fresh 0
+	set ::eb_wipe $::eb_began ; set ::eb_began 0
+	set ::eb_prev $cur
+	set ::eb_w [m wave_n]
+}
+# The test's own enemy bullets (slots in order; {Y X}, the rest none), the
+# ones drawn now taken off the bitmap first
+proc eb_set {bs} {
+	foreach b [eb_list] {
+		lassign $b y x
+		if {!$y} continue
+		for {set r $y} {$r < $y + 3} {incr r} { debug write VRAM [expr {($r/8)*256 + ($x/8)*8 + $r%8}] 0 }
+	}
+	for {set i 0} {$i < $::sym(EB_N)} {incr i} {
+		lassign [expr {$i < [llength $bs] ? [lindex $bs $i] : {0 0}}] y x
+		debug write memory [expr {$::sym(ebullets) + 2*$i}] $y
+		debug write memory [expr {$::sym(ebullets) + 2*$i + 1}] $x
+	}
+	set ::eb_prev [eb_list]
+	set ::eb_fresh 1     ;# (eb_frame, if it runs after this frame: nothing to compare)
+	set ::bitmap_skip 1
+}
+# k bullets for eb_set, on lines no star is on (so that their erase next
+# frame takes no star's pixel); the first two in one byte column, a line
+# apart (bytes they share)
+proc eb_some {k} {
+	set used [lmap e [star_list] {lindex $e 1}]
+	for {set y 12} {$y < 80} {incr y} {
+		set ok 1
+		for {set r $y} {$r < $y + 4} {incr r} { if {$r in $used} { set ok 0 } }
+		if {$ok} break
+	}
+	set r {}
+	foreach b [list [list $y 18] [list [expr {$y+1}] 20] [list $y 60] [list $y 100] [list $y 140]] { if {[llength $r] < $k} { lappend r $b } }
+	return $r
+}
+
+# The levels (after the waves; of the per-frame models only the enemy
+# bullets' and the bitmap's on): the wave now (21: the speed and most as
+# the 8th's / 7th's), then waves 1..8 (wave_n written); rolls forced to
+# hit. At each: the bullets in flight set to one fewer than the most (two
+# sharing bytes): the next roll fires; then set to the most: the next
+# roll doesn't.
+proc plan_eb_levels {} {
+	check {[m wave_n] == 20} "after 21 waves, the wave counter at 20 (wave_n [m wave_n])"
+	set ::eb_force 1
+	set ::lv_list {20 0 1 2 3 4 5 6 7}
+	lv_next
+}
+proc lv_next {} {
+	if {![llength $::lv_list]} { unset ::lv_on ; eb_clear_stage ; return }
+	set ::lv_list [lassign $::lv_list w]
+	set ::lv_w $w
+	debug write memory $::sym(wave_n) $w
+	set ::eb_w $w    ;# (eb_frame ran: the next frame's step is this wave's)
+	eb_set {}
+	set ::lv_on wait1
+}
+proc lv_frame {} {
+	if {!$::eb_rolled_now} return
+	lassign [eb_spec $::lv_w] pct mx
+	switch $::lv_on {
+		wait1 { eb_set [eb_some [expr {$mx - 1}]] ; set ::lv_on wait2 }
+		wait2 {
+			set ::lv_spawn $::eb_last
+			eb_set [eb_some $mx] ; set ::lv_on wait3
+		}
+		wait3 {
+			set ok [expr {[lindex $::lv_spawn 0] eq "spawn" && [lindex $::lv_spawn 1] == $mx - 1 && [lindex $::eb_last 0] eq "full" && [lindex $::eb_last 1] == $mx}]
+			lassign [dict get $::eb_speed $::lv_w] S k
+			set sp [expr {double($S) * $::F / $k}]
+			lappend ::lv_res "wave [expr {$::lv_w + 1}] [format %.1f $sp] px/s"
+			check {$ok && $k >= $::F/2 && abs($sp - 2.3*$pct) * $k < $::F} "enemy bullets, wave [expr {$::lv_w + 1}]: [format %.1f $sp] px/s over $k frames (want [expr {23*$pct/10.0}], $pct%); $mx in flight at most: with [expr {$mx-1}] a hit roll fires ($::lv_spawn), with $mx not ($::eb_last)"
+			lv_next
+		}
+	}
+}
+# The 8-line rule at its edge: every enemy free, flying level (direction
+# 0), its art's last row on line 161 (7 lines over the front's art's first,
+# 168), enemy 5's on 160 (8 lines over): rolls forced to hit, only enemy 5
+# shoots; then enemy 5 on 161 too: none does
+proc eb_clear_stage {} {
+	set e [m form_enemy] ; set ab [m ENEMY_ROWS [expr {2*$e+1}]]
+	for {set i 0} {$i < 8} {incr i} {
+		set y [expr {($i == 5 ? 160 : 161) - $ab}]
+		set x [expr {$i == 5 ? 10 : 40 + 28*$i}]
+		set r [expr {$::sym(enemies) + $i*$::sym(EN)}]
+		foreach {f v} [list ST 1 LEFT 0 XF 0 X $x YF 0 Y $y DIR 0] { debug write memory [expr {$r + $::sym(EN.$f)}] $v }
+		debug write memory [expr {$r + $::sym(EN.X) + 1}] 0
+	}
+	eb_set {}
+	set ::cs0 $::eb_spawns
+	set ::cs_bad 0 ; set ::cs_rolls 0
+	set ::cs_on 1
+	set ::eb_rolled_now 0    ;# (this frame's roll was before the writes)
+	at [expr {$::n + 3*$::F/2}] {
+		set ::cs_on 0
+		set s [expr {$::eb_spawns - $::cs0}]
+		check {$s >= 3 && $::cs_rolls >= 5 && !$::cs_bad} "enemy bullets: of enemies whose art's last row is on line 161 or 160, only the one on 160 (8 lines over the front's art) shoots ($s bullets in $::cs_rolls rolls; $::cs_bad with others able)"
+		set e [m form_enemy] ; set ab [m ENEMY_ROWS [expr {2*$e+1}]]
+		debug write memory [expr {$::sym(enemies) + 5*$::sym(EN) + $::sym(EN.Y)}] [expr {161 - $ab}]
+		set ::cs1 [list $::eb_spawns $::eb_none]
+		at [expr {$::n + $::F}] {
+			set s [expr {$::eb_spawns - [lindex $::cs1 0]}] ; set z [expr {$::eb_none - [lindex $::cs1 1]}]
+			check {$s == 0 && $z >= 3} "enemy bullets: every enemy too close to the front (art's last row on 161): none shoots ($s bullets; $z hit rolls with none able)"
+			set ::eb_force 0
+			eb_end
+			final_checks
+			plan_over 1
+		}
+	}
+}
+proc cs_frame {} {
+	if {!$::cs_on || !$::eb_rolled_now} return
+	incr ::cs_rolls
+	# (enemy 5 alone, as it was at the roll: its bullet's top on line 161)
+	if {[llength $::eb_cands] != 1 || [lindex $::eb_cands 0 0] != 161} { incr ::cs_bad }
+}
+proc eb_end {} {
+	check {$::eb_bad == 0 && $::eb_frames > 10*$::F} "enemy bullets = the model every frame: each down the wave's speed (Bresenham, exact), gone past line 183, a new one from an enemy able to shoot, under its art, in the first free slot; never more than the wave's most ($::eb_frames frames, $::eb_spawns fired, $::eb_gone gone at the bottom; [expr {$::eb_bad ? "first wrong: $::eb_first" : "none wrong"}])"
+	set r $::eb_rolls ; set bad 0
+	set n0 [lindex $r 0]
+	for {set k 1} {$k < [llength $r]} {incr k} { if {abs(4*([lindex $r $k] - $n0) - $k*$::F) >= 4} { incr bad } }
+	set gaps [lsort -integer -unique [lmap a [lrange $r 0 end-1] b [lrange $r 1 end] {expr {$b - $a}}]]
+	check {[llength $r] > 100 && $bad == 0} "enemy bullets: a roll every 0.25 s ([llength $r] rolls, gaps $gaps frames, none a frame or more off)"
+	check {$::eb_wipes >= 19 && $::eb_wiped >= 57} "enemy bullets: all of the last wave's gone (erased) the frame the new wave shows ($::eb_wiped bullets at $::eb_wipes new waves)"
+	set fr [expr {double($::eb_nathit) / $::eb_nat}]
+	check {$::eb_nat > 100 && $fr > 0.15 && $fr < 0.35} "enemy bullets: one roll in 4 hits ($::eb_nathit of $::eb_nat: [format %.3f $fr]; $::eb_full hit rolls with the most in flight, $::eb_none with no enemy able)"
+	check {[dict size $::eb_ranks] >= 6} "enemy bullets: the shooter at random among those able (pick/able: $::eb_ranks)"
+	set sp {}
+	foreach w {0 1} { if {[dict exists $::eb_speed $w]} { lassign [dict get $::eb_speed $w] S k ; lappend sp "wave [expr {$w+1}] [format %.1f [expr {double($S)*$::F/$k}]] px/s" } }
+	say "enemy bullets in play: $sp; most in flight seen per cap: $::eb_maxseen; levels: $::lv_res"
 }
 
 # Game over, twice, after the waves (per-frame models off). 1: the test
@@ -1823,6 +2098,7 @@ proc kill_all {} {
 	at [expr {$::n+1}] { keymatrixup 0 0x1E }
 }
 proc plan_over {g} {
+	set ::ebon 0     ;# (the per-frame enemy bullet model: not across the restarts)
 	if {[m call_on]} { at [expr {$::n+1}] [list plan_over $g] ; return }
 	set ::games $g
 	debug write memory $::sym(reserves) [expr {$g == 1 ? 1 : 0}]
