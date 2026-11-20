@@ -16,6 +16,8 @@ Writes sjasmplus source to stdout:
   SHIP_NOSE_DX   the nose's column (the top row's only pixel) minus SHIP_ART_L
   SHIP_ART_T     first row with art
   SHIP_ART_B     last row with art
+  SHIP_ROWS      16 words, the art's rows 0..15 (the sprite's), its left
+                 column on bit 15 (for the collision test)
   COMING_R_PATTERN  32 bytes, the ship coming in from the right (sprite layout)
   COMING_L_PATTERN  ... mirrored: coming in from the left
   COMING_COLOR   the MSX1 colour nearest to its art's one colour
@@ -107,6 +109,8 @@ def main():
     print(f'SHIP_ART_B      equ {rows[-1]}')
     print(f'SHIP_NOSE_DX    equ {top[0] - cols[0]}')
     print_pattern('SHIP_PATTERN', pattern)
+    assert cols[-1] - cols[0] < 16
+    ship_rows = [sum(0x8000 >> (x - cols[0]) for x in cols if on[y][x]) for y in range(16)]
 
     # The coming ship: the plain ship's art (same rows) plus the woosh lines
     # trailing on its right (they may start in the art's box, beside the
@@ -193,6 +197,9 @@ def main():
     print(f'FORM_H          equ {max(y for _, y in found) + 16 - y0}')
     print('FORM_PAIRS:')
     print('        db ' + ', '.join(f'{x - x0},{y - y0}' for x, y in sorted(found, key=lambda p: (p[1], p[0]))))
+    print('SHIP_ROWS:')
+    for i in range(0, 16, 8):
+        print('        dw ' + ','.join(f'{w:#06x}' for w in ship_rows[i:i + 8]))
 
 
 if __name__ == '__main__':

@@ -347,6 +347,13 @@ form_cidx:      ds 1            ; 0..FORM_COLORS_N-1
 form_rows:      ds 2            ; its art's 16 rows (ENEMY_PATTERN's left half)
 form_art_t:     ds 1            ; its art's first row ...
 form_art_b:     ds 1            ; ... and last
+rot_rows:       ds 8*16         ; form_rows rotated right 0..7 bits, 16 rows each
+col_alive:      ds 1            ; collide: the ships living when it began
+col_hit:        ds 1            ; ... nonzero: this enemy touched one
+col_n:          ds 1            ; ... the lines both arts' rows are on
+col_erow:       ds 1            ; ... the enemy's row on the first
+col_srow:       ds 2            ; ... the ship's (in SHIP_ROWS)
+col_ex:         ds 2            ; ... the enemy's art's left column + 7
 enemies:        ds ENEMY_N*EN
 enemy_rot:      ds 1            ; the enemies' first entry in the SAT (0..ENEMY_N-1), one back every other frame
 sat_flip:       ds 1            ; nonzero: this frame's SAT is in reverse order
@@ -486,6 +493,7 @@ main_loop:
         call move_formation
         call form_place
         call move_enemies       ; (a pair broken this frame: its enemies start from its place)
+        call collide            ; after the moves: where the enemies and the front show
         call next_wave          ; after them: a new wave shows from this frame's SAT on
         call sfx
         call brk_sfx            ; after sfx: its noise period wins over the shot's ...
@@ -1326,14 +1334,18 @@ bullet_hit:
         call free_en
         call brk_start
         jr .done
-.boom:  ld (iy+EN.ST),EN_BOOM
-        ld a,(boom_frames)
-        ld (iy+EN.LEFT),a
-        call death_start
+.boom:  call en_boom
 .done:  pop de
         scf
         ret
         assert EN_FORM == 0 && EN_FREE < EN_BOOM
+
+; The enemy at IY starts to boom (the death sound). Keeps BC, DE.
+en_boom:
+        ld (iy+EN.ST),EN_BOOM
+        ld a,(boom_frames)
+        ld (iy+EN.LEFT),a
+        jp death_start
 
 ; The enemy at IY leaves its pair, at its place (whole pixels), flying at a
 ; random direction, never level (0 and FREE_DIRS/2 left out). Keeps DE.
@@ -1394,6 +1406,175 @@ art_px:
 .hit:   pop de
         scf
         ret
+
+; ---- Collisions ------------------------------------------------------------
+
+; Each free enemy against each living ship of the front, where both show
+; this frame (after their moves): a pixel of the enemy's art on a pixel of
+; the ship's, and the enemy booms (as when shot) and the ship dies (as by
+; a test key). Every enemy and ship that touch: a ship living when this
+; began touches a second enemy too (it dies once). Pairs never reach the
+; front's lines.
+collide:
+        call alive_mask
+        or a
+        ret z
+        ld (col_alive),a
+        ld iy,enemies
+        ld b,ENEMY_N
+.e:     ld a,(iy+EN.ST)
+        cp EN_FREE
+        jr nz,.next
+        push bc
+        call en_front
+        pop bc
+.next:  ld de,EN
+        add iy,de
+        djnz .e
+        ret
+        assert FORM_Y0+FORM_RISE+FORM_H <= SHIP_TOP+SHIP_ART_T
+
+; The free enemy at IY against the front's ships living (col_alive)
+en_front:
+        ld a,(form_art_t)       ; the lines both arts' rows are on:
+        add a,(iy+EN.Y)         ; (no carry: the art is in the playfield)
+        cp SHIP_TOP+SHIP_ART_T
+        jr nc,.lo
+        ld a,SHIP_TOP+SHIP_ART_T
+.lo:    ld c,a                  ; from the lower first one ...
+        ld a,(form_art_b)
+        add a,(iy+EN.Y)
+        cp SHIP_TOP+SHIP_ART_B
+        jr c,.hi
+        ld a,SHIP_TOP+SHIP_ART_B
+.hi:    sub c                   ; ... to the higher last one
+        ret c                   ; none
+        inc a
+        ld (col_n),a
+        ld a,c
+        sub (iy+EN.Y)
+        ld (col_erow),a
+        ld a,c
+        sub SHIP_TOP
+        add a,a
+        ld l,a
+        ld h,0
+        ld de,SHIP_ROWS
+        add hl,de
+        ld (col_srow),hl
+        ld l,(iy+EN.X)
+        ld h,(iy+EN.X+1)
+        call to_screen
+        ld de,7
+        add hl,de
+        ld (col_ex),hl          ; -9..262
+        xor a
+        ld (col_hit),a
+        ld a,(col_alive)
+        ld c,a
+        ld a,(ship_x)
+        ld b,a                  ; this slot's art's left column
+        ld hl,boom_stage
+.slot:  srl c                   ; a ship living in this slot
+        jr nc,.snext
+        push bc
+        push hl
+        ld hl,(col_ex)
+        ld e,b
+        ld d,0
+        or a
+        sbc hl,de               ; the enemy's left column on the ship's art, + 7
+        ld a,h
+        or a
+        jr nz,.no
+        ld a,l
+        cp SHIP_ART_W+7
+        jr nc,.no               ; the arts' boxes apart
+        call touch
+        jr nc,.no
+        ld a,1
+        ld (col_hit),a
+        pop hl
+        push hl
+        ld a,(hl)               ; boom_stage
+        or a
+        call z,ship_dies        ; (not again when a second enemy touches it)
+.no:    pop hl
+        pop bc
+.snext: inc hl
+        ld a,b
+        add a,SHIP_ART_W
+        ld b,a
+        inc c
+        dec c
+        jr nz,.slot
+        ld a,(col_hit)
+        or a
+        ret z
+        jp en_boom
+        assert SHIP_ART_W <= 9 && SHIP_ART_B <= 15
+
+; Carry: the enemy's art and the ship's have a pixel in common on col_n
+; lines from the enemy's row col_erow and the ship's row at col_srow, the
+; enemy's left column on the ship's art's A-7 (-7..8). The enemy's rows
+; rotated right by that mod 8 (rot_rows) hold its columns on the ship's
+; art's 0..7 and 8..15 (the SHIP_ROWS word's high and low bytes) apart:
+; masks D and E.
+touch:
+        sub 7
+        ld c,a                  ; -7..8
+        and 7
+        add a,a
+        add a,a
+        add a,a
+        add a,a
+        ld hl,col_erow
+        add a,(hl)
+        ld e,a
+        ld d,0
+        ld hl,rot_rows
+        add hl,de
+        push hl
+        ld a,c
+        ld hl,MASK_R
+        or a
+        jp m,.left
+        ld e,a
+        add hl,de
+        ld a,(hl)
+        ld d,a                  ; on columns 0..7: FFh >> it
+        cpl
+        ld e,a                  ; on 8..15: the rest
+        jr .rows
+.left:  add a,8
+        ld e,a
+        add hl,de
+        ld a,(hl)
+        cpl
+        ld d,a                  ; on columns 0..7: FFh << -it
+        ld e,0                  ; none on 8..15
+.rows:  pop hl
+        ld ix,(col_srow)
+        ld a,(col_n)
+        ld b,a
+.row:   ld a,(hl)
+        and d
+        and (ix+1)
+        jr nz,.hit
+        ld a,(hl)
+        and e
+        and (ix+0)
+        jr nz,.hit
+        inc hl
+        inc ix
+        inc ix
+        djnz .row
+        or a
+        ret
+.hit:   scf
+        ret
+
+MASK_R: db 0FFh,7Fh,3Fh,1Fh,0Fh,07h,03h,01h,00h ; FFh >> 0..8
 
 ; ---- Bitmap bullets --------------------------------------------------------
 
@@ -1701,6 +1882,18 @@ load_formation:
         ld de,ENEMY_PATTERN
         add hl,de
         ld (form_rows),hl
+        ld de,rot_rows          ; its rows rotated right 0..7 bits (collide)
+        ld bc,16
+        ldir
+        ld hl,rot_rows
+        ld b,7*16
+.rot:   ld a,(hl)
+        rrca
+        ld (de),a
+        inc hl
+        inc de
+        djnz .rot
+        ld hl,(form_rows)
         push hl
         ld hl,(GRPPAT)          ; the formation's pair
         ld de,NAME_ENEMY*8
@@ -2007,14 +2200,19 @@ kill_nth:
         rra
         jr nc,.next
         djnz .next              ; not the Bth yet
+        jr ship_dies
+.next:  inc hl
+        jr .s
+
+; The ship in the front slot at HL (boom_stage + the slot) starts to die
+; (the death sound). Keeps BC.
+ship_dies:
         ld (hl),1
         ld de,FRONT_MAX
         add hl,de
         ld a,(boom_frames)
         ld (hl),a               ; boom_left
         jp death_start
-.next:  inc hl
-        jr .s
 
 ; Each dying ship's boom: the next image when one's frames are over; after
 ; the last, the slot is empty and the front trimmed to its first and last

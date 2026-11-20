@@ -77,7 +77,19 @@ debug set_bp $sym(volley_hits) {} {
 
 set spawns 0
 set fresh -1        ;# the volley slot fire filled this frame
-debug set_bp $sym(fire.free) {} { incr ::spawns ; set ::fresh [expr {([reg HL] - $::sym(volleys)) / $::sym(VOLLEY)}] }
+# The front as the game has it: {front_mask ship_x {boom_stage 0..3}}
+proc front_now {} {
+	set st {}
+	for {set k 0} {$k < 4} {incr k} { lappend st [m boom_stage $k] }
+	list [m front_mask] [m ship_x] $st
+}
+debug set_bp $sym(fire.free) {} {
+	incr ::spawns ; set ::fresh [expr {([reg HL] - $::sym(volleys)) / $::sym(VOLLEY)}]
+	set ::fsnap [front_now]     ;# the front the volley comes from
+}
+# The front when collide begins (after the moves, call-up and trims)
+set cfront {0 0 {0 0 0 0}}
+debug set_bp $sym(collide) {} { set ::cfront [front_now] }
 
 proc frame {} {
 	incr ::n
@@ -115,6 +127,7 @@ proc plan {} {
 	set F [m fps]
 	set ::F $F
 	set ::bstart [expr {$::sym(BULLET_START)}]
+	ship_px_init
 	say "fps $F"
 	set x0 [m ship_x]
 	check {$x0 == $::sym(SHIP_X_MAX)/2} "ship starts in the middle (x $x0)"
@@ -1235,6 +1248,7 @@ proc hit_one {col lo hi} {
 			lset st $p 1 ; lset st [expr {$p+1}] 1
 			lappend broken $p [expr {$p+1}]
 			incr ::breaks
+			say "frame $::n: pair [expr {$p/2}] broke up (wave $::waves, phase $::ephase)"
 		} else {
 			lset st $i 2 ; lset left $i [m boom_frames]
 			incr ::booms_n
@@ -1255,7 +1269,7 @@ proc enemy_frame {} {
 	set vols [all_volleys]
 	if {[llength $::eprev]} { enemy_model $cur $vols }
 	if {!$::waves} { for {set i 0} {$i < 8} {incr i} { lappend ::sthist($i) [lindex $cur $i 0] } }
-	set ::eprev $cur ; set ::vprev $vols ; set ::shipx_prev [m ship_x]
+	set ::eprev $cur ; set ::vprev $vols
 	set ::rotp [m enemy_rot]
 	set ::flipp [m sat_flip]
 	set ::fresh -1
@@ -1287,11 +1301,11 @@ proc enemy_model {cur vols} {
 			lset want $v [concat [expr {!$nb || $lo < 8 ? 0 : $lo}] $xs]
 		}
 		if {$::fresh >= 0} {
-			set mask [m front_mask] ; set xs {} ; set nb 0
+			lassign $::fsnap mask fx fst ; set xs {} ; set nb 0
 			set y $::bstart
 			for {set k 0} {$k < 4} {incr k} {
 				set x 0
-				if {($mask >> $k & 1) && ![m boom_stage $k]} { set x [expr {$::shipx_prev + 4 + $k*$::W}] }
+				if {($mask >> $k & 1) && ![lindex $fst $k]} { set x [expr {$fx + 4 + $k*$::W}] }
 				if {$x && [hit_one $x $y [expr {$y + 2}]]} { set x 0 }
 				if {$x} { incr nb }
 				lappend xs $x
@@ -1309,6 +1323,7 @@ proc enemy_model {cur vols} {
 		set ::gone_sts $st
 		if {!$::waves} { for {set i 0} {$i < 8} {incr i} { lappend ::sthist($i) 5 } }
 		incr ::waves
+		if {$::waves == 1} { set ::coll_w1 $::coll ; set ::breaks_w1 $::breaks ; set ::bstarts_w1 $::bstarts }
 		set ::wave0 [expr {$::n - 1}]
 		set ::form_hist [dict create]
 		set ::wenemy [expr {($::wenemy + 1) % 10}] ; set ::wcidx [expr {($::wcidx + 1) % 9}]
@@ -1326,7 +1341,9 @@ proc enemy_model {cur vols} {
 		lassign [lindex $::eprev $i] ps pl pxf px pyf py pd
 		lassign [lindex $cur $i] cs cl cxf cx cyf cy cd
 		set s [lindex $st $i]
-		if {$cs != $s || ($s >= 2 && $s < 5 && $cl != [lindex $left $i])} { hit_bad "enemy $i state $cs/$cl, want $s/[lindex $left $i]" ; continue }
+		if {$s == 1 && $cs == 2} {
+			# (free and moved: whether it touched the front, below)
+		} elseif {$cs != $s || ($s >= 2 && $s < 5 && $cl != [lindex $left $i])} { hit_bad "enemy $i state $cs/$cl, want $s/[lindex $left $i]" ; continue }
 		if {$s == 0} {
 			if {$i & 1} {
 				lassign [lindex $cur [expr {$i-1}]] - - - lx - ly
@@ -1362,6 +1379,85 @@ proc enemy_model {cur vols} {
 		if {$cy + $::art_t < 8 || $cy + $::art_b > 183} { mot_bad "enemy $i's art off the playfield (line $cy)" }
 		incr ::freeframes
 	}
+	collide_model $cur $st $left
+}
+
+# The ship's pixels, from SHIP_PATTERN (16x16 sprite layout): "row,column"
+# of the sprite
+proc ship_px_init {} {
+	set ::spx [dict create]
+	for {set r 0} {$r < 16} {incr r} {
+		for {set c 0} {$c < 16} {incr c} {
+			set b [m SHIP_PATTERN [expr {$c < 8 ? $r : 16 + $r}]]
+			if {($b >> (7 - ($c & 7))) & 1} { dict set ::spx "$r,$c" 1 }
+		}
+	}
+}
+# The front's slots (in alive) that the enemy art (::erows) at column x (mod
+# FWRAP), top line y touches (a pixel on a pixel), the front's slot 0's art
+# at column sx0
+proc touches {x y sx0 alive} {
+	set ex [screen_x $x]
+	set r {}
+	foreach k $alive {
+		set sx [expr {$sx0 + $k*$::W - $::sym(SHIP_ART_L)}]
+		set hit 0
+		for {set j 0} {$j < 16 && !$hit} {incr j} {
+			set sr [expr {$y + $j - $::sym(SHIP_TOP)}]
+			if {$sr < 0 || $sr > 15} continue
+			set e [lindex $::erows $j]
+			for {set c 0} {$c < 8} {incr c} {
+				if {!(($e >> (7 - $c)) & 1)} continue
+				if {[dict exists $::spx "$sr,[expr {$ex + $c - $sx}]"]} { set hit 1 ; break }
+			}
+		}
+		if {$hit} { lappend r $k }
+	}
+	return $r
+}
+# The enemy's art box and a living slot's ship's art box overlap
+proc boxes_meet {x y sx0 alive} {
+	set ex [screen_x $x]
+	foreach k $alive {
+		set sx [expr {$sx0 + $k*$::W}]
+		if {$ex + 7 >= $sx && $ex <= $sx + $::W - 1 && $y + $::art_b >= $::sym(SHIP_TOP) && $y + $::art_t <= $::sym(SHIP_TOP) + 15} { return 1 }
+	}
+	return 0
+}
+# The collisions, after the moves: each free enemy (the model's, at its new
+# place) against the ships living when collide began; every enemy and ship
+# that touch: the enemy booms (image 1, its full count), the ship dies
+# (likewise); the other ships as they were
+set breaks_w1 0 ; set bstarts_w1 0 ; set coll_w1 0 ; set coll 0 ; set coll_ships 0 ; set coll_multi 0 ; set coll_shared 0 ; set coll_near 0
+set coll_bad 0 ; set coll_first ""
+proc coll_bad {s} { if {!$::coll_bad} { set ::coll_first "frame $::n: $s" } ; incr ::coll_bad }
+proc collide_model {cur st left} {
+	lassign $::cfront cmask cx0 cst
+	set alive {}
+	for {set k 0} {$k < 4} {incr k} { if {($cmask >> $k & 1) && ![lindex $cst $k]} { lappend alive $k } }
+	set killed {}
+	set f0 [m boom_frames]
+	for {set i 0} {$i < 8} {incr i} {
+		if {[lindex $st $i] != 1} continue
+		lassign [lindex $cur $i] cs cl - x - y
+		set t [touches $x $y $cx0 $alive]
+		if {[llength $t]} {
+			incr ::coll
+			if {[llength $t] > 1} { incr ::coll_multi }
+			foreach k $t { if {$k in $killed} { incr ::coll_shared } else { lappend killed $k } }
+			if {$cs != 2 || $cl != $f0} { coll_bad "enemy $i at ($x, $y) touches ships $t (front at $cx0): state $cs/$cl, want 2/$f0" }
+		} else {
+			if {[boxes_meet $x $y $cx0 $alive]} { incr ::coll_near }
+			if {$cs != 1} { coll_bad "enemy $i at ($x, $y) touches no ship (front at $cx0, living $alive): state $cs" }
+		}
+	}
+	foreach k $alive {
+		set g [list [m boom_stage $k] [m boom_left $k]]
+		if {$k in $killed} {
+			if {$g ne [list 1 $f0]} { coll_bad "ship $k touched: boom $g, want 1 $f0" }
+		} elseif {[lindex $g 0]} { coll_bad "ship $k untouched: boom $g" }
+	}
+	incr ::coll_ships [llength $killed]
 }
 
 # The break sound, after a frame's work, as death_frame: channel B's
@@ -1449,14 +1545,16 @@ proc aim_frame {} {
 	if {$::ephase < 4 && $::waves || $::n > $::edead} {
 		set ::ephase 4 ; set ::e4end [expr {$::n + 2*$::F}]
 	}
-	if {$::ephase == 4} {
+	if {$::ephase >= 4} {
 		keys 0
-		if {$::n >= $::e4end} {
-			set ::ephase 0
-			enemy_end
+		if {$::cheld} { cup ; set ::cheld 0 }
+		if {$::ephase == 4 && $::n >= $::e4end && ![m call_on] && ![llength [volley_live]]} {
+			set ::ephase 5
+			stage_collisions
 		}
 		return
 	}
+	refill
 	set want [expr {$::ephase == 1 ? 0 : 1}]
 	set nose [expr {[m ship_x] + 4}]
 	set bd 999 ; set dx 0
@@ -1474,6 +1572,69 @@ proc aim_frame {} {
 	if {$::n % 4 < 2 && ($::ephase == 3 || (!$k && $bd < 999 && ![llength [volley_live]]))} { set k [expr {$k | 0x01}] }
 	keys $k
 }
+# While the test hunts: the front kept full, a call-up (reserves written in
+# RAM) whenever the front spans fewer than 4 slots and none is flying
+set cheld 0 ; set refills 0
+proc refill {} {
+	if {$::cheld} { cup ; set ::cheld 0 ; return }
+	if {![m call_on] && [m front_slots] < 4} {
+		debug write memory $::sym(reserves) 3
+		cdown ; set ::cheld 1 ; incr ::refills
+	}
+}
+
+# The staged collisions: the test writes a four-ship front at column 100
+# and four free enemies flying straight down (direction 16), placed so
+# that after their next move enemy 0 touches ships 1 and 2, enemies 2 and
+# 3 both touch ship 3 only, and enemy 1's art box overlaps a ship's art
+# box with no pixel on one of its pixels (the wave's own enemy's art; the
+# rest of the wave in its pairs)
+proc stage_collisions {} {
+	set sx0 100 ; set alive {0 1 2 3}
+	lassign [vel 16] vx vy
+	set a {} ; set b {} ; set d {}
+	for {set y [expr {$::sym(SHIP_TOP) - $::art_b}]} {$y + $::art_b <= 183} {incr y} {
+		for {set x [expr {$sx0 - 8}]} {$x <= $sx0 + 4*$::W} {incr x} {
+			set t [touches $x $y $sx0 $alive]
+			if {$t eq {1 2} && ![llength $a]} { set a [list $x $y] }
+			if {$t eq {3}} { lappend b [list $x $y] }
+			if {![llength $t] && ![llength $d] && [boxes_meet $x $y $sx0 $alive]} { set d [list $x $y] }
+		}
+	}
+	if {![llength $a] || [llength $b] < 2 || ![llength $d]} {
+		fail "staged collisions: no placement found (two ships $a, ship 3 [llength $b], a near miss $d)"
+		set ::ephase 0 ; enemy_end ; return
+	}
+	set place [list 0 $a 1 $d 2 [lindex $b 0] 3 [lindex $b end]]
+	say "staged collisions (after the move): $place"
+	foreach {i at} $place {
+		lassign $at x y
+		set x [expr {($x - ($vx >> 8)) % $::FWRAP}] ; set y [expr {$y - ($vy >> 8)}]
+		set r [expr {$::sym(enemies) + $i*$::sym(EN)}]
+		foreach {f v} [list ST 1 LEFT 0 XF 0 X [expr {$x & 255}] YF 0 Y $y DIR 16] { debug write memory [expr {$r + $::sym(EN.$f)}] $v }
+		debug write memory [expr {$r + $::sym(EN.X) + 1}] [expr {$x >> 8}]
+	}
+	for {set i 4} {$i < 8} {incr i} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 0 }
+	foreach {v k} {15 front_mask 4 front_slots 36 front_w 100 ship_x} { debug write memory $::sym($k) $v }
+	for {set k 0} {$k < 4} {incr k} { debug write memory [expr {$::sym(boom_stage) + $k}] 0 ; debug write memory [expr {$::sym(boom_left) + $k}] 0 }
+	# the next frame's model from the enemies as the test wrote them
+	set ::eprev {}
+	for {set i 0} {$i < 8} {incr i} { lappend ::eprev [en_state $i] }
+	set ::c0 [list $::coll $::coll_ships $::coll_multi $::coll_shared $::coll_near]
+	at [expr {$::n + 1}] {
+		set sts {} ; set bs {}
+		for {set i 0} {$i < 4} {incr i} { lappend sts [lindex [en_state $i] 0] ; lappend bs [m boom_stage $i] }
+		check {$sts eq {2 1 2 2} && $bs eq {0 1 1 1} && $::dnew == 6} "staged collisions, the next frame: enemy 0 across ships 1 and 2, enemies 2 and 3 on ship 3, enemy 1 near ship art but not on it: enemies' states $sts (want 2 1 2 2), the ships' booms $bs (want 0 1 1 1), $::dnew death sound starts (want 6: 3 enemies, 3 ships)"
+	}
+	at [expr {$::n + 2}] {
+		# (the staged frame's model ran: its counts since the staging)
+		set d {}
+		foreach v [list $::coll $::coll_ships $::coll_multi $::coll_shared $::coll_near] c $::c0 { lappend d [expr {$v - $c}] }
+		check {$d eq {3 3 1 1 1}} "staged collisions as modelled: 3 enemies touched 3 ships, one across two ships, one ship touched by two enemies (dying once), one near miss (got $d)"
+	}
+	at [expr {$::n + $::F}] { set ::ephase 0 ; enemy_end }
+}
+
 # A boom's states from the enemy's history: from EN_BOOM on, {state frames ...}
 proc st_runs {h} {
 	set r {} ; set last -1
@@ -1485,8 +1646,9 @@ proc st_runs {h} {
 }
 proc enemy_end {} {
 	set sts $::gone_sts
-	check {$::breaks == 4} "bullets broke up all 4 pairs ($::breaks)"
-	check {$sts eq {5 5 5 5 5 5 5 5}} "bullets blew up all 8 free enemies, all gone ($::booms_n booms; states $sts)"
+	check {$::breaks_w1 == 4} "bullets broke up all 4 pairs of the first wave ($::breaks_w1; $::breaks with the second wave's)"
+	check {$sts eq {5 5 5 5 5 5 5 5}} "bullets and the front blew up all 8 free enemies, all gone ($::booms_n by bullets, $::coll_w1 touching the front; states $sts)"
+	check {$::coll_bad == 0 && $::coll_w1 > 0} "collisions = the model (each free enemy after its move against the ships living, a pixel on a pixel; both blow up, the rest as they were) every frame ($::coll enemies touched $::coll_ships ships, $::coll_w1 in the first wave; $::coll_near near misses; $::refills call-ups to refill the front; [expr {$::coll_bad ? "first wrong: $::coll_first" : "none wrong"}])"
 	check {$::waves == 1 && $::wave_bad == 0} "the last one gone, the second wave: enemy 1, colour 3, its patterns in VRAM, the loop from its start, that frame ($::waves waves; enemy [m form_enemy], colour [m form_color]; [expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 	check {$::hit_bad == 0 && $::hits > 0} "hits = the model (each bullet against the enemies' art on the lines it covered, the first enemy hit, the bullet gone; pairs break, free ones boom) every frame ($::hits hits; [expr {$::hit_bad ? "first wrong: $::hit_first" : "none wrong"}])"
 	check {$::mot_bad == 0 && $::freeframes > 0} "free enemies = the model (velocity table, wrap, stopped at lines 8 / 183 and turned away) every frame, booms stationary ($::freeframes enemy-frames; [expr {$::mot_bad ? "first wrong: $::mot_first" : "none wrong"}])"
@@ -1501,9 +1663,9 @@ proc enemy_end {} {
 	}
 	check {[llength $bad] == 0} "each enemy's boom: images 1..3 for [lindex $want 1]/[lindex $want 3]/[lindex $want 5] frames, then gone (wrong: $bad)"
 	set bf [expr {$::F == 60 ? 48 : 40}]
-	check {$::bstarts == 4 && $bf in $::bruns && $::bidx == -1} "break sound: $::bstarts starts, played out in $bf frames (0.8 s; runs $::bruns)"
+	check {$::bstarts_w1 == 4 && $bf in $::bruns && $::bidx == -1} "break sound: $::bstarts_w1 starts in the first wave, played out in $bf frames (0.8 s; runs $::bruns)"
 	check {$::bbad == 0 && $::bframes > 0} "break sound on channel B = BREAK table every frame, its noise period while the death sound is silent ($::bframes frames; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
-	check {$::dstarts - $::dstarts0 == $::booms_n} "a booming enemy (re)starts the death sound ([expr {$::dstarts - $::dstarts0}] starts)"
+	check {$::dstarts - $::dstarts0 == $::booms_n + $::coll + $::coll_ships} "a booming enemy and a ship touched (re)start the death sound ([expr {$::dstarts - $::dstarts0}] starts; $::booms_n + $::coll + $::coll_ships)"
 	check {$::vis_bad == 0 && $::frontcrowd > 0} "lines with 5..7 sprites: no sprite dropped two frames running ($::crowded crowded line-frames, $::frontcrowd frames with the front's lines crowded, $::overcrowded line-frames with 8 or more; $::vis_bad wrong)"
 	check {$::edropped == 0} "no frame dropped while the enemies are hit and fly, a new wave too ($::edropped)"
 	set ::nocheck 1

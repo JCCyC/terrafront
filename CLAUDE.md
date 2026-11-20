@@ -99,6 +99,17 @@ formation's. A free enemy hit: it shows the ship's three boom images in its
 own colour, where it was (the boom's art box from the enemy's left column),
 for the ship's boom frame counts, and the ship's death sound (re)starts;
 then it's gone. Noise period (R6) priority: death > break > shot.
+Collisions (`collide`, after `move_enemies`): each free enemy, where it
+shows this frame (after its move), against each living ship of the front
+(after the call-up and the move): a pixel of the enemy's art on a pixel of
+the ship's art (`touch`; `load_formation` keeps the wave's art rows
+rotated 0..7 bits in `rot_rows`, the ship's art rows are `SHIP_ROWS`).
+Both die: the enemy booms as when shot, the ship as by a test key (boom,
+death sound, then a hole and the trim). Every enemy and ship that touch:
+one enemy across two ships kills both; two enemies on one ship both boom
+(the ship dies once, one death sound start). Pairs never reach the
+front's lines (assert); dying ships, booming enemies and the incoming
+ship don't collide.
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -117,7 +128,8 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
 ## Build / run / test
 
 - `make` runs `png2spr.py` (→ `build/sprites.inc`: ship pattern, colour,
-  art bounds, nose column; the coming ship's two patterns and where the
+  art bounds, nose column, art rows (`SHIP_ROWS`, at the end: the
+  patterns before it must stay contiguous); the coming ship's two patterns and where the
   ship's art is in them; the three boom patterns and their colour; the
   reserve ship's rows, colour, art width; the enemies' pair patterns and
   art rows; the formation's pair offsets, from its picture) and `path.py` (→
@@ -172,9 +184,16 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   all 4 pairs broke up, holds fire 6 s (screenshot
   `build/shot-<machine>-enemies.png`), then hunts the free enemies until
   all 8 are gone (at the pairs it fires one aimed volley at a time, so
-  that free enemies are left to fly); the second wave must begin that
+  that free enemies are left to fly; whenever the front spans fewer than
+  4 slots and no call-up flies, it writes 3 `reserves` and calls one up,
+  as enemies touching the front kill ships); the second wave must begin that
   frame (enemy 1, colour 3, its patterns in VRAM, the loop from its
-  start; the per-frame models follow it for 2 s); then, with the
+  start; the per-frame models follow it for 2 s); then staged collisions
+  (written in RAM: a four-ship front at column 100, enemies flying
+  straight down placed by the test's own pixel model so that after their
+  next move one is across ships 1 and 2, two are on ship 3, one's art box
+  overlaps a ship's with no pixel touching: the next frame's states, booms
+  and 6 death sound starts); then, with the
   per-frame models off, the test makes every enemy gone in RAM 19 times
   and checks waves 3..21 (both lists wrap). It checks the velocity table (64 directions, the square
   legs' speed), every enemy's boom (images and frame counts), the break
@@ -190,4 +209,10 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   flight and the stars not in their bytes, channel B against the break
   table, and the enemies and volleys against its own model of the frame
   (booms on, every bullet's hit test against the art in game order, the
-  free enemies' flight exact to 1/256 px, wraps and bounces).
+  free enemies' flight exact to 1/256 px, wraps and bounces; the
+  collisions: every free enemy after its move against the ships living
+  when `collide` began (a breakpoint's snapshot), pixel against pixel
+  from `SHIP_PATTERN` and the enemy's art, the touching ones booming and
+  dying, the others unchanged; a new volley's bullets from the front as
+  `fire` had it, a breakpoint's snapshot). The break checks count the
+  first wave's (a bullet in flight may break a second wave's pair).
