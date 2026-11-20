@@ -65,8 +65,10 @@
 ; free, whose art's last line is at least EB_CLEAR lines above the front's
 ; art's first (none: no bullet), with fewer in flight than the wave's most
 ; (EB_MAX_LIST); their speed is a share of BULLET_SPEED that grows with the
-; wave (EB_SPEED_LIST). They're gone at the playfield's bottom (they don't
-; hit anything yet), and all of them as a new wave shows. A bitmap byte two bullets share holds both.
+; wave (EB_SPEED_LIST). One that hits a ship (a pixel of its art on a line
+; the bullet covered this frame, the front where it shows) is gone and the
+; ship dies (as by a test key). They're gone at the playfield's bottom, and
+; all of them as a new wave shows. A bitmap byte two bullets share holds both.
 ; It starts with a splash screen, images/title.png (title.py), and "PRESS
 ; SPACE OR FIRE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
 ; font.py; print_text, for all the game's text) on it, blinking BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
@@ -143,6 +145,7 @@ EB_N            equ 5           ; slots: EB_MAX_LIST's largest
 PLAY_TOP        equ STATUS_LINES            ; first playfield line
 PLAY_BOTTOM     equ 191-STATUS_LINES        ; last playfield line
 PLAY_LINES      equ PLAY_BOTTOM+1-PLAY_TOP
+BL_SIZE         equ PLAY_BOTTOM/8+2             ; bl_lines: a bullet's lines reach at most the next byte
         assert STARS <= PLAY_LINES && PLAY_LINES < 256
 
 ; SHIP_* come from build/sprites.inc (png2spr.py), SHOT_* from build/sfx.inc
@@ -367,10 +370,16 @@ eb_acc:         ds 2            ; ... their Bresenham remainder (1/100 px), one 
 eb_step:        ds 1            ; ... this frame's px
 eb_clock:       ds 1            ; ... 1/300 s since the last roll
 eb_wipe:        ds 1            ; ... nonzero: a new wave began, all of them go (eb_move)
+eb_alive:       ds 1            ; eb_move: the front's ships living when it began (FFh: not worked out yet)
 eb_slot:        ds 2            ; enemy_fire: a free slot
 eb_cand:        ds ENEMY_N*2    ; ... the enemies that can shoot: their bullets' {Y X}
 eb_cells:       ds 4            ; the 8-px columns (cells) enemy bullets are in: bit (X/8)%8 of byte X/64
 bb_bits:        ds 1            ; bullet_bits: the bits so far
+hc_first:       ds ENEMY_N      ; this frame, each enemy's art's first line (FFh: booming or gone), for ...
+hc_list:        ds ENEMY_N      ; ... volley_hits: the enemies (0..) whose art has a line the volley covered
+hc_n:           ds 1            ; ... how many
+hc_i:           ds 1            ; bullet_hit: the enemy tried
+bl_lines:       ds BL_SIZE      ; move_stars: bit 80h >> (line%8) of byte line/8: a bullet is on the line
 wave_n:         ds 1            ; the wave: 0 the first, up to 255 (then it stays)
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
 bullet_step:    ds 1            ; this frame's px
@@ -1235,6 +1244,7 @@ enemy_booms:
 ; leaves the playfield. All are erased first (the enemies' bullets too),
 ; then drawn, so one's erase never takes a pixel of another's.
 move_bullets:
+        call hit_lines          ; (for this frame's volley_hits, fire's too)
         ld a,(bullet_whole)
         ld b,a
         ld a,(bullet_frac)
@@ -1351,10 +1361,12 @@ wave_entry:
         ret
 
 ; Each enemy bullet in flight erased and moved down this wave's speed
-; (BULLET_SPEED * EB_SPEED_LIST's % / 100 px/s); gone once its bottom
-; would leave the playfield, or if a new wave began last frame (eb_wipe:
-; its sprites show from this frame on)
+; (BULLET_SPEED * EB_SPEED_LIST's % / 100 px/s); gone if a new wave began
+; last frame (eb_wipe: its sprites show from this frame on), or if it hits
+; a ship (eb_hit), or once its bottom would leave the playfield
 eb_move:
+        ld a,0FFh               ; (worked out once a bullet reaches the front's lines)
+        ld (eb_alive),a
         ld hl,EB_PCTS
         ld b,EB_PCTS_N
         call wave_entry
@@ -1392,13 +1404,25 @@ eb_move:
         ld c,0
         call bullet_px          ; erased
         pop bc
+        inc c
+        dec c
+        jr nz,.gone             ; a new wave
+        ld a,(eb_step)
+        add a,(ix+EB.Y)         ; its new top
+        cp SHIP_TOP+SHIP_ART_T+1-BULLET_H
+        jr c,.keep              ; its new bottom over the front's art
+        push bc
+        ld c,(ix+EB.Y)
+        ld d,(ix+EB.X)
+        add a,BULLET_H-1
+        ld e,a                  ; the lines covered: its old top to its new bottom
+        call eb_hit
+        pop bc
+        jr c,.gone
         ld a,(eb_step)
         add a,(ix+EB.Y)
         cp PLAY_BOTTOM+2-BULLET_H
-        jr nc,.gone             ; its bottom off the playfield
-        inc c
-        dec c
-        jr z,.keep
+        jr c,.keep              ; else its bottom off the playfield
 .gone:  xor a
 .keep:  ld (ix+EB.Y),a
 .next:  inc ix
@@ -1408,6 +1432,93 @@ eb_move:
         ld (eb_wipe),a
         ret
         assert EB == 2 && PLAY_BOTTOM+(BULLET_SPEED*255/100+49)/50 < 256
+        assert SHIP_TOP+SHIP_ART_T+1-BULLET_H <= PLAY_BOTTOM+2-BULLET_H
+
+; Carry: the enemy bullet in column D, covering lines C..E this frame,
+; hits a ship of the front living when eb_move began (eb_alive): a pixel of
+; the ship's art (SHIP_ROWS) in column D on one of those lines; the ship
+; starts to die (as by a test key; not again if a bullet hit it already).
+; Keeps IX.
+eb_hit:
+        ld a,(eb_alive)
+        inc a
+        jr nz,.have
+        push bc
+        push de
+        call alive_mask         ; (before any ship this frame's bullets hit dies)
+        ld (eb_alive),a
+        pop de
+        pop bc
+.have:  ld a,e
+        cp SHIP_TOP+SHIP_ART_T
+        jr c,.no                ; above the front's art
+        cp SHIP_TOP+SHIP_ART_B+1
+        jr c,.e
+        ld e,SHIP_TOP+SHIP_ART_B
+.e:     ld a,c
+        cp SHIP_TOP+SHIP_ART_T
+        jr nc,.c
+        ld c,SHIP_TOP+SHIP_ART_T
+.c:     ld a,e
+        sub c
+        jr c,.no
+        inc a
+        ld e,a                  ; E = the lines on the art's rows, from line C
+        ld a,(eb_alive)
+        ld b,a
+        ld a,(ship_x)
+        ld h,a
+        ld a,d
+        sub h                   ; the column on the front's art
+        jr c,.no
+        ld hl,boom_stage
+.slot:  cp SHIP_ART_W
+        jr c,.in
+        sub SHIP_ART_W
+        inc hl
+        srl b
+        jr nz,.slot
+        jr .no                  ; past the front's last ship
+.in:    bit 0,b
+        jr z,.no                ; no ship living in this slot
+        push hl
+        ld hl,SHIP_ROWS+1       ; columns 0..7: a row word's high byte
+        cp 8
+        jr c,.hi
+        sub 8
+        dec hl                  ; 8..15: its low byte
+.hi:    ld b,a
+        ld a,80h
+        inc b
+.bit:   dec b
+        jr z,.got
+        rrca
+        jr .bit
+.got:   ld d,a                  ; the column's bit
+        ld a,c
+        sub SHIP_TOP
+        add a,a
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld b,e
+.row:   ld a,(hl)
+        and d
+        jr nz,.hit
+        inc hl
+        inc hl
+        djnz .row
+        pop hl
+.no:    or a
+        ret
+.hit:   pop hl
+        ld a,(hl)               ; boom_stage
+        or a
+        call z,ship_dies
+        scf
+        ret
+        assert SHIP_ART_W <= 16 && SHIP_TOP+SHIP_ART_B <= PLAY_BOTTOM
 
 ; Every EB_ROLL_MS a roll: one in EB_CHANCE, with fewer enemy bullets in
 ; flight than this wave's most (EB_MAX_LIST) and an enemy that can shoot
@@ -1701,8 +1812,41 @@ bullet_bits:
 ; The volley at IX against the enemies where they show now: each bullet
 ; whose column has a pixel of a living enemy's art on lines D..E (the lines
 ; it covered this frame) is gone and the enemy hit (bullet_hit). A volley
-; left with no bullet is free. Keeps DE, IX.
+; left with no bullet is free. Only the enemies whose art has a line in
+; D..E (from hc_first) are tried (hc_list). Keeps DE, IX.
 volley_hits:
+        push de
+        ld a,(form_art_t)
+        ld b,a
+        ld a,(form_art_b)
+        sub b
+        ld b,a                  ; the art's lines - 1
+        ld a,d
+        sub b
+        jr nc,.lo
+        xor a
+.lo:    ld d,a                  ; first lines D - that .. E: the art has a line in D..E
+        ld hl,hc_first
+        ld iy,hc_list
+        ld bc,ENEMY_N*256
+.c:     ld a,(hl)
+        inc hl
+        cp d
+        jr c,.cn
+        cp e
+        jr z,.cin
+        jr nc,.cn               ; (FFh: booming or gone)
+.cin:   ld (iy+0),c
+        inc iy
+.cn:    inc c
+        djnz .c
+        pop de
+        push iy
+        pop hl
+        ld a,l
+        sub low hc_list
+        ld (hc_n),a
+        ret z                   ; no enemy on its lines
         push ix
         pop hl
         inc hl                  ; X
@@ -1730,13 +1874,32 @@ volley_hits:
         ret
 
 ; Carry: column C has a pixel of a living (in a pair or free) enemy's art
-; on lines D..E; the first such enemy (0..ENEMY_N-1) is hit: in a pair, the
-; pair breaks up (each enemy free, at a random direction; the break sound);
-; free, it starts to boom (the death sound). Keeps DE, IX.
+; on lines D..E; the first such enemy (0..ENEMY_N-1; of those in hc_list)
+; is hit: in a pair, the pair breaks up (each enemy free, at a random
+; direction; the break sound); free, it starts to boom (the death sound).
+; Keeps DE, IX.
 bullet_hit:
-        ld iy,enemies
-        ld b,ENEMY_N
-.e:     ld a,(iy+EN.ST)
+        ld hl,hc_list
+        ld a,(hc_n)
+        or a
+        ret z
+        ld b,a
+.e:     push bc
+        push hl
+        ld a,(hl)
+        ld (hc_i),a
+        add a,a
+        add a,a
+        add a,a                 ; * EN
+        ld l,a
+        ld h,0
+        push de
+        ld de,enemies
+        add hl,de
+        pop de
+        push hl
+        pop iy
+        ld a,(iy+EN.ST)
         cp EN_BOOM
         jr nc,.next             ; booming or gone
         ld a,(iy+EN.X+1)
@@ -1750,23 +1913,23 @@ bullet_hit:
         jr c,.next
         cp 8
         jr nc,.next
-        push bc
         call art_px
-        pop bc
         jr c,.hit
-.next:  push de
-        ld de,EN
-        add iy,de
-        pop de
+.next:  pop hl
+        inc hl
+        pop bc
         djnz .e
         or a
         ret
-.hit:   push de
+.hit:   pop hl
+        pop bc
+        push de
         ld a,(iy+EN.ST)
         or a
         jr nz,.boom
-        bit 0,b                 ; B odd: enemy ENEMY_N-B, a pair's right one
-        jr z,.pair
+        ld a,(hc_i)
+        rrca                    ; odd: a pair's right one
+        jr nc,.pair
         ld de,-EN
         add iy,de
 .pair:  call free_en
@@ -1779,7 +1942,29 @@ bullet_hit:
 .done:  pop de
         scf
         ret
-        assert EN_FORM == 0 && EN_FREE < EN_BOOM
+        assert EN_FORM == 0 && EN_FREE < EN_BOOM && EN == 8 && ENEMY_N*EN < 256
+
+; hc_first := each enemy's art's first line, FFh if booming or gone (the
+; enemies don't move till move_enemies; a hit only makes one free or booming)
+hit_lines:
+        ld a,(form_art_t)
+        ld c,a
+        ld iy,enemies
+        ld hl,hc_first
+        ld de,EN
+        ld b,ENEMY_N
+.e:     ld a,(iy+EN.ST)
+        cp EN_BOOM
+        ld a,0FFh
+        jr nc,.put
+        ld a,(iy+EN.Y)
+        add a,c                 ; (no carry: the art is in the playfield)
+.put:   ld (hl),a
+        inc hl
+        add iy,de
+        djnz .e
+        ret
+        assert PLAY_BOTTOM < 0FFh
 
 ; The enemy at IY starts to boom (the death sound). Keeps BC, DE.
 en_boom:
@@ -2041,12 +2226,10 @@ volley_px:
         jr z,.px                ; C = 0: erase
         ld a,d
         and 7
-        ld b,a
-        ld a,80h                ; the column's bit in its byte
-        jr z,.bit
-.sh:    rrca
-        djnz .sh
-.bit:   ld c,a
+        add a,low PIXEL_BIT
+        ld l,a
+        ld h,high PIXEL_BIT
+        ld c,(hl)               ; the column's bit in its byte
 .px:    call bullet_px
         pop hl
         pop de
@@ -2116,6 +2299,29 @@ init_stars:
 
 ; Every star one frame on
 move_stars:
+        ld hl,bl_lines          ; the lines the bullets are on now
+        xor a
+        dup BL_SIZE
+        ld (hl),a
+        inc l
+        edup
+        ld hl,volleys
+        ld b,MAX_VOLLEYS
+.v:     ld a,(hl)
+        or a
+        call nz,bl_mark
+        ld a,l
+        add a,VOLLEY
+        ld l,a
+        djnz .v
+        ld hl,ebullets
+        ld b,EB_N
+.eb:    ld a,(hl)
+        or a
+        call nz,bl_mark
+        inc l
+        inc l
+        djnz .eb
         ld a,(star_whole)
         ld b,a
         ld a,(star_frac)
@@ -2132,6 +2338,38 @@ move_stars:
         pop bc
         djnz .s
         ret
+
+; Lines A..A+BULLET_H-1 marked in bl_lines. Keeps B, HL.
+bl_mark:
+        push hl
+        ld e,a
+        and 7
+        add a,a
+        add a,low BL_MASKS
+        ld l,a
+        ld h,high BL_MASKS
+        ld c,(hl)               ; its bits in line/8's byte ...
+        inc l
+        ld d,(hl)               ; ... and in the next one's
+        ld a,e
+        rrca
+        rrca
+        rrca
+        and 1Fh
+        add a,low bl_lines
+        ld l,a
+        ld h,high bl_lines
+        ld a,(hl)
+        or c
+        ld (hl),a
+        inc l
+        ld a,(hl)
+        or d
+        ld (hl),a
+        pop hl
+        ret
+        assert BULLET_H == 3 && BL_MASKS/256 == (BL_MASKS+15)/256
+        assert bl_lines/256 == (bl_lines+BL_SIZE-1)/256 && EB == 2
 
 ; The star at IX: this frame's step left (out past column 0: a new star at
 ; column 255 on a free random line); in the bitmap, off its byte if it left
@@ -2199,6 +2437,23 @@ star:
 ; bitmap byte (line E, the 8-px cell of column D). Keeps BC, DE.
 bullet_at:
         push bc
+        ld a,e                  ; first: none on line E (bl_lines), none
+        and 7
+        add a,low PIXEL_BIT
+        ld l,a
+        ld h,high PIXEL_BIT
+        ld c,(hl)
+        ld a,e
+        rrca
+        rrca
+        rrca
+        and 1Fh
+        add a,low bl_lines
+        ld l,a
+        ld h,high bl_lines
+        ld a,(hl)
+        and c
+        jr z,.none
         ld hl,volleys
         ld b,MAX_VOLLEYS
 .v:     ld a,e
@@ -3328,6 +3583,10 @@ OVER_TEXT:      db "GAME OVER",0
 OVER_LEN        equ $-OVER_TEXT-1
 
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
+BL_MASKS:                       ; lines n..n+2 of a byte's 8 (and the next one's): (E000h >> n), high byte first
+        dup 8, n
+        db high (0E000h >> n), low (0E000h >> n)
+        edup
 
         include "build/sprites.inc"
         include "build/sfx.inc"

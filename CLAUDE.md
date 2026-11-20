@@ -135,7 +135,14 @@ bitmap), its top right under the art's last row, going down at
 `EB_SPEED_LIST`% of the player's 230 px/s (70% in wave 1, +10% a wave,
 140% from wave 8 on; `wave_n` counts the waves, stopping at 255),
 Bresenham in 1/100 px (one table for both rates); gone once its bottom
-would pass line 183. It hits nothing yet. When a wave begins
+would pass line 183. It hits a ship of the front (`eb_hit`, from `eb_move`)
+when its column has a pixel of the ship's art (`SHIP_ROWS`) on a line the
+bullet covered that frame (its old top to its new bottom), the front
+where it shows (before it moves), its ships living when `eb_move` began
+(`eb_alive`, worked out once a bullet reaches the front's lines): the
+bullet is gone and the ship dies as by a test key (boom, death sound,
+then a hole and the trim); two bullets on one ship: both gone, it dies
+once. Dying ships and the incoming ship aren't hit. When a wave begins
 (`next_wave`, `eb_wipe`), all enemy bullets go: the next frame's
 `eb_move` erases them, the frame the new wave first shows. All bullets are erased before
 any is drawn; an enemy bullet sharing a bitmap byte with another (a
@@ -143,7 +150,13 @@ volley's or an enemy's) is drawn as the bits of all of them (`eb_draw`,
 after the volleys); stars hide in their bytes as in the volleys'. The
 SAT's reversal every other frame is done by `upload_sat` (the entries
 sent backwards, in vertical blank). The worst frame's work is about
-15 ms on the Expert (16.7 ms a frame).
+11.6 ms on the Expert (16.7 ms a frame; two full volleys on a star-step
+frame: `move_bullets` ~3.9 ms, `move_stars` ~3.0 ms). Speed-ups that
+keep it there: `hit_lines` puts each enemy's art's first line in
+`hc_first` once a frame, and `volley_hits` only tries, per bullet, the
+enemies whose art has a line the volley covered (`hc_list`); `move_stars`
+first marks the lines bullets are on (`bl_lines`, `bl_mark`), so
+`bullet_at` answers "none" for a star's line without one at once.
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -214,14 +227,17 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   6 / 5 frames, wraps to 255 on a free line, a star the test puts on a
   new volley's spawn line hiding under it; the first wave's enemy 0 and colour 2
   and its pair pattern and the lone enemy's in VRAM. Hits are off for all of that (a
-  breakpoint makes `volley_hits` return). Then the enemies' part, hits on,
+  breakpoint makes `volley_hits` return), and so are enemy bullets' hits on
+ships (`eb_hit` returns no hit) outside the enemies' part's hunting and
+the staged test below. Then the enemies' part, hits on,
   with four ships (three call-ups first): the test steers the front's first ship under the nearest pair and fires until
   all 4 pairs broke up, holds fire 6 s (screenshot
   `build/shot-<machine>-enemies.png`), then hunts the free enemies until
   all 8 are gone, then stops firing (at the pairs it fires one aimed volley at a time, so
   that free enemies are left to fly; whenever the front spans fewer than
   4 slots and no call-up flies, it writes 3 `reserves` and calls one up,
-  as enemies touching the front kill ships); the second wave must begin
+  as enemies touching the front and enemy bullets kill ships; reserves
+  kept at 2 or more); the second wave must begin
   exactly 0.7 s later, all gone till then (enemy 1, colour 3, its patterns in VRAM, the loop from its
   start; the per-frame models follow it for 2 s); then staged collisions
   (written in RAM, the formation's check skipping the 2 frames whose SAT
@@ -241,7 +257,12 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   one fewer than the most in flight (the test's own bullets, two sharing
   bytes) a roll fires, with the most it doesn't; then the 8-line rule at
   its edge (free enemies flying level, art's last row on 161, one on 160:
-  only that one shoots; all on 161: none does). Then game over, twice: 1 reserve left (RAM), the front
+  only that one shoots; all on 161: none does). Then enemy bullets on
+  ships, staged (all 5 slots written, a four-ship front placed where no
+  star shares the bullets' bytes): next frame, one on ship 0's nose and
+  one low on ship 1's column 0 hit them, two on ship 3 kill it once, one
+  in ship 2's column 0 over its rows without pixels flies on; 3 death
+  sound starts. Then game over, twice: 1 reserve left (RAM), the front
   killed (keys 1..4 at once): it's called up, no game over; killed again:
   GAME OVER on the top row that frame (VRAM against `font.py --raw`), the
   front can't move, shoot or call up, the formation and stars move
@@ -260,7 +281,10 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   bullets: a roll exactly every 0.25 s, about one in 4 hitting, each
   hit's outcome against the test's model (room under the wave's most,
   the enemies able to shoot from RAM, the bullet's place one of theirs,
-  the picks spread). Every frame it also
+  the picks spread); with hits on, each bullet against the front as
+  `eb_move` began (a breakpoint's snapshot), pixel against pixel from
+  `SHIP_PATTERN`: the ships hit booming (image 1, its full count, once),
+  the others not, the front not moved. Every frame it also
   checks the SAT against the front (ships and booms), the incoming ship
   and the enemies (from RAM, rotated; the pairs against the test's own
   model of the loop from the spec, the cycle from the build: pair layout,

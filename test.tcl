@@ -125,10 +125,10 @@ proc frame {} {
 	if {$::ephase} { try aim_frame }
 	set ::nohits_was $::nohits
 	set fr [m frames]
-	if {[info exists ::last_frames] && (($fr - $::last_frames) & 255) != 1} { incr ::dropped ; if {$::ephase} { incr ::edropped } }
+	if {[info exists ::last_frames] && (($fr - $::last_frames) & 255) != 1} { incr ::dropped ; if {$::ephase} { incr ::edropped ; lappend ::edrops $::n } }
 	set ::last_frames $fr
 }
-set dropped 0 ; set edropped 0 ; set ephase 0 ; set flip_bad 0 ; set nocheck 0
+set dropped 0 ; set edropped 0 ; set edrops {} ; set ephase 0 ; set flip_bad 0 ; set nocheck 0
 set ostate ""
 set maxlive 0
 
@@ -1560,6 +1560,7 @@ proc plan_enemies {} {
 }
 proc start_enemies {} {
 	set ::nohits 0
+	set ::ebhits 1 ; set ::ebk0 $::eb_kills
 	set ::ephase 1
 	set ::edead [expr {$::n + 100*$::F}]
 	set ::dstarts0 $::dstarts
@@ -1587,6 +1588,8 @@ proc aim_frame {} {
 			after realtime 0.3 { screenshot [regsub {\.png$} $::env(SHOT) {-enemies.png}] ; set ::pause off ; set ::throttle off }
 		}
 	}
+	# (enemy bullets kill ships too: reserves kept, so that the game isn't over)
+	if {$::ebhits && [m reserves] < 2} { debug write memory $::sym(reserves) 3 }
 	if {$::ephase == 2} {
 		keys 0
 		if {$::n >= $::e2end} { set ::ephase 3 }
@@ -1596,6 +1599,7 @@ proc aim_frame {} {
 	# next wave flies 2 s before the staged collisions
 	if {$::ephase < 4 && ($::waves || $::wgone >= 0) || $::n > $::edead} {
 		set ::ephase 4 ; set ::e4end [expr {$::n + $::wdelay + 2*$::F}]
+		set ::ebhits 0      ;# (the staged collisions and bounces count the ships' deaths)
 	}
 	if {$::ephase >= 4} {
 		keys 0
@@ -1739,9 +1743,10 @@ proc enemy_end {} {
 	set bf [expr {$::F == 60 ? 48 : 40}]
 	check {$::bstarts_w1 == 4 && $bf in $::bruns && $::bidx == -1} "break sound: $::bstarts_w1 starts in the first wave, played out in $bf frames (0.8 s; runs $::bruns)"
 	check {$::bbad == 0 && $::bframes > 0} "break sound on channel B = BREAK table every frame, its noise period while the death sound is silent ($::bframes frames; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
-	check {$::dstarts - $::dstarts0 == $::booms_n + $::coll + $::coll_ships} "a booming enemy and a ship touched (re)start the death sound ([expr {$::dstarts - $::dstarts0}] starts; $::booms_n + $::coll + $::coll_ships)"
+	set ebk [expr {$::eb_kills - $::ebk0}]
+	check {$::dstarts - $::dstarts0 == $::booms_n + $::coll + $::coll_ships + $ebk} "a booming enemy, a ship touched and a ship hit by an enemy bullet (re)start the death sound ([expr {$::dstarts - $::dstarts0}] starts; $::booms_n + $::coll + $::coll_ships + $ebk)"
 	check {$::vis_bad == 0 && $::frontcrowd > 0} "lines with 5..7 sprites: no sprite dropped two frames running ($::crowded crowded line-frames, $::frontcrowd frames with the front's lines crowded, $::overcrowded line-frames with 8 or more; $::vis_bad wrong)"
-	check {$::edropped == 0} "no frame dropped while the enemies are hit and fly, a new wave too ($::edropped)"
+	check {$::edropped == 0} "no frame dropped while the enemies are hit and fly, a new wave too ($::edropped: frames $::edrops)"
 	set ::nocheck 1
 	set ::wseq {}
 	wave_step
@@ -1851,6 +1856,37 @@ proc eb_bad {s} { if {!$::eb_bad} { set ::eb_first "frame $::n: $s" } ; incr ::e
 # A new wave begun (next_wave): the next frame, every enemy bullet goes
 set eb_fresh 0 ; set eb_began 0 ; set eb_wipe 0 ; set eb_wiped 0 ; set eb_wipes 0
 debug set_bp $sym(next_wave.go) {} { if {$::started} { set ::eb_began 1 } }
+# Enemy bullets hit the front's ships only while ::ebhits (else eb_hit
+# returns at once, no hit: the parts before the enemies' and after it don't
+# expect ships to die). The front as eb_move begins ({on front}) and as
+# fire begins (after eb_move: {front, boom_left 0..3}) for the model.
+set ebhits 0 ; set ebsnap "" ; set ebpost "" ; set eb_kills 0 ; set eb_shiphits 0 ; set ebk0 0
+set ebs_bad 0 ; set ebs_first "" ; set ebs_near 0
+proc ebs_bad {s} { if {!$::ebs_bad} { set ::ebs_first "frame $::n: $s" } ; incr ::ebs_bad }
+debug set_bp $sym(eb_hit) {} {
+	if {$::started && !$::ebhits} { reg pc [peek16 [reg sp]] ; reg sp [expr {[reg sp] + 2}] ; reg F [expr {[reg F] & 0xFE}] }
+}
+debug set_bp $sym(eb_move) {} { if {$::started} { set ::ebsnap [list $::ebhits [front_now]] } }
+debug set_bp $sym(fire) {} {
+	if {$::started} {
+		set l {} ; for {set k 0} {$k < 4} {incr k} { lappend l [m boom_left $k] }
+		set ::ebpost [list [front_now] $l]
+	}
+}
+# The front's ship (in alive, slot 0's art at column sx0) whose art has a
+# pixel in column x on one of lines lo..hi, or -1
+proc eb_ship_hit {x lo hi sx0 alive} {
+	foreach k $alive {
+		set c [expr {$x - ($sx0 + $k*$::W)}]
+		if {$c < 0 || $c >= $::W} continue
+		incr c $::sym(SHIP_ART_L)
+		for {set l $lo} {$l <= $hi} {incr l} {
+			if {[dict exists $::spx "[expr {$l - $::sym(SHIP_TOP)}],$c"]} { return $k }
+		}
+		if {$hi >= $::sym(SHIP_TOP)} { incr ::ebs_near }
+	}
+	return -1
+}
 # The roll (A, after rand): the decision against the model
 debug set_bp $sym(enemy_fire.rolled) {} { try eb_roll }
 proc eb_roll {} {
@@ -1885,7 +1921,9 @@ proc eb_shoot {} {
 	lappend ::eb_spawned $b
 }
 # Every frame: the slots from last frame's, each moved down this frame's
-# step (gone once its bottom would pass line 183), then a new one in the
+# step (gone if it hit a ship, with ::ebhits on: a pixel of the ship's art
+# in its column on a line from its old top to its new bottom, the front as
+# eb_move began; gone once its bottom would pass line 183), then a new one in the
 # first free slot; the step: Bresenham at the wave's speed (the wave as
 # when the step was worked out: last frame's end), exact; at most the
 # wave's most in flight
@@ -1904,9 +1942,19 @@ proc eb_frame {} {
 		dict set ::eb_speed $w [list $::eb_S $::eb_k]
 		set want {}
 		set wiped 0
+		set alive {} ; set killed {} ; set sx0 0
+		lassign $::ebsnap on fr
+		if {$on ne "" && $on} {
+			lassign $fr mk sx0 st
+			for {set k 0} {$k < 4} {incr k} { if {($mk >> $k & 1) && ![lindex $st $k]} { lappend alive $k } }
+		}
 		foreach p $::eb_prev {
 			lassign $p y x
 			if {$y && $::eb_wipe} { set y 0 ; incr wiped }
+			if {$y && [llength $alive]} {
+				set k [eb_ship_hit $x $y [expr {$y + $step + 2}] $sx0 $alive]
+				if {$k >= 0} { set y 0 ; incr ::eb_shiphits ; if {$k ni $killed} { lappend killed $k } }
+			}
 			if {$y} { set y [expr {$y + $step}] ; if {$y + 2 > 183} { set y 0 ; incr ::eb_gone } }
 			lappend want [list $y $x]
 		}
@@ -1920,6 +1968,20 @@ proc eb_frame {} {
 			if {$fresh} break
 			if {[lindex $wb 0] == 0 ? [lindex $cb 0] != 0 : $wb ne $cb} { eb_bad "slots $cur, want $want (step $step)" ; break }
 		}
+		# the ships the bullets hit start to die (boom image 1, its full
+		# count) in eb_move; the other living ones don't
+		if {!$fresh && [llength $alive]} {
+			lassign $::ebpost pf pl
+			set f0 [m boom_frames]
+			foreach k $alive {
+				set g [list [lindex $pf 2 $k] [lindex $pl $k]]
+				if {$k in $killed} {
+					if {$g ne [list 1 $f0]} { ebs_bad "ship $k hit by an enemy bullet: boom $g, want 1 $f0" }
+				} elseif {[lindex $g 0]} { ebs_bad "ship $k not hit: boom $g" }
+			}
+			if {[lrange $pf 0 1] ne [lrange $fr 0 1]} { ebs_bad "the front moved in eb_move: $fr -> $pf" }
+			incr ::eb_kills [llength $killed]
+		}
 		set n [eb_live]
 		lassign [eb_spec [m wave_n]] - mx2
 		if {$n > $mx2} { eb_bad "$n in flight, wave [m wave_n]'s most $mx2" }
@@ -1928,6 +1990,7 @@ proc eb_frame {} {
 	foreach b $cur { lassign $b y ; if {$y && ($y < 8 || $y + 2 > 183)} { eb_bad "a bullet at line $y" } }
 	set ::eb_spawned {}
 	set ::eb_fresh 0
+	set ::ebsnap ""
 	set ::eb_wipe $::eb_began ; set ::eb_began 0
 	set ::eb_prev $cur
 	set ::eb_w [m wave_n]
@@ -2033,11 +2096,60 @@ proc eb_clear_stage {} {
 			set s [expr {$::eb_spawns - [lindex $::cs1 0]}] ; set z [expr {$::eb_none - [lindex $::cs1 1]}]
 			check {$s == 0 && $z >= 3} "enemy bullets: every enemy too close to the front (art's last row on 161): none shoots ($s bullets; $z hit rolls with none able)"
 			set ::eb_force 0
-			eb_end
-			final_checks
-			plan_over 1
+			stage_eb_hits
 		}
 	}
+}
+# Enemy bullets on ships, staged (the bullets written in RAM, all 5 slots:
+# no new one): a four-ship front at a column where no star is in the
+# bullets' bitmap bytes; next frame: one on ship 0's nose and one on
+# ship 1's art's column 0, deep (row 10 on), hit them; one in ship 2's
+# column 0 over rows 0..7 (none of its pixels there) misses, flying on; two
+# on ship 3 (its nose, its column 8) hit it, dying once: ships 0, 1 and 3
+# die, 3 death sound starts
+proc stage_eb_hits {} {
+	if {[m call_on]} { at [expr {$::n + 1}] stage_eb_hits ; return }
+	set T $::sym(SHIP_TOP) ; set W $::W ; set nose $::sym(SHIP_NOSE_DX)
+	set stars [star_list]
+	for {set sx0 40} {$sx0 < 200} {incr sx0} {
+		set bs [list [list [expr {$T - 4}] [expr {$sx0 + $nose}]] [list [expr {$T + 9}] [expr {$sx0 + $W}]] \
+			[list [expr {$T - 2}] [expr {$sx0 + 2*$W}]] [list [expr {$T - 4}] [expr {$sx0 + 3*$W + $nose}]] \
+			[list [expr {$T + 9}] [expr {$sx0 + 3*$W + 8}]]]
+		set ok 1
+		foreach b $bs {
+			lassign $b y x
+			foreach e $stars {
+				lassign $e sx sy
+				if {$sy >= $y && $sy <= $y + 12 && ($sx/8 == $x/8 || ($sx-1)/8 == $x/8)} { set ok 0 }
+			}
+		}
+		if {$ok} break
+	}
+	if {!$ok} { fail "enemy bullets on ships, staged: no column free of stars" ; eb_stage_end ; return }
+	foreach {v k} [list 15 front_mask 4 front_slots [expr {4*$W}] front_w $sx0 ship_x 3 reserves] { debug write memory $::sym($k) $v }
+	for {set k 0} {$k < 4} {incr k} { debug write memory [expr {$::sym(boom_stage) + $k}] 0 ; debug write memory [expr {$::sym(boom_left) + $k}] 0 }
+	eb_set $bs
+	set ::ebstage $bs
+	set ::ebhits 1 ; set ::dnew 0
+	say "staged enemy bullets on the front at column $sx0: $bs"
+	at [expr {$::n + 1}] {
+		set ::ebhits 0
+		set st {} ; set lf {}
+		for {set k 0} {$k < 4} {incr k} { lappend st [m boom_stage $k] ; lappend lf [m boom_left $k] }
+		set f0 [m boom_frames]
+		set c [lindex $::ebstage 2]
+		set want {}
+		foreach b $::ebstage { lappend want [list 0 [lindex $b 1]] }
+		lset want 2 0 [expr {[lindex $c 0] + [m eb_step]}]
+		set got [eb_list]
+		check {$st eq {1 1 0 1} && $lf eq [list $f0 $f0 0 $f0] && $got eq $want && $::dnew == 3} "enemy bullets on ships, staged, the next frame: ship 0 hit on its nose, ship 1 low on its art's column 0, ship 3 by two bullets (dying once) blow up; one in ship 2's column 0 over rows without pixels flies on: booms $st/$lf (want 1 1 0 1, $f0 frames), bullets $got (want $want), $::dnew death sound starts (want 3)"
+		eb_stage_end
+	}
+}
+proc eb_stage_end {} {
+	eb_end
+	final_checks
+	plan_over 1
 }
 proc cs_frame {} {
 	if {!$::cs_on || !$::eb_rolled_now} return
@@ -2046,6 +2158,7 @@ proc cs_frame {} {
 	if {[llength $::eb_cands] != 1 || [lindex $::eb_cands 0 0] != 161} { incr ::cs_bad }
 }
 proc eb_end {} {
+	check {$::ebs_bad == 0} "enemy bullets on ships = the model every frame with hits on: a ship whose art has a pixel in a bullet's column on a line it covered (its old top to its new bottom) blows up, once, the bullet gone; the others unchanged ($::eb_shiphits bullets hit, $::eb_kills ships; $::ebs_near passed a living ship's art box missing it; [expr {$::ebs_bad ? "first wrong: $::ebs_first" : "none wrong"}])"
 	check {$::eb_bad == 0 && $::eb_frames > 10*$::F} "enemy bullets = the model every frame: each down the wave's speed (Bresenham, exact), gone past line 183, a new one from an enemy able to shoot, under its art, in the first free slot; never more than the wave's most ($::eb_frames frames, $::eb_spawns fired, $::eb_gone gone at the bottom; [expr {$::eb_bad ? "first wrong: $::eb_first" : "none wrong"}])"
 	set r $::eb_rolls ; set bad 0
 	set n0 [lindex $r 0]
