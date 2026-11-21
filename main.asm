@@ -76,6 +76,16 @@
 ; BONUS_WAVES waves in a row finished (each one's last enemy gone) with no
 ; ship lost: a reserve ship more, if the reserve has room (RESERVE_MAX),
 ; with a 0.25 s "happy beep" on PSG channel A (it wins over the shot's).
+; After waves 5 and 10 of a level (BOSS_AFTER_LIST), the boss
+; (images/boss.png, four sprites) instead of the next wave: it cruises left
+; and right at the playfield's top, BOSS_MARGIN px from either edge, one way
+; in BOSS_TRAVERSE_MS, and rains bullets (the enemies', at the last wave's
+; speed) from random columns of its lower edge at the rate that keeps
+; BOSS_EB_N in flight. It starts in FORM_COLOR_REDDENING's first colour and
+; takes the next every BOSS_HITS hits; BOSS_HITS in its last and it dies:
+; eight ship booms side by side, then "BONUS ddd POINTS" (BOSS_PTS by the
+; front's share as it died) in the screen's middle for BONUS_TEXT_MS, then
+; the points, and the next wave.
 ; It starts with a splash screen, images/title.png (title.py), with
 ; "(C) 2026 JCCYC" and "HTTPS://RETROPOLIS.COM.BR" on rows 21 and 22 and
 ; "PRESS SPACE OR FIRE TO BEGIN" on row 23, centred, in the game's font
@@ -192,11 +202,21 @@ EB_N            equ 5           ; slots: EB_MAX_LIST's largest
 ;
 ; the waves' colours in turn (their enemies: images/enemy-0..9.png in turn)
         define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
-; the same colours by hue, bluest to reddest (for a boss, later): from light
+; the same colours by hue, bluest to reddest (the boss's, in turn): from light
 ; blue (245°) down through cyan (189°), green (126°, 125°), yellow (55°, 50°)
 ; to red (6°: light, then the more saturated medium), then magenta (302°),
 ; past red; hues from the TMS9918's usual RGB values
         define FORM_COLOR_REDDENING 5, 7, 3, 2, 10, 11, 9, 8, 13
+;
+; The boss (images/boss.png): after these waves of a level (its last
+; wave's last enemy gone, WAVE_DELAY_MS later), the boss instead of the next wave
+        define BOSS_AFTER_LIST 5, 10
+BOSS_MARGIN     equ 32          ; it cruises left and right at the playfield's top, this many px from either edge ...
+BOSS_TRAVERSE_MS equ 4000       ; ... one way in this long
+BOSS_EB_N       equ 5           ; its bullets rain at the rate that keeps this many in flight (the last wave's speed)
+BOSS_HITS       equ 10          ; hits a colour: then the next of FORM_COLOR_REDDENING; past its last, it dies
+BOSS_PTS        equ 500         ; its death's bonus with a one-ship front (with more, SHARE_2..4 % of it) ...
+BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OVER_ROW) after its boom; then the score, the next wave
 ; (the formation's loop: path.py)
 
 ; ---- Layout ----------------------------------------------------------------
@@ -232,6 +252,29 @@ FORM_WRAP       equ 256+16      ; x is mod this: a pair off the right edge comes
         assert FORM_X0 < FORM_WRAP && FORM_ADVANCE < FORM_WRAP
         assert FORM_WRAP-1+FORM_PATH_DX_MAX+FORM_W-16 < 2*FORM_WRAP    ; one wrap at most
         assert FORM_TICKS*2 < 65536 && ENEMIES <= 16
+
+; The boss: its art's box (BOSS_W x BOSS_H, all art) on the playfield's
+; first lines, its left column BOSS_X_MIN..BOSS_X_MAX at BOSS_SPEED px/s;
+; its bullets' top line BOSS_EB_Y (right under it), gone after BOSS_EB_RUN px
+BOSS_Y          equ PLAY_TOP
+BOSS_X_MIN      equ BOSS_MARGIN
+BOSS_X_MAX      equ 256-BOSS_MARGIN-BOSS_W
+BOSS_SPEED      equ (BOSS_X_MAX-BOSS_X_MIN)*1000/BOSS_TRAVERSE_MS
+        assert (BOSS_X_MAX-BOSS_X_MIN)*1000%BOSS_TRAVERSE_MS == 0 && BOSS_X_MAX > BOSS_X_MIN
+        assert BOSS_SPEED < 50 && BOSS_X_MIN > BOSS_SPEED/50+1 && BOSS_X_MAX+BOSS_SPEED/50+1 < 256   ; (a step reflects off an end once)
+BOSS_EB_Y       equ BOSS_Y+BOSS_H
+BOSS_EB_RUN     equ PLAY_BOTTOM+2-BULLET_H-BOSS_EB_Y    ; (eb_move: gone once its top would reach line BOSS_EB_Y + this)
+        assert BOSS_EB_N <= EB_N && BOSS_EB_RUN+256/50+BOSS_EB_N < 256
+; boss_st: none, fighting, booming (one state a boom image), the bonus text
+; shown, the bonus's end (next_wave: the text gone, the score), then the
+; next wave (next frame: a frame's work each, on the Expert)
+BS_NONE         equ 0
+BS_FIGHT        equ 1
+BS_BOOM         equ 2
+BS_BONUS        equ BS_BOOM+BOOM_STAGES
+BS_END          equ BS_BONUS+1
+BS_NEXT         equ BS_END+1
+BONUS_COL       equ (32-BONUS_LEN)/2    ; the bonus text's first column on OVER_ROW
 
 ; The enemies: pair k is enemies 2k (left) and 2k+1 (right, 8 px on). In
 ; a pair both are EN_FORM; once it breaks up, each is EN_FREE, then booms
@@ -273,6 +316,9 @@ NAME_BOOM       equ 12          ; the boom images: 12, 16, 20
 BOOM_STAGES     equ 3
 NAME_ENEMY      equ 24          ; the formation's pair
 NAME_ENEMY1     equ 28          ; one enemy alone (in the sprite's left 8 columns)
+NAME_BOSS       equ 32          ; the boss: 32, 36, 40, 44, left to right
+NAME_BOSS_BOOM  equ 48          ; its booms: 4 sprites a boom image (48.., 64.., 80..)
+        assert NAME_BOSS == NAME_ENEMY1+4 && NAME_BOSS_BOOM == NAME_BOSS+16 && NAME_BOSS_BOOM+16*BOOM_STAGES <= 256
 SPR_PARK        equ 0C0h        ; a sprite's Y off screen (lines 193..208); below D0h, the end marker
 SPR_END         equ 0D0h        ; Y that ends the sprite list
 SPR_EC          equ 80h         ; colour byte: early clock, X shifted 32 px left
@@ -398,6 +444,9 @@ bonus_sound:    ds 2            ; BONUS_60 or BONUS_50
 title_wait:     ds 2            ; frames the title shows before attract mode
 attract_len:    ds 2            ; ... and frames attract mode plays
 think_frames:   ds 1            ; frames between the pseudo-player's thinks
+boss_whole:     ds 1            ; BOSS_SPEED / fps
+boss_frac:      ds 1
+bonus_frames:   ds 1            ; frames the bonus text shows
 RATES_SIZE      equ $-rates
 frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
@@ -444,6 +493,26 @@ call_acc:       ds 1            ; Bresenham remainder
 over_on:        ds 1            ; nonzero: game over
 over_text:      ds 1            ; nonzero: GAME OVER shows (game over, not in attract mode)
 over_time:      ds 2            ; ... frames since it began
+; A text in the screen's middle (OVER_ROW): GAME OVER's or the boss's bonus;
+; no star or bullet is drawn in its cells (over_at)
+mid_text:       ds 1            ; nonzero: one shows
+mid_x0:         ds 1            ; ... its first pixel column
+mid_w:          ds 1            ; ... its width in px
+; The boss
+boss_st:        ds 1            ; BS_*
+boss_left:      ds 1            ; booming: frames its image still shows; the bonus: frames its text still shows
+boss_x:         ds 1            ; its art's left column (BOSS_X_MIN..BOSS_X_MAX)
+boss_acc:       ds 1            ; ... Bresenham remainder
+boss_dir:       ds 1            ; nonzero: going left
+boss_hits:      ds 1            ; hits in this colour (0..BOSS_HITS-1)
+boss_cidx:      ds 1            ; its colour: BOSS_COLORS[boss_cidx] ...
+boss_color:     ds 1            ; ... this
+boss_eb:        ds 1            ; px its bullets moved since its last one (it fires one every boss_gap px)
+boss_gap:       ds 1
+boss_alive:     ds 1            ; the front's living ships as it died (its bonus's share)
+boss_done:      ds 1            ; nonzero: the boss after this wave is over (next_wave.go: the next wave)
+bonus_text:     ds 1            ; nonzero: its bonus text shows (in bonus_buf)
+bonus_buf:      ds BONUS_LEN+1
 volleys:        ds MAX_VOLLEYS*VOLLEY
 ebullets:       ds EB_N*EB      ; the enemies' bullets
 eb_acc:         ds 2            ; ... their Bresenham remainder (1/100 px), one for all
@@ -618,6 +687,14 @@ new_game:
         call LDIRVM
         assert COMING_R_PATTERN == SHIP_PATTERN+32 && COMING_L_PATTERN == SHIP_PATTERN+64
         assert BOOM_PATTERN == SHIP_PATTERN+96
+        ld hl,(GRPPAT)          ; the boss and its booms
+        ld de,NAME_BOSS*8
+        add hl,de
+        ex de,hl
+        ld hl,BOSS_PATTERN
+        ld bc,(4+4*BOOM_STAGES)*32
+        call LDIRVM
+        assert BOSS_BOOM_PATTERN == BOSS_PATTERN+4*32 && BOSS_W == 64 && BOSS_H == 16
         assert NAME_SHIP == 0 && NAME_COMING_R == 4 && NAME_COMING_L == 8 && NAME_BOOM == 12
         ld hl,(GRPCOL)          ; the playfield's bitmap: the bullets' colour
         ld de,PLAY_TOP/8*256
@@ -679,10 +756,12 @@ main_loop:
         call read_input
         call booms              ; before kill: a new boom's first image shows its full count
         call enemy_booms        ; ... and before the hits
+        call boss_booms
         call kill
         call move_bullets       ; first: in vertical blank, and a volley gone frees its slot; hits
         call fire               ; (hits too; both against the enemies where they show now)
         call enemy_fire         ; from the enemies where they show now
+        call boss_fire          ; ... and the boss
         call eb_draw            ; after the volleys are drawn: a shared byte holds both
         call move_stars         ; after the bullets (fire's too): a star in their bytes hides
         call call_up            ; before move_ship: the front stays put while one runs
@@ -1785,17 +1864,7 @@ wave_entry:
 eb_move:
         ld a,0FFh               ; (worked out once a bullet reaches the front's lines)
         ld (eb_alive),a
-        ld hl,EB_PCTS
-        ld b,EB_PCTS_N
-        call wave_entry
-        ld de,BULLET_SPEED
-        ld hl,0
-        ld b,8
-.mul:   add hl,hl               ; HL = BULLET_SPEED * the %: 1/100 px a second
-        rla
-        jr nc,.m0
-        add hl,de
-.m0:    djnz .mul
+        call eb_speed
         ld de,(eb_acc)
         add hl,de
         ld de,(eb_unit)         ; 100 * fps: a px
@@ -1851,6 +1920,22 @@ eb_move:
         ret
         assert EB == 2 && PLAY_BOTTOM+(BULLET_SPEED*255/100+49)/50 < 256
         assert SHIP_TOP+SHIP_ART_T+1-BULLET_H <= PLAY_BOTTOM+2-BULLET_H
+
+; HL = this wave's enemy bullet speed in 1/100 px a second (BULLET_SPEED *
+; EB_SPEED_LIST's %)
+eb_speed:
+        ld hl,EB_PCTS
+        ld b,EB_PCTS_N
+        call wave_entry
+        ld de,BULLET_SPEED
+        ld hl,0
+        ld b,8
+.mul:   add hl,hl
+        rla
+        jr nc,.m0
+        add hl,de
+.m0:    djnz .mul
+        ret
 
 ; Carry: the enemy bullet in column D, covering lines C..E this frame,
 ; hits a ship of the front living when eb_move began (eb_alive): a pixel of
@@ -2235,6 +2320,9 @@ bullet_bits:
 ; left with no bullet is free. Only the enemies whose art has a line in
 ; D..E (from hc_first) are tried (hc_list). Keeps DE, IX.
 volley_hits:
+        ld a,(boss_st)
+        cp BS_FIGHT
+        jp z,boss_volley
         push de
         ld a,(form_art_t)
         ld b,a
@@ -2667,11 +2755,11 @@ volley_px:
         assert SHIP_ART_W > 8
 
 ; Lines E..E+BULLET_H-1 of the bitmap at pixel column D's cell := C (outside
-; vertical blank too: 40 T between the VRAM writes), but for GAME OVER's
-; cells (over_at)
+; vertical blank too: 40 T between the VRAM writes), but for the middle
+; text's cells (over_at)
 bullet_px:
         ld b,BULLET_H
-.cell:  ld a,(over_text)
+.cell:  ld a,(mid_text)
         or a                    ; (no carry)
         call nz,over_cell
         jr c,.skip
@@ -2873,7 +2961,7 @@ star:
         ret
 
 ; Carry: a bullet in flight (a volley's or an enemy's) is in pixel (D, E)'s
-; bitmap byte (line E, the 8-px cell of column D), or GAME OVER is
+; bitmap byte (line E, the 8-px cell of column D), or the middle text is
 ; (over_at). Keeps BC, DE.
 bullet_at:
         push bc
@@ -3071,9 +3159,26 @@ load_formation:
 ; Every enemy gone: WAVE_DELAY_MS later (wave_delay frames after the frame
 ; the last one went), a new wave, the next enemy (images/enemy-0..9.png in
 ; turn) in the next colour of FORM_COLOR_LIST (each list from its start
-; again after its last), the formation in its pairs at the loop's start
+; again after its last), the formation in its pairs at the loop's start;
+; after a wave of BOSS_AFTER_LIST, the boss instead, and the next wave once
+; its bonus is over. While the boss is on: it moves (fighting), or its
+; bonus ends (BS_END: the text gone, the score; BS_NEXT: the next wave)
 next_wave:
-        ld hl,wave_wait
+        ld a,(boss_st)
+        or a
+        jr z,.waves
+        cp BS_FIGHT
+        jp z,boss_move
+        cp BS_END
+        jp z,boss_end
+        cp BS_NEXT
+        ret nz
+        xor a                   ; the next wave
+        ld (boss_st),a
+        inc a
+        ld (boss_done),a
+        jr .go
+.waves: ld hl,wave_wait
         ld a,(hl)
         or a
         jr z,.idle
@@ -3116,9 +3221,16 @@ next_wave:
         ld (reserves),a
         call draw_reserves
         jp bonus_start
-.go:    ld a,1                  ; the last wave's enemy bullets go (next frame's eb_move)
+.go:    ld a,1                  ; the last wave's (or boss's) enemy bullets go (next frame's eb_move)
         ld (eb_wipe),a
-        ld hl,wave_n            ; (stays at 255)
+        ld hl,boss_done
+        ld a,(hl)
+        ld (hl),0
+        or a
+        jr nz,.wave             ; the boss after it is over
+        call boss_after
+        jp c,boss_begin
+.wave:  ld hl,wave_n            ; (stays at 255)
         inc (hl)
         jr nz,.wn
         dec (hl)
@@ -3172,6 +3284,416 @@ rand:   ld hl,(rand_seed)
         ld h,a
         ld (rand_seed),hl
         ret
+
+; ---- Boss ------------------------------------------------------------------
+
+; Carry: a boss comes after this wave (form_enemy + 1 in BOSS_AFTER_LIST)
+boss_after:
+        ld a,(form_enemy)
+        inc a
+        ld hl,BOSS_AFTERS
+        ld b,BOSS_AFTERS_N
+.a:     cp (hl)
+        scf
+        ret z
+        inc hl
+        djnz .a
+        or a
+        ret
+
+; The boss begins (next_wave.go, instead of the next wave; it shows from
+; this frame's SAT on): at its left end going right, in its first colour;
+; its bullets one every boss_gap px they move: BOSS_EB_N * boss_gap at
+; least BOSS_EB_RUN + the longest step - 1, so that the one fired
+; BOSS_EB_N before is gone by then (the wave's speed: wave_n stays the
+; last wave's)
+boss_begin:
+        ld a,BS_FIGHT
+        ld (boss_st),a
+        ld a,BOSS_X_MIN
+        ld (boss_x),a
+        xor a
+        ld (boss_dir),a
+        ld (boss_acc),a
+        ld (boss_hits),a
+        ld (boss_cidx),a
+        ld (boss_eb),a
+        ld a,(BOSS_COLORS)
+        ld (boss_color),a
+        call eb_speed           ; the longest step: ceil(speed / eb_unit)
+        ld de,(eb_unit)
+        add hl,de
+        dec hl
+        ld a,-1
+.st:    inc a
+        or a
+        sbc hl,de
+        jr nc,.st
+        add a,BOSS_EB_RUN-1+BOSS_EB_N-1     ; the gap: ceil((run + step - 1) / BOSS_EB_N)
+        ld b,-1
+.gp:    inc b
+        sub BOSS_EB_N
+        jr nc,.gp
+        ld a,b
+        ld (boss_gap),a
+        ret
+
+; The boss one frame on (fighting): BOSS_SPEED px/s, back the other way
+; from either end (a step past it reflected)
+boss_move:
+        ld a,(boss_whole)
+        ld b,a
+        ld a,(boss_frac)
+        ld d,a
+        ld hl,boss_acc
+        call bresenham
+        ld b,a
+        ld hl,boss_x
+        ld a,(boss_dir)
+        or a
+        ld a,(hl)
+        jr nz,.left
+        add a,b
+        cp BOSS_X_MAX
+        jr c,.set
+        neg
+        add a,low (2*BOSS_X_MAX)    ; (reflected: 2 * BOSS_X_MAX - x, mod 256)
+        ld c,1
+        jr .turn
+.left:  sub b
+        cp BOSS_X_MIN+1
+        jr nc,.set
+        neg
+        add a,2*BOSS_X_MIN
+        ld c,0
+.turn:  ld (hl),a
+        ld a,c
+        ld (boss_dir),a
+        ret
+.set:   ld (hl),a
+        ret
+        assert 2*BOSS_X_MIN < 256
+
+; The boss fighting: every boss_gap px its bullets move (this frame's
+; eb_step), one more from its art's lower edge at a random one of its
+; columns, in the first free slot (eb_draw draws it)
+boss_fire:
+        ld a,(boss_st)
+        cp BS_FIGHT
+        ret nz
+        ld a,(boss_gap)
+        ld c,a
+        ld a,(eb_step)
+        ld hl,boss_eb
+        add a,(hl)
+        cp c
+        jr c,.keep
+        sub c
+        ld (hl),a
+        ld hl,ebullets
+        ld b,EB_N
+.find:  ld a,(hl)
+        or a
+        jr z,.free
+        inc hl
+        inc hl
+        djnz .find
+        ret                     ; (none free: can't be, BOSS_EB_N <= EB_N)
+.free:  ld (hl),BOSS_EB_Y
+        push hl
+        call rand               ; (HL lost)
+        pop hl
+        and BOSS_W-1
+        ld c,a
+        ld a,(boss_x)
+        add a,c
+        inc hl
+        ld (hl),a
+        dec hl
+.shoot:                         ; (test.tcl: HL = the bullet's {Y X})
+        ret
+.keep:  ld (hl),a
+        ret
+        assert (BOSS_W & (BOSS_W-1)) == 0 && BOSS_X_MAX+BOSS_W <= 256
+
+; The volley at IX against the boss (fighting), where it shows now: each
+; bullet whose column has a pixel of its art on lines D..E (the lines it
+; covered this frame) is gone, and the boss hit (boss_hit; once it dies, no
+; more). A volley left with no bullet is free. Keeps DE, IX.
+boss_volley:
+        ld a,d
+        cp BOSS_Y+BOSS_H
+        ret nc                  ; under it
+        push ix
+        pop hl
+        inc hl                  ; X
+        ld b,FRONT_MAX
+        ld c,0                  ; bullets left
+.b:     ld a,(hl)
+        or a
+        jr z,.next
+        push bc
+        push hl
+        call boss_px
+        pop hl
+        pop bc
+        jr nc,.keep
+        ld (hl),0
+        push bc
+        push de
+        push hl
+        call boss_hit
+        pop hl
+        pop de
+        pop bc
+        jr .next
+.keep:  inc c
+.next:  inc hl
+        djnz .b
+        inc c
+        dec c
+        ret nz
+        ld (ix+VOLLEY.Y),0
+        ret
+
+; Carry: the boss fights and its art has a pixel in column A on one of
+; lines D..E. Keeps DE.
+boss_px:
+        ld c,a
+        ld a,(boss_st)
+        cp BS_FIGHT
+        jr nz,.no
+        ld a,(boss_x)
+        ld b,a
+        ld a,c
+        sub b
+        jr c,.no
+        cp BOSS_W
+        jr nc,.no
+        ld c,a                  ; the column in its art
+        rrca
+        rrca
+        rrca
+        and 7                   ; its byte: sprite (col / 16) * 32, half (col / 8 % 2) * 16
+        rla
+        rla
+        rla
+        rla                     ; (no carry: < 128)
+        ld l,a
+        ld h,0
+        push de
+        ld de,BOSS_PATTERN
+        add hl,de
+        pop de
+        ld a,c
+        and 7
+        push hl
+        ld hl,PIXEL_BIT
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld c,(hl)               ; its bit
+        pop hl
+        ld a,d                  ; lines max(D, BOSS_Y) .. min(E, its last)
+        cp BOSS_Y
+        jr nc,.lo
+        ld a,BOSS_Y
+.lo:    ld b,a
+        ld a,e
+        cp BOSS_Y+BOSS_H
+        jr c,.hi
+        ld a,BOSS_Y+BOSS_H-1
+.hi:    sub b
+        jr c,.no
+        inc a
+        push af
+        ld a,b
+        sub BOSS_Y              ; the first one's row
+        add a,l
+        ld l,a
+        jr nc,.nc2
+        inc h
+.nc2:   pop af
+        ld b,a
+.row:   ld a,(hl)
+        and c
+        jr nz,.hit
+        inc hl
+        djnz .row
+.no:    or a
+        ret
+.hit:   scf
+        ret
+        assert BOSS_Y >= PLAY_TOP
+
+; A hit on the boss: every BOSS_HITS, the next colour; past the last, it
+; dies (boss_dies)
+boss_hit:
+        ld hl,boss_hits
+        inc (hl)
+        ld a,(hl)
+        cp BOSS_HITS
+        ret c
+        ld (hl),0
+        ld hl,boss_cidx
+        inc (hl)
+        ld a,(hl)
+        cp BOSS_COLORS_N
+        jr nc,boss_dies
+        ld e,a
+        ld d,0
+        ld hl,BOSS_COLORS
+        add hl,de
+        ld a,(hl)
+        ld (boss_color),a
+        ret
+; It starts to boom (in its last colour; the death sound), the front's
+; living ships now kept for its bonus (test.tcl: it dies here)
+boss_dies:
+        ld a,BS_BOOM
+        ld (boss_st),a
+        ld a,(boom_frames)
+        ld (boss_left),a
+        call alive_mask
+        ld (boss_alive),a
+        jp death_start
+
+; The boss booming: the next boom image when one's frames are over; after
+; the last, its bonus text (its points: BOSS_PTS by the front's share,
+; boss_alive) for bonus_frames in the screen's middle (not over GAME OVER);
+; then BS_END (next_wave: the score, the next wave)
+boss_booms:
+        ld a,(boss_st)
+        cp BS_BOOM
+        ret c
+        cp BS_END
+        ret nc
+        ld hl,boss_left
+        dec (hl)
+        ret nz
+        inc a
+        ld (boss_st),a
+        cp BS_BONUS
+        jr z,.bonus
+        ret nc                  ; (the bonus's end)
+        ld e,a
+        ld d,0
+        ld hl,boom_frames-BS_BOOM
+        add hl,de
+        ld a,(hl)
+        ld (boss_left),a
+        ret
+.bonus: ld a,(bonus_frames)
+        ld (boss_left),a
+        ld hl,BONUS_TEXT
+        ld de,bonus_buf
+        ld bc,BONUS_LEN+1
+        ldir
+        call boss_pts           ; HL = its BCD points
+        ld de,bonus_buf+BONUS_DIGITS
+        inc hl                  ; the hundreds: the high byte's low digit
+        ld a,(hl)
+        and 0Fh
+        add a,'0'
+        ld (de),a
+        inc de
+        dec hl
+        ld a,(hl)
+        rrca
+        rrca
+        rrca
+        rrca
+        and 0Fh
+        add a,'0'
+        ld (de),a
+        inc de
+        ld a,(hl)
+        and 0Fh
+        add a,'0'
+        ld (de),a
+        ld a,(over_text)
+        or a
+        ret nz                  ; GAME OVER shows: no text
+        inc a
+        ld (bonus_text),a
+        ld hl,bonus_buf
+        ld a,BONUS_COL
+        ld b,BONUS_LEN
+        jp mid_show
+        assert BS_BONUS == BS_BOOM+BOOM_STAGES && BS_END == BS_BONUS+1
+
+; HL = the boss's bonus points' BCD word in PTS, by boss_alive's ships
+boss_pts:
+        ld a,(boss_alive)
+        ld c,0
+.cnt:   srl a
+        jr nc,.z
+        inc c
+        or a
+.z:     jr nz,.cnt
+        ld a,c
+        add a,a
+        add a,c
+        add a,a
+        add a,PTS_BOSS
+        ld hl,PTS
+        add a,l
+        ld l,a
+        ret nc
+        inc h
+        ret
+
+; The bonus's end (next_wave, BS_END): its text gone, its points to the
+; score; the next frame, the next wave (BS_NEXT)
+boss_end:
+        call bonus_erase
+        ld a,(boss_alive)
+        ld b,PTS_BOSS
+        call score_add
+        ld a,BS_NEXT
+        ld (boss_st),a
+        ret
+
+; The boss's SAT entries at DE (the enemies' 8: 4 sprites, then 4 parked):
+; fighting, its sprites; booming, its boom image's; in its colour
+boss_sat:
+        ld a,(boss_st)
+        sub BS_BOOM
+        ld c,NAME_BOSS
+        jr c,.nm
+        add a,a
+        add a,a
+        add a,a
+        add a,a
+        add a,NAME_BOSS_BOOM
+        ld c,a
+.nm:    ld a,(boss_x)
+        ld b,4
+.s:     ld l,a
+        ld a,BOSS_Y-1           ; a sprite's first line is Y + 1
+        ld (de),a
+        inc de
+        ld a,l
+        ld (de),a
+        inc de
+        ld a,c
+        ld (de),a
+        inc de
+        ld a,(boss_color)
+        ld (de),a
+        inc de
+        ld a,c
+        add a,4
+        ld c,a
+        ld a,l
+        add a,16
+        djnz .s
+        ld b,4
+.p:     call park_ent
+        djnz .p
+        ret
+        assert BS_FIGHT == 1 && BS_BOOM == 2
 
 ; ---- Call-up ---------------------------------------------------------------
 
@@ -3370,8 +3892,8 @@ decimal:
 
 ; ---- Score -----------------------------------------------------------------
 
-; Points to the score (BCD; at 99999999 it stays): B = PTS_BREAK or
-; PTS_FREE, A = the front's living ships' mask (their count picks the
+; Points to the score (BCD; at 99999999 it stays): B = PTS_BREAK, PTS_FREE
+; or PTS_BOSS, A = the front's living ships' mask (their count picks the
 ; share; none counts as one). Keeps IX, IY.
 score_add:
         ld c,0                  ; the ships
@@ -3382,7 +3904,8 @@ score_add:
 .z:     jr nz,.cnt
         ld a,c
         add a,a
-        add a,a                 ; 4 bytes a count
+        add a,c
+        add a,a                 ; 6 bytes a count
         add a,b
         ld hl,PTS
         add a,l
@@ -3426,6 +3949,7 @@ score_add:
         ret
 PTS_BREAK       equ 0
 PTS_FREE        equ 2
+PTS_BOSS        equ 4
         assert FRONT_MAX == 4
 
 ; The score, if it changed, on SCORE_ROW's last SCORE_LEN cells,
@@ -3536,10 +4060,11 @@ game_over:
         ret nz                  ; attract mode: no text, just the timeout (no carry after the or)
         inc a
         ld (over_text),a
+        call bonus_erase        ; (the boss's bonus text goes; its bonus runs on)
         ld hl,OVER_TEXT
-        ld de,OVER_ROW*256+OVER_COL*8
-        ld c,TEXT_COLOR*16+BG_COLOR
-        call print_text
+        ld a,OVER_COL
+        ld b,OVER_LEN
+        call mid_show
         or a
         ret
 .on:    ld hl,(over_time)
@@ -3569,27 +4094,104 @@ game_over:
         scf
         ret
 
-; Carry: GAME OVER shows, and pixel (D, E)'s bitmap byte is in its cells
-; (no star or bullet is drawn there meanwhile). Keeps BC, DE, HL.
+; Carry: a text shows in the screen's middle (mid_text: GAME OVER or the
+; boss's bonus), and pixel (D, E)'s bitmap byte is in its cells (no star or
+; bullet is drawn there meanwhile). Keeps BC, DE, HL.
 over_at:
-        ld a,(over_text)
+        ld a,(mid_text)
         or a
         ret z
-; ... the same, game over or not
+; ... the same, with one showing
 over_cell:
         ld a,e
         and 0F8h
         cp OVER_ROW*8
         jr nz,.no
+        push bc
+        ld a,(mid_x0)
+        ld c,a
+        ld a,(mid_w)
+        ld b,a
         ld a,d
-        sub OVER_COL*8
-        cp OVER_LEN*8
+        sub c
+        cp b
+        pop bc
         ret
 .no:    or a
         ret
         assert OVER_ROW >= PLAY_TOP/8 && OVER_ROW*8+7 <= PLAY_BOTTOM && OVER_COL*8+OVER_LEN*8 <= 256
+        assert BONUS_COL*8+BONUS_LEN*8 <= 256 && BONUS_LEN < 32
         ; (a star leaving one of its bytes sets the byte's colour to BULLET_COLOR's: the text's)
         assert TEXT_COLOR == BULLET_COLOR
+
+; Text HL in the screen's middle (OVER_ROW) from column A, B cells: its
+; cells kept from stars and bullets from now on (a star in them now: not
+; drawn any more, the text over it)
+mid_show:
+        ld (mid_text),a         ; (nonzero: the column is)
+        add a,a
+        add a,a
+        add a,a
+        ld (mid_x0),a
+        ld e,a
+        ld a,b
+        add a,a
+        add a,a
+        add a,a
+        ld (mid_w),a
+        ld d,OVER_ROW
+        push hl
+        push de
+        ld ix,stars
+        ld b,STARS
+.s:     push de
+        ld d,(ix+STAR.X)
+        ld e,(ix+STAR.Y)
+        call over_cell
+        pop de
+        jr nc,.sn
+        ld (ix+STAR.ON),0
+.sn:    ld de,STAR
+        add ix,de
+        djnz .s
+        pop de
+        pop hl
+        ld c,TEXT_COLOR*16+BG_COLOR
+        jp print_text
+        assert OVER_COL > 0 && BONUS_COL > 0
+
+; The boss's bonus text, if it shows, gone (blank cells), and its cells
+; free again; with over_text set (GAME OVER about to take its place), not
+; the cells GAME OVER will cover (the work fits a frame on the Expert)
+bonus_erase:
+        ld a,(bonus_text)
+        or a
+        ret z
+        xor a
+        ld (bonus_text),a
+        ld (mid_text),a
+        ld de,OVER_ROW*256+BONUS_COL*8
+        ld b,BONUS_LEN
+        ld c,TEXT_COLOR*16+BG_COLOR
+.c:     ld a,(over_text)
+        or a
+        jr z,.blank
+        ld a,e
+        sub OVER_COL*8
+        cp OVER_LEN*8
+        jr c,.skip              ; (GAME OVER's)
+.blank: push bc
+        ld hl,SPACE_TEXT
+        call print_text
+        pop bc
+        djnz .c
+        ret
+.skip:  ld a,e
+        add a,8
+        ld e,a
+        djnz .c
+        ret
+        assert OVER_COL >= BONUS_COL && OVER_COL+OVER_LEN <= BONUS_COL+BONUS_LEN
 
 ; HL = the incoming ship's art's left column (-SHIP_ART_W..256, signed)
 call_pos:
@@ -3860,7 +4462,13 @@ build_sat:
         ld de,4
         add hl,de
 .form:  ld de,enemy_sat         ; the enemies: pair k's entries 2k and 2k+1
-        ld ix,enemies
+        ld a,(boss_st)          ; (the boss: in their entries, all gone then)
+        dec a
+        cp BS_BONUS-BS_FIGHT
+        jr nc,.pairs
+        call boss_sat
+        jr .turn
+.pairs: ld ix,enemies
         ld b,FORM_PAIRS_N
 .pair:  push bc
         ld a,(ix+EN.ST)
@@ -3880,7 +4488,7 @@ build_sat:
         add ix,bc
         pop bc
         djnz .pair
-        ld hl,sat_flip          ; every other frame the SAT reversed (upload_sat) ...
+.turn:  ld hl,sat_flip          ; every other frame the SAT reversed (upload_sat) ...
         ld a,(hl)
         xor 1
         ld (hl),a
@@ -4321,6 +4929,8 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 dw BONUS_60
                 dw TITLE_WAIT_MS*60/1000, ATTRACT_MS*60/1000
                 db ATTRACT_THINK_MS*60/1000
+                db BOSS_SPEED/60, BOSS_SPEED%60
+                db BONUS_TEXT_MS*60/1000
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
@@ -4334,7 +4944,10 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
                 dw BONUS_50
                 dw TITLE_WAIT_MS*50/1000, ATTRACT_MS*50/1000
                 db ATTRACT_THINK_MS*50/1000
+                db BOSS_SPEED/50, BOSS_SPEED%50
+                db BONUS_TEXT_MS*50/1000
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
+        assert BONUS_TEXT_MS*60%1000 == 0 && BONUS_TEXT_MS*50%1000 == 0 && BONUS_TEXT_MS*60/1000 < 256 && BONUS_TEXT_MS > 0
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
         assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0
         assert WAVE_DELAY_MS*60%1000 == 0 && WAVE_DELAY_MS*50%1000 == 0
@@ -4350,6 +4963,12 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
 FORM_COLORS:    db FORM_COLOR_LIST
 FORM_COLORS_N   equ $-FORM_COLORS
         assert FORM_COLORS_N <= 16 && form_art_b == form_art_t+1
+
+BOSS_COLORS:    db FORM_COLOR_REDDENING
+BOSS_COLORS_N   equ $-BOSS_COLORS
+BOSS_AFTERS:    db BOSS_AFTER_LIST
+BOSS_AFTERS_N   equ $-BOSS_AFTERS
+        assert BOSS_COLORS_N > 0 && BOSS_AFTERS_N > 0
 
 EB_PCTS:        db EB_SPEED_LIST
 EB_PCTS_N       equ $-EB_PCTS
@@ -4369,24 +4988,29 @@ URL_LEN         equ $-URL_TEXT-1
 OVER_TEXT:      db "GAME OVER",0
 OVER_LEN        equ $-OVER_TEXT-1
 SPACE_TEXT:     db " ",0
+BONUS_TEXT:     db "BONUS 000 POINTS",0     ; (its digits: the points)
+BONUS_LEN       equ $-BONUS_TEXT-1
+BONUS_DIGITS    equ 6               ; the points' first digit in it
 
 ; The points (BCD words) for 0..FRONT_MAX living ships: a break-up's, a
-; free enemy's
+; free enemy's, the boss's
         macro BCD16 val
         assert (val) < 10000
         dw ((val)/1000%10)*4096 + ((val)/100%10)*256 + ((val)/10%10)*16 + (val)%10
         endm
         macro PTS_FOR pct
-        assert BREAK_PTS*(pct)%100 == 0 && FREE_PTS*(pct)%100 == 0
+        assert BREAK_PTS*(pct)%100 == 0 && FREE_PTS*(pct)%100 == 0 && BOSS_PTS*(pct)%100 == 0
+        assert BOSS_PTS*(pct)/100 >= 100 && BOSS_PTS*(pct)/100 < 1000   ; (three digits in its text)
         BCD16 BREAK_PTS*(pct)/100
         BCD16 FREE_PTS*(pct)/100
+        BCD16 BOSS_PTS*(pct)/100
         endm
 PTS:    PTS_FOR SHARE_1         ; (none: as one)
         PTS_FOR SHARE_1
         PTS_FOR SHARE_2
         PTS_FOR SHARE_3
         PTS_FOR SHARE_4
-        assert $-PTS == (FRONT_MAX+1)*4 && PTS_FREE == 2
+        assert $-PTS == (FRONT_MAX+1)*6 && PTS_FREE == 2 && PTS_BOSS == 4
 
         if ($ & 0FFh) > 100h-24     ; (PIXEL_BIT and BL_MASKS in one 256-byte page)
         ds 100h-($ & 0FFh),0FFh

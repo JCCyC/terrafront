@@ -153,6 +153,7 @@ debug set_bp $sym(collide) {} { set ::cfront [front_now] ; set ::in_col 1 }
 # the score in RAM (BCD) against the model's sum (99999999 at most), and
 # on frames it changed (and the next) its cells on the top status row
 set SHARES {100 100 80 60 50}
+set sc_boss 0
 set score_model 0 ; set sc_calls {} ; set in_col 0 ; set sc_prev {}
 set sc_bad 0 ; set sc_first "" ; set sc_shown 0 ; set sc_hist [dict create] ; set sc_vram 0
 proc sc_bad {s} { if {!$::sc_bad} { set ::sc_first "frame $::n: $s" } ; incr ::sc_bad }
@@ -163,12 +164,18 @@ proc living {fr} {
 	return $a
 }
 proc ships_in {a} { set c 0 ; for {set k 0} {$k < 4} {incr k} { incr c [expr {$a >> $k & 1}] } ; return $c }
+# (the boss's bonus: with the front's living ships as it died, kept in
+# boss_alive; boss_frame checks that against its death)
 debug set_bp $sym(score_add) {} {
 	if {!$::started} return
-	set want [living [expr {$::in_col ? $::cfront : [front_now]}]]
-	set kind [expr {[reg B] == $::sym(PTS_BREAK) ? "break" : ([reg B] == $::sym(PTS_FREE) ? "free" : "?[reg B]")}]
-	if {[reg A] != $want} { sc_bad "score_add ($kind, [expr {$::in_col ? "a crash" : "a bullet"}]) with ships [reg A], want $want" }
-	lappend ::sc_calls [list $kind [ships_in $want] $::in_col]
+	set kind [expr {[reg B] == $::sym(PTS_BREAK) ? "break" : ([reg B] == $::sym(PTS_FREE) ? "free" : ([reg B] == $::sym(PTS_BOSS) ? "boss" : "?[reg B]"))}]
+	if {$kind eq "boss"} {
+		set want [m boss_alive] ; set col 0
+	} else {
+		set want [living [expr {$::in_col ? $::cfront : [front_now]}]] ; set col $::in_col
+	}
+	if {[reg A] != $want} { sc_bad "score_add ($kind, [expr {$col ? "a crash" : "a bullet"}]) with ships [reg A], want $want" }
+	lappend ::sc_calls [list $kind [ships_in $want] $col]
 }
 proc score_str {v} { format %8d $v }
 proc score_ram {} {
@@ -188,11 +195,11 @@ proc score_frame {} {
 			if {$p < 2 && $c >= 2} { incr frees }
 		}
 	}
-	set nb 0 ; set nf 0 ; set old $::score_model
+	set nb 0 ; set nf 0 ; set ::sc_boss 0 ; set old $::score_model
 	foreach c $::sc_calls {
 		lassign $c kind ships col
 		set pct [lindex $::SHARES $ships]
-		if {$kind eq "break"} { incr nb ; set pts [expr {50*$pct/100}] } elseif {$kind eq "free"} { incr nf ; set pts [expr {100*$pct/100}] } else { sc_bad "score_add with B = $kind" ; continue }
+		if {$kind eq "break"} { incr nb ; set pts [expr {50*$pct/100}] } elseif {$kind eq "free"} { incr nf ; set pts [expr {100*$pct/100}] } elseif {$kind eq "boss"} { incr ::sc_boss ; set pts [expr {500*$pct/100}] } else { sc_bad "score_add with B = $kind" ; continue }
 		dict incr ::sc_hist "$kind/$ships[expr {$col ? "/crash" : ""}]"
 		set ::score_model [expr {$::score_model + $pts > 99999999 ? 99999999 : $::score_model + $pts}]
 	}
@@ -233,6 +240,7 @@ proc frame {} {
 	if {[info exists ::bw]} { lappend ::bw [list [sate $::bwslot 0] [sate $::bwslot 2]] }
 	if {$::eb_expect ne ""} { eb_bad "a roll for a bullet hit, with room and enemies able to shoot ($::eb_expect), but none fired" ; set ::eb_expect "" }
 	set ::eb_rolled_now $::eb_rolled ; set ::eb_rolled 0
+	if {$::bwatch} { try boss_frame }   ;# (before eb_frame: its spawns)
 	if {$::ebon} { try eb_frame }
 	if {[info exists ::lv_on]} { try lv_frame }
 	if {$::cs_on} { try cs_frame }
@@ -894,7 +902,21 @@ set bitmap_lit 0
 set star_hidden 0
 set bitmap_skip 0
 set bitmap_shared 0
+# The middle text's cells (the boss's bonus; checked by boss_frame), as it
+# shows now and as it showed last frame (the frame it goes, the bullets in
+# them are drawn only from the next on), are left out
+set mid_prev {}
+proc mid_cells {} {
+	set r {}
+	if {[m mid_text]} {
+		for {set x [m mid_x0]} {$x < [m mid_x0] + [m mid_w]} {incr x 8} { lappend r $x }
+	}
+	return $r
+}
 proc check_bitmap {} {
+	set mid [lsort -unique [concat [mid_cells] $::mid_prev]]
+	set ::mid_prev [mid_cells]
+	set midrow [expr {$::sym(OVER_ROW)*8}]
 	if {$::n == 1} return   ;# before the main loop's first frame: no star drawn yet
 	if {$::bitmap_skip} { set ::bitmap_skip 0 ; return }   ;# put_star0 just undrew star 0
 	set bad0 {}
@@ -920,6 +942,7 @@ proc check_bitmap {} {
 	set i 0
 	foreach e [star_list] {
 		lassign $e x y on
+		if {$y >= $midrow && $y < $midrow + 8 && ($x & 0xF8) in $mid} { incr i ; continue }
 		set hid [bullet_in $x $y]
 		if {$hid} { incr ::star_hidden ; if {$i == 0} { incr ::star0_hid } }
 		if {$on == $hid} { lappend bad0 "star $i on $on" }
@@ -939,6 +962,12 @@ proc check_bitmap {} {
 	}
 	incr ::bitmap_frames
 	incr ::bitmap_lit [dict size $got]
+	foreach x $mid {
+		for {set y 0} {$y < 8} {incr y} {
+			set a [expr {$::sym(OVER_ROW)*256 + $x + $y}]
+			dict unset want $a ; dict unset got $a
+		}
+	}
 	set bad $bad0
 	dict for {a b} $want { if {![dict exists $got $a] || [dict get $got $a] != $b} { lappend bad $a } }
 	dict for {a b} $got { if {![dict exists $want $a]} { lappend bad $a } }
@@ -1959,6 +1988,7 @@ proc enemy_end {} {
 	# the bonus ships: 2 in reserve (RAM); wave 2 lost ships (the staged
 	# collisions), the rest none but the one key 1 kills in wave 10
 	debug write memory $::sym(reserves) 2
+	set ::bwatch 1
 	wave_step
 }
 # The lists' turns: the test makes every enemy gone (EN.ST = EN_GONE in
@@ -1973,37 +2003,46 @@ proc wave_step {} {
 		for {set i 0} {$i < 8} {incr i} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 5 }
 	}
 	at [expr {$::n + 1 + $::wdelay}] {
-		eb_set [eb_some 3]     ;# (in flight as the next wave begins: they must go)
+		eb_set [eb_some 3]     ;# (in flight as the next wave, or the boss, begins: they must go)
 		if {[m form_enemy] != ($::waves % 10) || [m wave_wait] != 1} { wave_bad "wave [expr {$::waves + 1}]: began before its wait was over (enemy [m form_enemy], wave_wait [m wave_wait])" }
 	}
-	at [expr {$::n + 2 + $::wdelay}] {
-		incr ::waves
-		set w $::waves
-		set we [expr {$w % 10}] ; set wc [expr {$w % 9}]
-		set sts {}
-		for {set i 0} {$i < 8} {incr i} { lappend sts [lindex [en_state $i] 0] }
-		set bad [form_pattern_bad]
-		if {[m form_enemy] != $we || [m form_cidx] != $wc || [m form_color] != [lindex $::COLS $wc] || $sts ne {0 0 0 0 0 0 0 0} || [llength $bad]} {
-			wave_bad "wave $w: enemy [m form_enemy], colour [m form_color], states $sts, VRAM wrong: $bad (want enemy $we, colour [lindex $::COLS $wc])"
+	# after waves 5 and 10 of a level, the boss (boss_frame: the next wave
+	# once it's over)
+	if {$::waves % 10 == 4 || $::waves % 10 == 9} {
+		at [expr {$::n + 2 + $::wdelay}] {
+			if {[m boss_st] != 1 || [m form_enemy] != $::waves % 10} { wave_bad "wave [expr {$::waves + 1}]'s end: no boss (boss_st [m boss_st], enemy [m form_enemy])" ; wave_after }
 		}
-		if {[m wave_n] != $w} { wave_bad "wave $w: wave_n [m wave_n]" }
-		set bad [lw_bad [lw_str $w]]
-		if {[llength $bad]} { wave_bad "wave $w: the top status row isn't \"[lw_str $w]\" (wrong: [lrange $bad 0 5])" }
-		lappend ::wseq "[m form_enemy]/[m form_color]"
-		if {$w == 9} { kdown 1 ; at [expr {$::n + 1}] { kup 1 } }   ;# (wave 10: a ship lost)
-		if {$w < 20} { wave_step } else {
-			check {[llength [lw_bad "L3 W1"]] == 0 && [lw_str 9] eq "L1 W10" && [lw_str 10] eq "L2 W1"} "wave 21: \"L3 W1\" on the top status row's left, the rest blank but the score (\"L2 W10\"'s last cell gone)"
-			set want {1:lost 2:1 3:+1 4:1 5:+1 6:1 7:+1 8:1 9:lost 10:1 11:+1 12:1 13:full 14:1 15:full 16:1 17:full 18:1 19:full}
-			set got [lrange $::bseq end-18 end]
-			set bf [expr {$::F == 60 ? 15 : 13}]
-			# (+1 or full: by the reserve then, which the run's randomness can
-			# change, e.g. a forced call-up as the test writes the reserve;
-			# bonus_frame checks each against RAM)
-			set gotb [string map {+1 B full B} $got] ; set wantb [string map {+1 B full B} $want]
-			check {$gotb eq $wantb && [lsearch $got *:full] >= 0 && $::bonus_bad == 0 && $::b_awards >= 3 && $::b_vram == $::b_awards && [lsort -unique $::beepruns] eq $bf && [llength $::beepruns] == $::b_awards && $::beepshot > 0} "bonus ships: 2 waves in a row with no ship lost, a reserve ship more (none at RESERVE_MAX; a ship lost starts the count again), shown in the reserve that frame, the happy beep on channel A as the BONUS table every frame ($bf frames, [format %.2f [expr {double($bf)/$::F}]] s; $::beepshot of them over a shot) (waves 2..20 at wave_n:streak/lost/+1/full: $got; $::b_awards bonus ships, beeps $::beepruns; [expr {$::bonus_bad ? "first wrong: $::bonus_first" : "none wrong"}])"
-			check {$::wave_bad == 0} "waves 3..21 (enemy/colour; the level and wave on the top status row: L1 W1 .. L1 W10, L2 W1 ..): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
-			at [expr {$::n + 3}] plan_eb_levels    ;# (after this wave's wipe of the test's bullets)
-		}
+	} else { at [expr {$::n + 2 + $::wdelay}] wave_after }
+}
+# A wave began this frame (its enemy, colour, patterns, level text; the next)
+proc wave_after {} {
+	incr ::waves
+	set w $::waves
+	set we [expr {$w % 10}] ; set wc [expr {$w % 9}]
+	set sts {}
+	for {set i 0} {$i < 8} {incr i} { lappend sts [lindex [en_state $i] 0] }
+	set bad [form_pattern_bad]
+	if {[m form_enemy] != $we || [m form_cidx] != $wc || [m form_color] != [lindex $::COLS $wc] || $sts ne {0 0 0 0 0 0 0 0} || [llength $bad]} {
+		wave_bad "wave $w: enemy [m form_enemy], colour [m form_color], states $sts, VRAM wrong: $bad (want enemy $we, colour [lindex $::COLS $wc])"
+	}
+	if {[m wave_n] != $w} { wave_bad "wave $w: wave_n [m wave_n]" }
+	set bad [lw_bad [lw_str $w]]
+	if {[llength $bad]} { wave_bad "wave $w: the top status row isn't \"[lw_str $w]\" (wrong: [lrange $bad 0 5])" }
+	lappend ::wseq "[m form_enemy]/[m form_color]"
+	if {$w == 9} { kdown 1 ; at [expr {$::n + 1}] { kup 1 } }   ;# (wave 10: a ship lost)
+	if {$w < 20} { wave_step } else {
+		check {[llength [lw_bad "L3 W1"]] == 0 && [lw_str 9] eq "L1 W10" && [lw_str 10] eq "L2 W1"} "wave 21: \"L3 W1\" on the top status row's left, the rest blank but the score (\"L2 W10\"'s last cell gone)"
+		set want {1:lost 2:1 3:+1 4:1 5:+1 6:1 7:+1 8:1 9:lost 10:1 11:+1 12:1 13:full 14:1 15:full 16:1 17:full 18:1 19:full}
+		set got [lrange $::bseq end-18 end]
+		set bf [expr {$::F == 60 ? 15 : 13}]
+		# (+1 or full: by the reserve then, which the run's randomness can
+		# change, e.g. a forced call-up as the test writes the reserve;
+		# bonus_frame checks each against RAM)
+		set gotb [string map {+1 B full B} $got] ; set wantb [string map {+1 B full B} $want]
+		check {$gotb eq $wantb && [lsearch $got *:full] >= 0 && $::bonus_bad == 0 && $::b_awards >= 3 && $::b_vram == $::b_awards && [lsort -unique $::beepruns] eq $bf && [llength $::beepruns] == $::b_awards && $::beepshot > 0} "bonus ships: 2 waves in a row with no ship lost, a reserve ship more (none at RESERVE_MAX; a ship lost starts the count again), shown in the reserve that frame, the happy beep on channel A as the BONUS table every frame ($bf frames, [format %.2f [expr {double($bf)/$::F}]] s; $::beepshot of them over a shot) (waves 2..20 at wave_n:streak/lost/+1/full: $got; $::b_awards bonus ships, beeps $::beepruns; [expr {$::bonus_bad ? "first wrong: $::bonus_first" : "none wrong"}])"
+		check {$::wave_bad == 0} "waves 3..21 (enemy/colour; the level and wave on the top status row: L1 W1 .. L1 W10, L2 W1 ..): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
+		boss_end
+		at [expr {$::n + 3}] plan_eb_levels    ;# (after this wave's wipe of the test's bullets)
 	}
 }
 
@@ -2034,6 +2073,237 @@ proc vis_frame {} {
 	}
 	incr ::frontcrowd $fc
 	set ::vprevhid $hid
+}
+
+
+# ---- The boss ----------------------------------------------------------------
+# From the spec: after waves 5 and 10 of a level, the boss (images/boss.png,
+# 64 x 16, four sprites; its art from BOSS_PATTERN) on the playfield's
+# first lines, cruising left and right 32 px from either edge (columns
+# 32..160), one way in 4 s (32 px/s, from the left end going right); its
+# bullets rain from a random column of its lower edge (their top on line
+# 24) at the last wave's speed, at the rate that keeps 5 in flight: one
+# every gap px they move (gap = ceil((158 + the longest step - 1) / 5): a
+# bullet goes after 158 px); it starts in FORM_COLOR_REDDENING's first
+# colour, every 10 hits the next; 10 hits in the last: it dies, booming as
+# 8 ship booms side by side (in its colour, the ship's boom frame counts);
+# then "BONUS ddd POINTS" (500 by the front's share as it died) in the
+# screen's middle for 2 s; then the points, and the next wave.
+set REDDEN {5 7 3 2 10 11 9 8 13}
+set bwatch 0 ; set bosses 0 ; set bshots_now 0 ; set boffs {} ; set bfront_n {4 1 2 3}
+set bbad 0 ; set bfirst "" ; set bm {} ; set bhist {} ; set bres {} ; set bdead_alive -1
+proc bbad {s} { if {!$::bbad} { set ::bfirst "frame $::n: $s" } ; incr ::bbad }
+proc bpx {x l} {
+	# the boss's art pixel in its column x (0..63), row l
+	expr {([m BOSS_PATTERN [expr {($x >> 3)*16 + $l}]] >> (7 - $x % 8)) & 1}
+}
+proc bstep_x {k} {
+	set d [expr {32*$k / $::F}] ; set p [expr {$d % 256}]
+	expr {32 + ($p <= 128 ? $p : 256 - $p)}
+}
+proc bgap {} {
+	lassign [eb_spec [m wave_n]] pct
+	set smax [expr {(230*$pct + 100*$::F - 1) / (100*$::F)}]
+	expr {(158 + $smax - 1 + 4) / 5}
+}
+# the boss's bullet fired: its place (HL), under its art, from one of its columns
+debug set_bp $sym(boss_fire.shoot) {} {
+	if {!$::started} return
+	set hl [reg HL]
+	set b [list [debug read memory $hl] [debug read memory [expr {$hl+1}]]]
+	set o [expr {[lindex $b 1] - [m boss_x]}]
+	if {[lindex $b 0] != 24 || $o < 0 || $o > 63} { bbad "a boss bullet at $b (boss at [m boss_x])" }
+	lappend ::boffs $o
+	lappend ::eb_spawned $b
+	incr ::bshots_now
+}
+debug set_bp $sym(boss_dies) {} { if {$::started} { set ::bdead_alive [living [front_now]] } }
+proc vols {} {
+	set r {}
+	for {set i 0} {$i < $::sym(MAX_VOLLEYS)} {incr i} {
+		set v {} ; for {set k 0} {$k <= 4} {incr k} { lappend v [m volleys [expr {$i*$::VOL + $k}]] }
+		lappend r $v
+	}
+	return $r
+}
+# The boss's SAT entries ({x name colour}, sorted) in the SAT shown, and as
+# its state {st x colour} wants them
+proc boss_sat_got {} {
+	set r {}
+	for {set e 0} {$e < 13} {incr e} { if {[sat [expr {4*$e}]] == 7} { lappend r [list [sat [expr {4*$e+1}]] [sat [expr {4*$e+2}]] [sat [expr {4*$e+3}]]] } }
+	lsort $r
+}
+proc boss_sat_want {st x c} {
+	set r {}
+	if {$st >= 1 && $st <= 4} {
+		set nm [expr {$st == 1 ? 32 : 48 + 16*($st - 2)}]
+		for {set k 0} {$k < 4} {incr k} { lappend r [list [expr {$x + 16*$k}] [expr {$nm + 4*$k}] $c] }
+	}
+	lsort $r
+}
+proc set_front {k x} {
+	foreach {v f} [list [expr {(1 << $k) - 1}] front_mask $k front_slots [expr {$k*$::W}] front_w $x ship_x] { debug write memory $::sym($f) $v }
+	for {set i 0} {$i < 4} {incr i} { debug write memory [expr {$::sym(boom_stage) + $i}] 0 ; debug write memory [expr {$::sym(boom_left) + $i}] 0 }
+}
+# Every frame of the waves' part: the boss against the model (::bm: its
+# state after the last frame's work), the test fighting it
+proc boss_frame {} {
+	set st [m boss_st]
+	if {![llength $::bm]} {
+		if {$st} { bbad "a boss with none expected (wave [m wave_n])" }
+		set ::bm [list 0] ; return
+	}
+	lassign $::bm pst px pc
+	# the SAT shown: built after the last frame's work
+	set sw [expr {$pst ? [boss_sat_want $pst $px $pc] : {}}]
+	set sg [boss_sat_got]
+	if {$sg ne $sw} { bbad "the SAT's boss entries $sg, want $sw" }
+	if {$pst == 0} {
+		if {!$st} return
+		# it began this frame (instead of the next wave)
+		incr ::bosses
+		set ::b0 $::n ; set ::bacc 0 ; set ::bgap [bgap] ; set ::bdrop0 $::dropped
+		set ::bhits 0 ; set ::bcidx 0 ; set ::bshots 0 ; set ::bmin 9 ; set ::bmax 0 ; set ::bhist {} ; set ::btext 0 ; set ::bdead_alive -1
+		set ::bwave [list [m form_enemy] [m wave_n] [m level]]
+		set bad {}
+		for {set i 0} {$i < 16*32} {incr i} {
+			if {[debug read VRAM [expr {0x3800 + 32*8 + $i}]] != [m BOSS_PATTERN $i]} { lappend bad $i ; break }
+		}
+		if {[m boss_x] != 32 || [m boss_dir] || [m boss_hits] || [m boss_cidx] || [m boss_color] != 5 || [m boss_gap] != $::bgap || $st != 1 || [m form_enemy] % 5 != 4 || [llength $bad]} {
+			bbad "boss [expr {$::bosses}] began: st $st x [m boss_x] dir [m boss_dir] hits [m boss_hits]/[m boss_cidx] colour [m boss_color] gap [m boss_gap] (want 32 0 0/0 5 $::bgap), after wave [expr {[m form_enemy] + 1}], patterns wrong at $bad"
+		}
+		set ::bm [list 1 [m boss_x] [m boss_color]]   ;# (as this frame's SAT has it: before the writes)
+		# the fight: a front of 4, 1, 2, 3 ships (bosses 1..4); boss 1
+		# fought all through (the score 0 first), the others with 1 hit left
+		set k [lindex $::bfront_n [expr {($::bosses - 1) % 4}]]
+		set_front $k [expr {[m boss_x] + 32 - $k*$::W/2}]
+		if {$::bosses == 1} {
+			foreach i {0 1 2 3} { debug write memory [expr {$::sym(score) + $i}] 0 }
+			debug write memory $::sym(score_dirty) 1
+			set ::score_model 0 ; set ::sc_shown 1
+		} else {
+			debug write memory $::sym(boss_hits) 9 ; debug write memory $::sym(boss_cidx) 8 ; debug write memory $::sym(boss_color) 13
+			set ::bhits 9 ; set ::bcidx 8
+		}
+		set ::bvprev [vols]
+		set ::bshots_now 0
+		return
+	}
+	set k [expr {$::n - $::b0}]
+	if {$pst == 1} {
+		# this frame's hits: each bullet of the last frame's volleys, in
+		# order, over the lines it covered (its new top to its old bottom)
+		# against the art where the boss showed
+		set step [m bullet_step]
+		set mst 1 ; set gone {}
+		set vi 0
+		foreach v $::bvprev {
+			lassign $v y
+			if {$y} {
+				for {set j 1} {$j <= 4} {incr j} {
+					set x [lindex $v $j]
+					if {!$x || $mst != 1} continue
+					set c [expr {$x - $px}]
+					if {$c < 0 || $c > 63} continue
+					set hit 0
+					for {set l [expr {$y - $step}]} {$l <= $y + 2} {incr l} {
+						if {$l >= 8 && $l < 24 && [bpx $c [expr {$l - 8}]]} { set hit 1 ; break }
+					}
+					if {!$hit} continue
+					lappend gone [list $vi $j $y $x]
+					incr ::bhits_all
+					if {[incr ::bhits] == 10} {
+						set ::bhits 0
+						if {[incr ::bcidx] == 9} { set mst 2 }
+					}
+				}
+			}
+			incr vi
+		}
+		set cur [vols]
+		foreach g $gone {
+			lassign $g vi j y x
+			set v [lindex $cur $vi]
+			if {[lindex $v 0] == $y - $step && [lindex $v $j] == $x} { bbad "a bullet that hit the boss flies on ($v)" }
+		}
+		set wc [expr {$mst == 1 ? [lindex $::REDDEN $::bcidx] : 13}]
+		if {$st != $mst || ($mst == 1 && ([m boss_hits] != $::bhits || [m boss_cidx] != $::bcidx)) || [m boss_color] != $wc} {
+			bbad "the boss after its hits: st $st hits [m boss_hits]/[m boss_cidx] colour [m boss_color], want $mst $::bhits/$::bcidx $wc"
+		}
+		if {$mst == 2 && $::bdead_alive != [m boss_alive]} { bbad "the boss died with the front's living ships $::bdead_alive, boss_alive [m boss_alive]" }
+		# its rain: one every gap px the bullets moved, while it fights
+		set want 0
+		if {$mst == 1} {
+			incr ::bacc [m eb_step]
+			if {$::bacc >= $::bgap} { incr ::bacc -$::bgap ; set want 1 }
+		}
+		if {$::bshots_now != $want} { bbad "$::bshots_now boss bullets fired, want $want (acc $::bacc, gap $::bgap)" }
+		incr ::bshots $::bshots_now
+		set live [eb_live]
+		if {$live > 5} { bbad "$live boss bullets in flight" }
+		if {$::bshots > 5 && $mst == 1} {
+			if {$live < $::bmin} { set ::bmin $live }
+			if {$live > $::bmax} { set ::bmax $live }
+		}
+		# its move: 32 px/s, back from either end
+		if {$mst == 1 && [m boss_x] != [bstep_x $k]} { bbad "the boss at [m boss_x], want [bstep_x $k] ([format %.2f [expr {double($k)/$::F}]] s in)" }
+		if {$mst == 1} { boss_hunt } else { keys 0 }
+	}
+	set ::bshots_now 0
+	if {$st >= 2} { lappend ::bhist $st }
+	# its bonus text
+	set pts [expr {500*[lindex $::SHARES [ships_in [m boss_alive]]]/100}]
+	if {$st == 5 && ![m over_text]} {
+		incr ::btext
+		set bad [text_bad $::sym(OVER_ROW) 8 "BONUS $pts POINTS" 16]
+		if {[llength $bad] || ![m mid_text] || [m mid_x0] != 64 || [m mid_w] != 128} { bbad "the bonus text isn't \"BONUS $pts POINTS\" in row 12 from column 8 (wrong: [lrange $bad 0 3]; mid [m mid_text] [m mid_x0] [m mid_w])" }
+	}
+	if {$pst == 5 && $st != 5} {
+		# its end: the text gone, the points; the next wave the next frame
+		set bad [text_bad $::sym(OVER_ROW) 8 "" 16]
+		if {[llength $bad] || [m mid_text]} { bbad "the bonus text not gone (wrong: [lrange $bad 0 3])" }
+		if {$::sc_boss != 1} { bbad "$::sc_boss boss scores at its end" }
+		if {$st != 7} { bbad "the bonus over: boss_st $st, want 7 (the next wave next frame)" }
+		eb_set [eb_some 3]     ;# (in flight as the next wave begins: they must go)
+		set ::bm [list $st 0 0]
+		return
+	} elseif {$::sc_boss} { bbad "$::sc_boss boss scores in state $st" }
+	if {$pst == 7} {
+		if {$st} { bbad "the next wave not begun after the bonus (boss_st $st)" }
+		set F $::F
+		set runs [st_runs $::bhist]
+		set want [list 2 [expr {$F == 60 ? 6 : 5}] 3 [expr {$F == 60 ? 4 : 3}] 4 [expr {$F == 60 ? 5 : 4}] 5 [expr {2*$F}] 7 1]
+		lassign $::bwave we wn wl
+		set ok [expr {$runs eq $want && $::btext == 2*$F && ($::bshots <= 5 || $::bmin >= 4 && $::bmax == 5) && $::dropped == $::bdrop0}]
+		lappend ::bres [list $::bosses [ships_in [m boss_alive]] $pts $k $ok]
+		if {$::bosses == 1} {
+			set ::b1 [list $runs $want $::bhits_all $::bshots $::bmin $::bmax $::btext [expr {$::dropped - $::bdrop0}] $::score_model]
+		}
+		if {!$ok} { bbad "boss $::bosses: states $runs (want $want), text $::btext frames, $::bmin..$::bmax bullets in flight, [expr {$::dropped - $::bdrop0}] frames dropped" }
+		set ::bm [list 0]
+		wave_after
+		return
+	}
+	if {$st == 0 && $pst != 7} { bbad "the boss gone in state $pst" }
+	set ::bvprev [vols]
+	set ::bm [list $st [m boss_x] [m boss_color]]
+}
+set bhits_all 0
+# The test fights the boss: the front's middle under the boss's, fire
+# pressed every other frame
+proc boss_hunt {} {
+	set t [expr {[m boss_x] + 32 - [m front_w]/2}]
+	set x [m ship_x]
+	set k [expr {$x < $t - 1 ? 0x80 : ($x > $t + 1 ? 0x10 : 0)}]
+	if {$::n % 2} { set k [expr {$k | 0x01}] }
+	keys $k
+}
+proc boss_end {} {
+	set ::bwatch 0
+	set offs [lsort -integer -unique $::boffs]
+	check {$::bbad == 0 && $::bosses == 4} "bosses after waves 5, 10, 15 and 20 = the model every frame: its sprites (patterns, colour, place), 32 px/s between columns 32 and 160, its rain (one every gap px, 5 in flight at most, 4 or 5 once it's going), the hits (each bullet on its art: gone; every 10 the next colour of 5 7 3 2 10 11 9 8 13; 10 in 13: it dies), its booms, \"BONUS ddd POINTS\" for 2 s, its points by the front's share as it died, the next wave ($::bosses bosses: {boss ships points frames ok} $::bres; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
+	lassign $::b1 runs want hits shots mn mx txt drop sc
+	check {$hits == 90 && $sc == 250 && [llength $offs] >= 32 && [lindex $offs 0] >= 0 && [lindex $offs end] <= 63} "boss 1, fought through by a 4-ship front: 90 hits ([expr {$hits}]), states $runs (want $want), $shots bullets from [llength $offs] of its 64 columns ($mn..$mx in flight), the bonus text $txt frames, the score 0 + 250 = $sc, $drop frames dropped"
 }
 
 # ---- The enemies' bullets ---------------------------------------------------
@@ -2208,6 +2478,7 @@ proc eb_frame {} {
 		}
 		set n [eb_live]
 		lassign [eb_spec [m wave_n]] - mx2
+		if {[m boss_st] || $::eb_began} { set mx2 $::sym(EB_N) }   ;# (the boss's, till the next wave's wipe)
 		if {$n > $mx2} { eb_bad "$n in flight, wave [m wave_n]'s most $mx2" }
 		if {![dict exists $::eb_maxseen $mx2] || $n > [dict get $::eb_maxseen $mx2]} { dict set ::eb_maxseen $mx2 $n }
 	}
@@ -2482,8 +2753,31 @@ proc plan_over {g} {
 	if {[m call_on]} { at [expr {$::n+1}] [list plan_over $g] ; return }
 	set ::games $g
 	debug write memory $::sym(reserves) [expr {$g == 1 ? 1 : 0}]
+	if {$g == 3} { stage_bonus_over ; return }
 	set ::ostate [expr {$g == 1 ? "kill" : "wait"}]
 	kill_all
+}
+# Game over 3 comes during a boss's bonus text: the boss written in its
+# last boom image's last frame (a one-ship front as it died: 500 points);
+# the next frame its text shows; then the front killed: GAME OVER takes its
+# place (the text's other cells blank), the bonus runs on unseen: 2 s after
+# its text came, the points and the next wave (L1 W2), GAME OVER intact
+set obonus 0
+proc stage_bonus_over {} {
+	foreach {f v} {boss_st 4 boss_left 1 boss_alive 1 boss_x 96 boss_color 13} { debug write memory $::sym($f) $v }
+	set ::obonus 1 ; set ::ob0 $::n ; set ::osc0 $::score_model
+	at [expr {$::n + 1}] {
+		set bad [text_bad $::sym(OVER_ROW) 8 "BONUS 500 POINTS" 16]
+		check {![llength $bad] && [m bonus_text] && [m boss_st] == 5} "game over 3, staged: the boss's last boom over, \"BONUS 500 POINTS\" (one ship) in the screen's middle (wrong: [lrange $bad 0 5])"
+		set ::ostate wait
+		kill_all
+	}
+	at [expr {$::n + 1 + 2*$::F}] {
+		set ::obonus_mid [list [m boss_st] [m form_enemy] [expr {$::score_model - $::osc0}]]
+	}
+	at [expr {$::n + 2 + 2*$::F}] {
+		set ::obonus_end [list {*}$::obonus_mid [m boss_st] [m form_enemy]]
+	}
 }
 # Every frame from plan_over until game over begins
 proc over_frame {} {
@@ -2504,6 +2798,10 @@ proc over_frame {} {
 			set ::N0 $::n ; set ::odropped $::dropped ; set ::ostate on
 			check {![m call_on] && [m reserves] == 0 && [m over_on]} "game over $::games: the front emptied with none in reserve (frame $::n): no call-up, game over (call_on [m call_on], over_on [m over_on])"
 			check_over_text 1 "game over $::games: \"$::OVER\" centred on the screen's middle row, white on black, from that frame"
+			if {$::obonus} {
+				set bad [text_bad $::sym(OVER_ROW) 8 "   $::OVER" 16]
+				check {![llength $bad] && ![m bonus_text] && [m boss_st] == 5} "game over 3, during the boss's bonus text: \"$::OVER\" in its place, its other cells blank, the bonus running on (boss_st [m boss_st]; wrong: [lrange $bad 0 5])"
+			}
 			set ::otext_bad 0 ; set ::otext_frames 0 ; set ::ostage 0
 			if {$::games == 1} over_plan_10 else over_plan_skip
 		}
@@ -2557,7 +2855,11 @@ proc over_restart {} {
 	set k [expr {$::n - $::N0 + 1}]
 	set ::lw_last "L[m level] W[expr {[m form_enemy] + 1}]"
 	set bad [lw_bad $::lw_last]
-	set lwant [expr {$::games > 1 ? "L1 W1" : "L3 W[expr {[m form_enemy] + 1}]"}]
+	set lwant [expr {$::games == 2 ? "L1 W1" : ($::games == 3 ? "L1 W2" : "L3 W[expr {[m form_enemy] + 1}]")}]
+	if {$::obonus} {
+		check {$::obonus_end eq {7 0 500 0 1}} "game over 3: the boss's bonus over 2 s after its text came, under GAME OVER: its 500 points, the next frame the next wave, L1 W2 (boss_st, enemy, points; boss_st, enemy the next frame: $::obonus_end)"
+		set ::obonus 0
+	}
 	check {[llength $bad] == 0 && $::lw_last eq $lwant} "game over $::games: \"$::lw_last\" (want \"$lwant\") on the top status row's left, the score \"$::score_model\" on its right (wrong: [lrange $bad 0 5])"
 	check {$::otext_bad == 0 && $::otext_frames >= $k - 1} "game over $::games: \"$::OVER\" intact every frame of it ($::otext_frames frames; [expr {$::otext_bad ? "first wrong: $::otext_first" : "none wrong"}])"
 	if {$::ostage} {
@@ -2578,7 +2880,7 @@ proc new_game_checks {} {
 	for {set i 0} {$i < 8} {incr i} { lappend en [lindex [en_state $i] 0] }
 	set st {}
 	for {set k 0} {$k < 4} {incr k} { lappend st [m boom_stage $k] }
-	check {[m front_mask] == 1 && [m ship_x] == $::sym(SHIP_X_MAX)/2 && $st eq {0 0 0 0} && [m reserves] == 4 && ![m call_on] && ![m over_on] && ![m volleys] && ![m volleys $::VOL]} "new game $::games: one ship in the middle, 4 in reserve, nothing flying, not over (mask [m front_mask], ship_x [m ship_x], [m reserves] in reserve)"
+	check {[m front_mask] == 1 && [m ship_x] == $::sym(SHIP_X_MAX)/2 && $st eq {0 0 0 0} && [m reserves] == 4 && ![m call_on] && ![m over_on] && ![m volleys] && ![m volleys $::VOL] && ![m boss_st] && ![m mid_text] && ![m bonus_text]} "new game $::games: one ship in the middle, 4 in reserve, nothing flying, no boss, not over (mask [m front_mask], ship_x [m ship_x], [m reserves] in reserve, boss_st [m boss_st])"
 	set bad [form_pattern_bad]
 	check {[m form_enemy] == 0 && [m form_cidx] == 0 && [m form_color] == 2 && ![m wave_wait] && $en eq {0 0 0 0 0 0 0 0} && [llength $bad] == 0} "new game $::games: the first wave again (enemy [m form_enemy], colour [m form_color], states $en; VRAM wrong: $bad)"
 	check {[psg 8] == 0 && [psg 9] == 0 && [psg 10] == 0} "new game $::games: silent"

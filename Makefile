@@ -23,7 +23,7 @@ $(ROM): main.asm $(INCS)
 
 build/sprites.inc: png2spr.py images/player-ship.png images/player-ship-coming.png images/reserve-ship.png \
 		images/player-ship-boom-1.png images/player-ship-boom-2.png images/player-ship-boom-3.png \
-		$(wildcard images/enemy-*.png) $(wildcard images/formation-enemy-*-color-*.png)
+		images/boss.png $(wildcard images/enemy-*.png) $(wildcard images/formation-enemy-*-color-*.png)
 	@mkdir -p build
 	python3 png2spr.py > $@
 

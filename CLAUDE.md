@@ -134,7 +134,40 @@ a reserve ship, if under `RESERVE_MAX` (5; 4 at the start) and not in game over;
 frame it shows in the reserve and a 0.25 s "happy beep" (`BONUS_60/50`:
 C6 E6 G6 C7, tone only) plays on PSG channel A (`bonus_start`, `sfx`), winning over
 the shot (whose table runs on unheard). The count (`clean_waves`) starts
-again after each pair of waves, a bonus or not (reserve full). Behind it all, 15
+again after each pair of waves, a bonus or not (reserve full).
+**Boss:** after waves 5 and 10 of a level (`BOSS_AFTER_LIST`; its last
+enemy gone, the 0.7 s wait, then `next_wave.go` calls `boss_begin`
+instead of the next wave; `boss_done` set when it's over sends the next
+`.go` on to the wave), the boss (`images/boss.png`, 64×16, four 16×16
+sprites, names 32..44, in the enemies' SAT entries) with its art's top
+on line 8, from column 32 going right, cruising between columns 32 and
+160 (`BOSS_MARGIN`) one way in 4 s (`BOSS_TRAVERSE_MS`: 32 px/s,
+Bresenham, reflected at the ends; `boss_move`, from `next_wave`). It
+rains enemy bullets (the same slots, `eb_move`, `eb_draw`, `eb_hit`; the
+last wave's speed: `wave_n` stays) from a random one of its 64 columns,
+their top on line 24 (`boss_fire`, after `enemy_fire`, which runs on
+with no enemy able): one every `boss_gap` px they move, worked out at
+its start so that `BOSS_EB_N` (5) are in flight (gap = ceil((158 + the
+longest step − 1) / 5), 32 or 33). Player bullets hit it as enemies
+(`volley_hits` → `boss_volley`, `boss_px`: a pixel of its art on a line
+the bullet covered, where it shows); colours `FORM_COLOR_REDDENING`
+(5 7 3 2 10 11 9 8 13), the next every 10 hits (`BOSS_HITS`); 10 in the
+last: it dies (`boss_dies`: `boss_alive` = the front's living ships then;
+the ship's death sound), booming as 8 ship booms side by side
+(`BOSS_BOOM_PATTERN`, png2spr.py: the 3 boom images at columns 0, 8, 16,
+24, 31, 39, 47, 55, as 4 sprites each, names 48.., in its last colour, the
+ship's boom frame counts; `boss_booms`, after `enemy_booms`); then
+"BONUS ddd POINTS" (`BONUS_TEXT`; 500 `BOSS_PTS` by the front's share
+then: 500/400/300/250) on `OVER_ROW` from column 8, white, 2 s
+(`BONUS_TEXT_MS`; not over GAME OVER; GAME OVER coming during it takes
+its place, `bonus_erase`, the bonus running on unseen); then
+(`boss_end`, `BS_END`) the text gone, the points (`score_add`,
+`PTS_BOSS`), and the next frame (`BS_NEXT`: on the Expert both in one
+frame dropped one) the next wave (its bullets wiped as any wave's). A middle-row text
+(`mid_show`: `mid_text`, `mid_x0`, `mid_w`) keeps stars and bullets out
+of its cells (`over_at`), GAME OVER's or the bonus's. Not a wave for the
+bonus ship's count (a ship lost in it counts against the next wave);
+the level text stays as the wave before. Behind it all, 15
 one-pixel light grey stars (random columns, random lines, never two on a
 line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 50 Hz), drawn in the bitmap (`move_stars`, after `fire`); one leaving past
@@ -251,7 +284,8 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   patterns before it must stay contiguous); the coming ship's two patterns and where the
   ship's art is in them; the three boom patterns and their colour; the
   reserve ship's rows, colour, art width; the enemies' pair patterns and
-  art rows; the formation's pair offsets, from its picture) and `path.py` (→
+  art rows; the formation's pair offsets, from its picture; the boss's four
+  patterns and its 3 x 4 boom patterns, 8 ship booms side by side) and `path.py` (→
   `build/path.inc`: the formation loop's tunables and its table, 300
   entries per second of cycle, stepped by Bresenham on frames; only
   `CYCLE_SECS` sets the timing; the free enemies' velocity tables) and `sfx.py` (→ `build/sfx.inc`: the shot, death and break
@@ -328,8 +362,26 @@ the staged test below. Then the enemies' part, hits on,
   in reserve, the beep every frame as its table; both lists wrap; the top status row's level
   and wave at every wave, L3 W1 at the 21st; none begun a frame before
   its 0.7 s; the frame before each begins, the test puts 3 enemy
-  bullets in flight: the model has them gone the frame after). Then the
-  enemy bullets' levels (rolls forced to hit): the
+  bullets in flight: the model has them gone the frame after; after
+  waves 5, 10, 15 and 20 the boss instead, 0.7 s on, and the next wave
+  once its bonus is over: `boss_frame`'s model every frame: its patterns
+  in VRAM, its start (column 32, colour 5, its gap from the spec), its
+  four SAT entries (place, names, colour, booms), its move (32 px/s,
+  reflected at 32 and 160), each volley bullet against its art (gone; 10
+  hits a colour of the reddening list; the 90th kills it, `boss_alive` =
+  the front's living ships at `boss_dies`), its rain (a breakpoint at
+  `boss_fire.shoot`: line 24, one of its 64 columns, exactly every gap px;
+  5 in flight at most, 4 or 5 once going; the enemy bullet model takes
+  them), its booms' frames, "BONUS ddd POINTS" every frame of its 2 s,
+  then the text gone and one `PTS_BOSS` score, the next frame the next
+  wave (no frame dropped from its start to its bonus's end; the wave
+  begin frames of this part drop one on the Expert, the boss's or not:
+  not checked); boss 1
+  fought all through by a 4-ship front (90 hits, the score written 0
+  first: 250 after it, no frame dropped), bosses 2..4 with 1 hit left
+  (written) by 1-, 2- and 3-ship fronts (500, 400, 300); the test steers
+  under it and fires every other frame, enemy bullets not hitting ships).
+  Then the enemy bullets' levels (rolls forced to hit): the
   wave then (21) and waves 1..8 (`wave_n` written): the speed, and with
   one fewer than the most in flight (the test's own bullets, two sharing
   bytes) a roll fires, with the most it doesn't; then the 8-line rule at
@@ -348,10 +400,15 @@ the staged test below. Then the enemies' part, hits on,
   (screenshot `build/shot-<machine>-over.png`), space and joystick 2's
   button A pressed a frame before 3 s and held past it ignored, the title exactly 10 s on; the
   title's VRAM (with the game's level and wave, L3 W1, on its top row's
-  left and its score, 99999999, on its right; "0" after games 2 and 3), no sprites, a held space not starting; the new game as at
+  left and its score, 1450 (the bosses' bonuses from 0), on its right;
+  "0" after game 2, "500" after game 3), no sprites, a held space not starting; the new game as at
   power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
   Then twice no reserves, the front killed: joystick 1's button A, then
-  space, seen exactly at 3 s goes to the title at once. Then the title
+  space, seen exactly at 3 s goes to the title at once; the second time
+  during a boss's bonus text (staged in RAM: its last boom's last frame,
+  one ship as it died): the text shows, GAME OVER takes its place (the
+  other cells blank), and 2 s after the text came its 500 points, the
+  next frame the next wave (L1 W2 on the title). Then the title
   left alone: attract mode, three times. Each: exactly 20 s of title
   first; the top row as the title had it (L1 W1 and the score) and the
   bitmap below blank as it begins, a new game's state; every frame silent

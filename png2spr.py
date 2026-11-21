@@ -40,6 +40,14 @@ Writes sjasmplus source to stdout:
   FORM_PAIRS_N   how many
   FORM_X0        the formation's left column in the picture
   FORM_W, FORM_H its size in px
+  BOSS_PATTERN   4 x 32 bytes: the boss (images/boss.png, 64x16, one colour;
+                 its colour is set in main.asm) as four 16x16 sprites, left
+                 to right
+  BOSS_BOOM_PATTERN  3 x 4 x 32 bytes: per boom image (BOOM_PNGS), 4 sprites
+                 of BOSS_BOOMS copies of it side by side, spread evenly over
+                 the boss's 64 columns (the first at column 0, the last
+                 ending on column 63; neighbours overlap)
+  BOSS_W, BOSS_H the boss's size in px (its art fills its box)
 """
 import glob
 import re
@@ -52,6 +60,8 @@ RESERVE_PNG = 'images/reserve-ship.png'
 ENEMY_PNG = 'images/enemy-{}.png'
 FORMATION_PNG = glob.glob('images/formation-enemy-*-color-*.png')
 BOOM_PNGS = [f'images/player-ship-boom-{i}.png' for i in (1, 2, 3)]
+BOSS_PNG = 'images/boss.png'
+BOSS_BOOMS = 8
 
 # TMS9918 palette (approximate RGB), colour 1..15
 MSX1 = {
@@ -130,7 +140,7 @@ def main():
 
     # The boom images: the ship's art box, padded to 16 columns where the
     # ship's art is in its sprite
-    w = cols[-1] - cols[0] + 1
+    w = boom_w = cols[-1] - cols[0] + 1
     bcolours = set()
     print('BOOM_PATTERN:')
     for png in BOOM_PNGS:
@@ -197,6 +207,23 @@ def main():
     print(f'FORM_H          equ {max(y for _, y in found) + 16 - y0}')
     print('FORM_PAIRS:')
     print('        db ' + ', '.join(f'{x - x0},{y - y0}' for x, y in sorted(found, key=lambda p: (p[1], p[0]))))
+    # The boss: four sprites; its booms: BOSS_BOOMS ship booms side by side
+    boss, _ = load(BOSS_PNG, 16, 64)
+    assert all(any(boss[y]) for y in range(16)) and all(any(boss[y][x] for y in range(16)) for x in (0, 63)), \
+        f'{BOSS_PNG}: its art must fill its 64x16 box'
+    print('BOSS_W          equ 64')
+    print('BOSS_H          equ 16')
+    print('BOSS_PATTERN:')
+    for k in range(4):
+        print_pattern(f'; {BOSS_PNG}, columns {16*k}..{16*k+15}', sprite_pattern([row[16*k:16*k + 16] for row in boss]))
+    xs = [round(i * (64 - boom_w) / (BOSS_BOOMS - 1)) for i in range(BOSS_BOOMS)]
+    print(f'; the boss booms: {BOSS_BOOMS} at columns {xs}')
+    print('BOSS_BOOM_PATTERN:')
+    for png in BOOM_PNGS:
+        on, _ = load(png, 16, boom_w)
+        big = [[any(0 <= x - x0 < boom_w and on[y][x - x0] for x0 in xs) for x in range(64)] for y in range(16)]
+        for k in range(4):
+            print_pattern(f'; {png} x {BOSS_BOOMS}, columns {16*k}..{16*k+15}', sprite_pattern([row[16*k:16*k + 16] for row in big]))
     print('SHIP_ROWS:')
     for i in range(0, 16, 8):
         print('        dw ' + ','.join(f'{w:#06x}' for w in ship_rows[i:i + 8]))
