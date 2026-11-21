@@ -143,14 +143,16 @@ sprites, names 32..44, in the enemies' SAT entries) with its art's top
 on line 8, from column 32 going right, cruising between columns 32 and
 160 (`BOSS_MARGIN`) one way in 4 s (`BOSS_TRAVERSE_MS`: 32 px/s,
 Bresenham, reflected at the ends; `boss_move`, from `next_wave`). It
-rains enemy bullets (the same slots, `eb_move`, `eb_draw`, `eb_hit`; the
-last wave's speed: `wave_n` stays) from a random one of its 64 columns,
+rains enemy bullets (the same slots, `eb_move`, `eb_draw`, `eb_hit`; at
+`BOSS_EB_PCT` 70% of 230 px/s, wave 1's, whatever the wave: `eb_speed`
+while `boss_st` isn't 0) from a random one of its 64 columns,
 their top on line 24 (`boss_fire`, after `enemy_fire`, which runs on
 with no enemy able): one every `boss_gap` px they move, worked out at
 its start so that `BOSS_EB_N` (5) are in flight (gap = ceil((158 + the
 longest step − 1) / 5), 32 or 33). Player bullets hit it as enemies
 (`volley_hits` → `boss_volley`, `boss_px`: a pixel of its art on a line
-the bullet covered, where it shows); colours `FORM_COLOR_REDDENING`
+the bullet covered, where it shows); each hit (`boss_hit`) (re)starts the break sound, as a
+pair's; colours `FORM_COLOR_REDDENING`
 (5 7 3 2 10 11 9 8 13), the next every 10 hits (`BOSS_HITS`); 10 in the
 last: it dies (`boss_dies`: `boss_alive` = the front's living ships then;
 the ship's death sound), booming as 8 ship booms side by side
@@ -370,7 +372,8 @@ the staged test below. Then the enemies' part, hits on,
   reflected at 32 and 160), each volley bullet against its art (gone; 10
   hits a colour of the reddening list; the 90th kills it, `boss_alive` =
   the front's living ships at `boss_dies`), its rain (a breakpoint at
-  `boss_fire.shoot`: line 24, one of its 64 columns, exactly every gap px;
+  `boss_fire.shoot`: line 24, one of its 64 columns, exactly every gap px
+(at 70%); a break sound start per hit;
   5 in flight at most, 4 or 5 once going; the enemy bullet model takes
   them), its booms' frames, "BONUS ddd POINTS" every frame of its 2 s,
   then the text gone and one `PTS_BOSS` score, the next frame the next

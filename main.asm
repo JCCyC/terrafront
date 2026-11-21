@@ -79,10 +79,11 @@
 ; After waves 5 and 10 of a level (BOSS_AFTER_LIST), the boss
 ; (images/boss.png, four sprites) instead of the next wave: it cruises left
 ; and right at the playfield's top, BOSS_MARGIN px from either edge, one way
-; in BOSS_TRAVERSE_MS, and rains bullets (the enemies', at the last wave's
-; speed) from random columns of its lower edge at the rate that keeps
+; in BOSS_TRAVERSE_MS, and rains bullets (the enemies', at BOSS_EB_PCT % of
+; BULLET_SPEED) from random columns of its lower edge at the rate that keeps
 ; BOSS_EB_N in flight. It starts in FORM_COLOR_REDDENING's first colour and
-; takes the next every BOSS_HITS hits; BOSS_HITS in its last and it dies:
+; takes the next every BOSS_HITS hits (each with the break sound);
+; BOSS_HITS in its last and it dies:
 ; eight ship booms side by side, then "BONUS ddd POINTS" (BOSS_PTS by the
 ; front's share as it died) in the screen's middle for BONUS_TEXT_MS, then
 ; the points, and the next wave.
@@ -213,7 +214,8 @@ EB_N            equ 5           ; slots: EB_MAX_LIST's largest
         define BOSS_AFTER_LIST 5, 10
 BOSS_MARGIN     equ 32          ; it cruises left and right at the playfield's top, this many px from either edge ...
 BOSS_TRAVERSE_MS equ 4000       ; ... one way in this long
-BOSS_EB_N       equ 5           ; its bullets rain at the rate that keeps this many in flight (the last wave's speed)
+BOSS_EB_N       equ 5           ; its bullets rain at the rate that keeps this many in flight ...
+BOSS_EB_PCT     equ 70          ; ... at this % of BULLET_SPEED (wave 1's, whatever the wave)
 BOSS_HITS       equ 10          ; hits a colour: then the next of FORM_COLOR_REDDENING; past its last, it dies
 BOSS_PTS        equ 500         ; its death's bonus with a one-ship front (with more, SHARE_2..4 % of it) ...
 BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OVER_ROW) after its boom; then the score, the next wave
@@ -1922,12 +1924,16 @@ eb_move:
         assert SHIP_TOP+SHIP_ART_T+1-BULLET_H <= PLAY_BOTTOM+2-BULLET_H
 
 ; HL = this wave's enemy bullet speed in 1/100 px a second (BULLET_SPEED *
-; EB_SPEED_LIST's %)
+; EB_SPEED_LIST's %; the boss's, BOSS_EB_PCT, while there is one)
 eb_speed:
+        ld a,(boss_st)
+        or a
+        ld a,BOSS_EB_PCT
+        jr nz,.pct
         ld hl,EB_PCTS
         ld b,EB_PCTS_N
         call wave_entry
-        ld de,BULLET_SPEED
+.pct:   ld de,BULLET_SPEED
         ld hl,0
         ld b,8
 .mul:   add hl,hl
@@ -3305,8 +3311,7 @@ boss_after:
 ; this frame's SAT on): at its left end going right, in its first colour;
 ; its bullets one every boss_gap px they move: BOSS_EB_N * boss_gap at
 ; least BOSS_EB_RUN + the longest step - 1, so that the one fired
-; BOSS_EB_N before is gone by then (the wave's speed: wave_n stays the
-; last wave's)
+; BOSS_EB_N before is gone by then (at BOSS_EB_PCT %: eb_speed)
 boss_begin:
         ld a,BS_FIGHT
         ld (boss_st),a
@@ -3527,9 +3532,10 @@ boss_px:
         ret
         assert BOSS_Y >= PLAY_TOP
 
-; A hit on the boss: every BOSS_HITS, the next colour; past the last, it
-; dies (boss_dies)
+; A hit on the boss: the break sound (as a pair's); every BOSS_HITS, the
+; next colour; past the last, it dies (boss_dies)
 boss_hit:
+        call brk_start
         ld hl,boss_hits
         inc (hl)
         ld a,(hl)

@@ -69,7 +69,8 @@ debug set_bp $sym(death_start) {} { incr ::dnew }  ;# each call (two booms can s
 # The break sound: brk_start (re)starts it; brk_frame checks channel B
 set bnew 0 ; set bidx -1 ; set bruns {} ; set bstarts 0
 set bbad 0 ; set bframes 0 ; set bfirst ""
-debug set_bp $sym(brk_start) {} { incr ::bnew }  ;# each call (two pairs can break up in one frame)
+set brk_all 0 ; set brk_seen 0
+debug set_bp $sym(brk_start) {} { incr ::bnew ; incr ::brk_all }  ;# each call (two pairs can break up in one frame)
 # The bonus ship: BONUS_WAVES (2) waves in a row finished (next_wave.done:
 # the frame's work that made the last enemy gone) with no ship lost
 # (ship_dies) gain a reserve ship, if under RESERVE_MAX (4) and not game
@@ -2102,7 +2103,7 @@ proc bstep_x {k} {
 	expr {32 + ($p <= 128 ? $p : 256 - $p)}
 }
 proc bgap {} {
-	lassign [eb_spec [m wave_n]] pct
+	set pct $::sym(BOSS_EB_PCT)
 	set smax [expr {(230*$pct + 100*$::F - 1) / (100*$::F)}]
 	expr {(158 + $smax - 1 + 4) / 5}
 }
@@ -2187,6 +2188,7 @@ proc boss_frame {} {
 		}
 		set ::bvprev [vols]
 		set ::bshots_now 0
+		set ::brk_seen $::brk_all
 		return
 	}
 	set k [expr {$::n - $::b0}]
@@ -2238,6 +2240,9 @@ proc boss_frame {} {
 			if {$::bacc >= $::bgap} { incr ::bacc -$::bgap ; set want 1 }
 		}
 		if {$::bshots_now != $want} { bbad "$::bshots_now boss bullets fired, want $want (acc $::bacc, gap $::bgap)" }
+		# each hit (re)starts the break sound
+		if {$::brk_all - $::brk_seen != [llength $gone]} { bbad "[expr {$::brk_all - $::brk_seen}] break sound starts, want [llength $gone] (one a hit)" }
+		incr ::bbrk [llength $gone]
 		incr ::bshots $::bshots_now
 		set live [eb_live]
 		if {$live > 5} { bbad "$live boss bullets in flight" }
@@ -2287,8 +2292,9 @@ proc boss_frame {} {
 	if {$st == 0 && $pst != 7} { bbad "the boss gone in state $pst" }
 	set ::bvprev [vols]
 	set ::bm [list $st [m boss_x] [m boss_color]]
+	set ::brk_seen $::brk_all
 }
-set bhits_all 0
+set bhits_all 0 ; set bbrk 0
 # The test fights the boss: the front's middle under the boss's, fire
 # pressed every other frame
 proc boss_hunt {} {
@@ -2301,7 +2307,7 @@ proc boss_hunt {} {
 proc boss_end {} {
 	set ::bwatch 0
 	set offs [lsort -integer -unique $::boffs]
-	check {$::bbad == 0 && $::bosses == 4} "bosses after waves 5, 10, 15 and 20 = the model every frame: its sprites (patterns, colour, place), 32 px/s between columns 32 and 160, its rain (one every gap px, 5 in flight at most, 4 or 5 once it's going), the hits (each bullet on its art: gone; every 10 the next colour of 5 7 3 2 10 11 9 8 13; 10 in 13: it dies), its booms, \"BONUS ddd POINTS\" for 2 s, its points by the front's share as it died, the next wave ($::bosses bosses: {boss ships points frames ok} $::bres; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
+	check {$::bbad == 0 && $::bosses == 4} "bosses after waves 5, 10, 15 and 20 = the model every frame: its sprites (patterns, colour, place), 32 px/s between columns 32 and 160, its rain (one every gap px at 70% of 230 px/s whatever the wave, 5 in flight at most, 4 or 5 once it's going), the hits (each bullet on its art: gone, the break sound (re)started ($::bbrk starts); every 10 the next colour of 5 7 3 2 10 11 9 8 13; 10 in 13: it dies), its booms, \"BONUS ddd POINTS\" for 2 s, its points by the front's share as it died, the next wave ($::bosses bosses: {boss ships points frames ok} $::bres; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
 	lassign $::b1 runs want hits shots mn mx txt drop sc
 	check {$hits == 90 && $sc == 250 && [llength $offs] >= 32 && [lindex $offs 0] >= 0 && [lindex $offs end] <= 63} "boss 1, fought through by a 4-ship front: 90 hits ([expr {$hits}]), states $runs (want $want), $shots bullets from [llength $offs] of its 64 columns ($mn..$mx in flight), the bonus text $txt frames, the score 0 + 250 = $sc, $drop frames dropped"
 }
@@ -2314,6 +2320,7 @@ proc boss_end {} {
 # art's last row is at least 8 lines above the front's art's first, if
 # fewer than the most are in flight.
 proc eb_spec {w} {
+	if {$w eq "boss"} { return [list $::sym(BOSS_EB_PCT) $::sym(EB_N)] }
 	set pct [expr {70 + 7*($w < 7 ? $w : 7)}]
 	set mx [expr {$w < 3 ? 3 : ($w < 6 ? 4 : 5)}]
 	list $pct $mx
@@ -2488,7 +2495,7 @@ proc eb_frame {} {
 	set ::ebsnap ""
 	set ::eb_wipe $::eb_began ; set ::eb_began 0
 	set ::eb_prev $cur
-	set ::eb_w [m wave_n]
+	set ::eb_w [expr {[m boss_st] ? "boss" : [m wave_n]}]   ;# (what eb_speed sees next frame)
 }
 # The test's own enemy bullets (slots in order; {Y X}, the rest none), the
 # ones drawn now taken off the bitmap first
