@@ -34,7 +34,13 @@ every ship's nose at 230 px/s, drawn in the SCREEN 2 bitmap (the ships fill
 the 4 sprites a line), at most 2 volleys in flight (a press with both in
 flight is ignored), one volley per press. Each volley plays a 0.25 s laser
 "cheeoom" on PSG channel A. Controls: arrows + space (fire) + C (call-up), or
-either joystick (button A fires, B calls up). The bottom status area shows the reserve ships
+either joystick (button A fires, B calls up). **Cheat (playtesting):** key 1
+(`CHEAT_KEYS`, 0 to build without it; `IN_BOSS`, `cheat_boss` from
+`next_wave`), a press in a game (not in game over, nor during a boss), goes
+to the level's next boss: that frame the wave's enemies are gone (no bonus
+counted), `form_enemy`, `form_cidx` and `wave_n` move on to the wave
+before the boss (its level text shown), and the boss begins (wave 1..5:
+the boss after wave 5; 6..10: after 10). The bottom status area shows the reserve ships
 (4 at the start; `images/reserve-ship.png`, 8×8, drawn in the bitmap) at its
 left, art from column 0, one black pixel apart (`draw_reserves`, A = how
 many). C calls one up (not while one is flying, nor with the front

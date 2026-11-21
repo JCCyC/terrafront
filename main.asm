@@ -218,6 +218,13 @@ BOSS_EB_PCT     equ 70          ; ... at this % of BULLET_SPEED (wave 1's, whate
 BOSS_HITS       equ 10          ; hits a colour: then the next of FORM_COLOR_REDDENING; past its last, it dies
 BOSS_PTS        equ 500         ; its death's bonus with a one-ship front (with more, SHARE_2..4 % of it) ...
 BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OVER_ROW) after its boom; then the score, the next wave
+;
+; A cheat for playtesting: key 1 (a press, in a game, not in game over nor
+; during a boss) goes to the level's next boss: that frame its wave's
+; enemies are gone (no bonus ship counted), the level text shows the wave
+; before it (form_enemy, form_cidx and wave_n moved on as if the waves
+; between were played), and the boss begins the next frame. 0: no cheat
+CHEAT_KEYS      equ 1
 ; (the formation's loop: path.py)
 
 ; ---- Layout ----------------------------------------------------------------
@@ -330,6 +337,7 @@ IN_LEFT         equ 04h
 IN_RIGHT        equ 08h
 IN_FIRE         equ 10h
 IN_CALL         equ 80h
+IN_BOSS         equ 01h         ; the cheat key 1 (CHEAT_KEYS)
 
 ; ---- Hardware and BIOS -----------------------------------------------------
 
@@ -360,6 +368,8 @@ KEY_LEFT        equ 10h
 KEY_RIGHT       equ 80h
 KEY_ROW_C       equ 3
 KEY_C           equ 01h
+KEY_ROW_1       equ 0
+KEY_1           equ 02h
 KEY_ROWS        equ 11          ; keyboard matrix rows 0..10 (9, 10: the keypad, if any)
 JOY_A           equ 10h         ; R14: button A (0 when pressed)
 
@@ -1174,7 +1184,18 @@ read_input:
         and KEY_C
         jr nz,.k4
         set 7,c                 ; IN_CALL
-.k4:    ld b,03h                ; joystick 1: (R15 and AFh) or 03h
+.k4:
+        if CHEAT_KEYS
+        in a,(PPI_C)            ; keyboard row KEY_ROW_1: the cheat key 1
+        and 0F0h
+        or KEY_ROW_1
+        out (PPI_C),a
+        in a,(PPI_B)
+        and KEY_1
+        jr nz,.k5
+        set 0,c                 ; IN_BOSS
+        endif
+.k5:    ld b,03h                ; joystick 1: (R15 and AFh) or 03h
         ld e,0AFh
         call read_joy
         ld b,4Ch                ; joystick 2: (R15 and DFh) or 4Ch
@@ -1196,7 +1217,7 @@ read_input:
         call attract_cpu
         ld (input),a
         ret
-        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h
+        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h && IN_BOSS == 01h
 
 ; C |= the joystick's left, right, button A (fire) and B (call-up) as IN_*;
 ; the port is selected in R15 by (R15 and E) or B
@@ -3424,7 +3445,16 @@ next_wave:
         inc a
         ld (boss_done),a
         jr .go
-.waves: ld hl,wave_wait
+.waves:
+        if CHEAT_KEYS
+        ld a,(input_prev)       ; the cheat key 1 pressed: to the next boss
+        cpl
+        ld hl,input
+        and (hl)
+        and IN_BOSS
+        call nz,cheat_boss
+        endif
+        ld hl,wave_wait
         ld a,(hl)
         or a
         jr z,.idle
@@ -3511,6 +3541,63 @@ next_wave:
         ld (form_acc),a
         jp form_place
         assert EN_FORM == 0
+
+        if CHEAT_KEYS
+; The cheat key 1 (next_wave, no boss on): not in game over (nor attract
+; mode: the pseudo-player never presses it), the level's next boss (the
+; first of BOSS_AFTER_LIST from this wave on) begins next frame
+; (wave_wait 1: next_wave.go, boss_after), this wave's enemies gone, the
+; waves before it counted as played (form_enemy, form_cidx, wave_n)
+cheat_boss:
+        ld a,(over_on)
+        or a
+        ret nz
+        ld a,(form_enemy)
+        inc a
+        ld c,a                  ; C = this wave (1..)
+        ld e,255                ; E = the smallest boss wave >= C
+        ld hl,BOSS_AFTERS
+        ld b,BOSS_AFTERS_N
+.b:     ld a,(hl)
+        cp c
+        jr c,.nb
+        cp e
+        jr nc,.nb
+        ld e,a
+.nb:    inc hl
+        djnz .b
+        ld a,e
+        cp ENEMIES+1
+        ret nc                  ; none in this level
+        dec a
+        ld (form_enemy),a
+        sub c
+        inc a
+        ld b,a                  ; B = the waves skipped
+        ld hl,wave_n            ; (stays at 255)
+        add a,(hl)
+        jr nc,.wn
+        ld a,255
+.wn:    ld (hl),a
+        ld a,(form_cidx)
+        inc b
+        jr .cs
+.c:     inc a
+        cp FORM_COLORS_N
+        jr c,.cs
+        xor a
+.cs:    djnz .c
+        ld (form_cidx),a
+        ld hl,enemies+EN.ST     ; every enemy gone
+        ld de,EN
+        ld b,ENEMY_N
+.e:     ld (hl),EN_GONE
+        add hl,de
+        djnz .e
+        ld a,1
+        ld (wave_wait),a
+        jp level_text
+        endif
 
 ; A = a random byte (16-bit xorshift, 7/9/8). Keeps BC, DE.
 rand:   ld hl,(rand_seed)
