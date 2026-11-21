@@ -2604,7 +2604,12 @@ proc top_bad {} {
 }
 proc att_bad {s} { if {!$::att_bad} { set ::att_first "frame $::an: $s" } ; incr ::att_bad }
 debug set_bp $sym(attract_cpu.roll) {} {
-	if {$::attr} { lappend ::arolls $::an ; set ::aroll [expr {([reg A] & ($::sym(ATTRACT_CALL_CHANCE) - 1)) == 0}] }
+	if {!$::attr} return
+	# (attract 1: until a roll has called one up, a roll that can is made heads)
+	if {$::attracts == 1 && !$::acalls && ![m call_on] && [m reserves] && [m front_slots] < 4 && [m front_mask]} {
+		reg A [expr {[reg A] & ~($::sym(ATTRACT_CALL_CHANCE) - 1) & 0xFF}] ; incr ::aforce
+	}
+	lappend ::arolls $::an ; set ::aroll [expr {([reg A] & ($::sym(ATTRACT_CALL_CHANCE) - 1)) == 0}]
 }
 debug set_bp $sym(call_up) {} {
 	if {$::attr} { set ::asnap [list [m call_on] [m reserves] [m front_slots] [m front_mask]] }
@@ -2652,7 +2657,7 @@ proc attract_begin {} {
 	set ::arolls {} ; set ::aroll -1 ; set ::aheads 0 ; set ::acalls 0 ; set ::aforced 0 ; set ::akills 0
 	set ::ax [m ship_x] ; set ::alefts 0 ; set ::arights 0 ; set ::axmin 255 ; set ::axmax 0
 	set ::spawns 0 ; set ::aover -1 ; set ::aquit_at -1 ; set ::adropped $::dropped
-	set ::adodges 0 ; set ::adodge_edge 0 ; set ::adeaths 0 ; set ::aoverframes 0 ; set ::astaged 0
+	set ::adodges 0 ; set ::adodge_edge 0 ; set ::adeaths 0 ; set ::aoverframes 0 ; set ::astaged 0 ; set ::aforce 0
 	unset -nocomplain ::asnap
 	set ::ebhits 1       ;# (enemy bullets kill ships: a real pseudo-game)
 	set ::phase 4
@@ -2731,7 +2736,7 @@ proc attract_restart {} {
 	say "attract mode $::attracts: $::adodges dodges ($::adodge_edge of them can't clear it: an edge), $::adeaths ships lost in [format %.1f [expr {double($::an)/$F}]] s"
 	check {$::dropped == $::adropped} "attract mode $::attracts: no frame dropped ([expr {$::dropped - $::adropped}])"
 	if {$::attracts == 1} {
-		check {$::alefts > 0 && $::arights > 0 && $::axmax - $::axmin >= 100 && $::spawns > 10 && $::aheads > 0 && $::acalls > 0 && $::adodges > 0} "attract mode 1: dodges ($::adodges, each target as the rule), the front moves both ways ($::alefts frames left, $::arights right, columns $::axmin..$::axmax) and shoots ($::spawns volleys); call-ups by the rolls ($::acalls of $::aheads heads in [llength $::arolls] rolls)"
+		check {$::alefts > 0 && $::arights > 0 && $::axmax - $::axmin >= 100 && $::spawns > 10 && $::aheads > 0 && $::acalls > 0 && $::adodges > 0} "attract mode 1: dodges ($::adodges, each target as the rule), the front moves both ways ($::alefts frames left, $::arights right, columns $::axmin..$::axmax) and shoots ($::spawns volleys); call-ups by the rolls ($::acalls of $::aheads heads in [llength $::arolls] rolls; $::aforce made heads by the test)"
 	}
 	set ::attr 0 ; set ::ebhits 0 ; set ::phase 3 ; set ::sn 0
 	set ::twhy "attract mode $::attracts" ; set ::tnext [expr {$::attracts < 3 ? "wait" : "press"}]

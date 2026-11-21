@@ -81,16 +81,17 @@ stays as `init_sound` left it). A pseudo-player (`attract_cpu`, called
 from `read_input`) presses virtual keys through the game's own code:
 right or left towards a random column (`att_target`, at most the front's
 last), and within 3 px of it (`ATTRACT_NEAR`) a new one after a pause of
-0..7 thinks (`ATTRACT_PAUSE_MAX`); at a think, with a chance of 1 in 2
-(`ATTRACT_DODGE_CHANCE`), it dodges (`attract_dodge`): the first enemy
+0..7 thinks (`ATTRACT_PAUSE_MAX`); at every think (`ATTRACT_DODGE_CHANCE`
+1: a chance of 1 in it, the user's choice), it dodges (`attract_dodge`): the first enemy
 bullet, else free enemy, whose lowest line is 40 lines
 (`ATTRACT_DODGE_LINES`) above the front's art or lower and whose columns
 (1, or the art's 8) come within 4 px (`ATTRACT_DODGE_MARGIN`) of the
 front's becomes the target's reason: the front 4 px clear of it, on the
 side away from its middle (right if left of the front's or on it), the
 other side if that's off screen, no pause (only that threat is looked at,
-so it isn't too good: measured over 24 runs, about 4.0 ships lost per 40 s
-against 4.8 with no dodging, game over in about half the runs); every think (0.1 s,
+so it isn't too good: measured over 24 runs, about 3.6 ships lost per 40 s
+against 4.8 with no dodging, game over in a third of the runs; 1 in 2:
+4.0, half); every think (0.1 s,
 `ATTRACT_THINK_MS`: 6 / 5 frames) fire held is released, else pressed
 with a chance of 1 in 2 (`ATTRACT_FIRE_CHANCE`); every 50 thinks (5 s,
 `ATTRACT_CALL_MS`) a roll (`attract_cpu.roll`): 1 in 2

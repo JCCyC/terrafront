@@ -152,7 +152,7 @@ ATTRACT_CALL_MS equ 5000        ; ... every this long, a call-up ...
 ATTRACT_CALL_CHANCE equ 2       ; ... with a chance of 1 in this (a power of 2)
 ATTRACT_PAUSE_MAX equ 8         ; ... its target column reached: still for 0..this-1 thinks (a power of 2)
 ATTRACT_NEAR    equ 3           ; ... the target reached: the front's ship_x within this many px of it
-ATTRACT_DODGE_CHANCE equ 2      ; ... at a think, it looks out for a threat with a chance of 1 in this (a power of 2)
+ATTRACT_DODGE_CHANCE equ 1      ; ... at a think, it looks out for a threat with a chance of 1 in this (a power of 2)
 ATTRACT_DODGE_LINES equ 40      ; ... seen: an enemy bullet's top, a free enemy's art's last line, this close above the front's art or lower
 ATTRACT_DODGE_MARGIN equ 4      ; ... and its column within this many px of the front's; it moves the front this far clear of it
 OVER_ROW        equ 12          ; GAME OVER's character row (lines 96..103: the screen's middle), centred on it
