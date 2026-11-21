@@ -83,6 +83,18 @@
 ; joysticks are polled as fast as the loop goes, and the time of every
 ; press and release (the polls so far, and R) is mixed into entropy, kept
 ; for later (unused for now).
+; Attract mode: the title left alone TITLE_WAIT_MS, a pseudo-game plays for
+; ATTRACT_MS (game over's end, if it comes first, ends it too; no GAME
+; OVER shows, the enemies just fly on), silent, the
+; top status row kept as the title had it (the last game's level, wave and
+; score; none at power-on): a pseudo-player moves the front to random
+; columns (standing still a random while at each), now and then (at random)
+; moves it clear of the first enemy bullet or free enemy it sees close
+; above it, presses fire at random,
+; and every ATTRACT_CALL_MS calls up a reserve ship with a chance of 1 in
+; ATTRACT_CALL_CHANCE, through the game's own controls code (virtual keys).
+; A press of fire (space or either joystick's button A) ends it at once;
+; then, and at its end, it's back to the title.
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Test keys 1..4 kill the front's
 ; first..fourth ship. Fire, call-up and the test keys are edge-triggered:
@@ -132,6 +144,17 @@ TEXT_COLOR      equ 15          ; white: the game's text
 WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins this much later
 GAME_OVER_MS    equ 10000       ; GAME OVER shows this long, the game running on, then the title
 OVER_SKIP_MS    equ 3000        ; ... a press of fire from this much on: the title at once
+TITLE_WAIT_MS   equ 20000       ; the title this long with no start: attract mode ...
+ATTRACT_MS      equ 40000       ; ... plays this long, then the title again
+ATTRACT_THINK_MS equ 100        ; the pseudo-player decides on fire (and counts to a call-up) this often
+ATTRACT_FIRE_CHANCE equ 2       ; ... fire released: pressed with a chance of 1 in this (a power of 2); held: released
+ATTRACT_CALL_MS equ 5000        ; ... every this long, a call-up ...
+ATTRACT_CALL_CHANCE equ 2       ; ... with a chance of 1 in this (a power of 2)
+ATTRACT_PAUSE_MAX equ 8         ; ... its target column reached: still for 0..this-1 thinks (a power of 2)
+ATTRACT_NEAR    equ 3           ; ... the target reached: the front's ship_x within this many px of it
+ATTRACT_DODGE_CHANCE equ 2      ; ... at a think, it looks out for a threat with a chance of 1 in this (a power of 2)
+ATTRACT_DODGE_LINES equ 40      ; ... seen: an enemy bullet's top, a free enemy's art's last line, this close above the front's art or lower
+ATTRACT_DODGE_MARGIN equ 4      ; ... and its column within this many px of the front's; it moves the front this far clear of it
 OVER_ROW        equ 12          ; GAME OVER's character row (lines 96..103: the screen's middle), centred on it
 OVER_COL        equ (32-OVER_LEN)/2 ; ... its first column
 LW_ROW          equ 0           ; the level and wave ("L1 W1"): the top status row ...
@@ -362,6 +385,9 @@ over_skip:      ds 2            ; ... and from which fire cuts it short
 eb_tick:        ds 1            ; 1/300 s a frame (the enemy bullets' roll clock)
 eb_unit:        ds 2            ; 100 * fps (their Bresenham: 1/100 px a second)
 bonus_sound:    ds 2            ; BONUS_60 or BONUS_50
+title_wait:     ds 2            ; frames the title shows before attract mode
+attract_len:    ds 2            ; ... and frames attract mode plays
+think_frames:   ds 1            ; frames between the pseudo-player's thinks
 RATES_SIZE      equ $-rates
 frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
@@ -372,6 +398,18 @@ score_shown:    ds SCORE_LEN+1  ; ... and as they show (0-terminated; the title 
 
 ; From here on, cleared for every new game
 game_ram:
+attract:        ds 1            ; nonzero: attract mode (from splash)
+att_left:       ds 2            ; ... its frames left
+att_real:       ds 1            ; ... the real input (IN_*) this frame (FFh at the start: all held)
+att_quit:       ds 1            ; ... nonzero: fire pressed for real this frame
+att_fire:       ds 1            ; ... the pseudo-player's fire (IN_FIRE or 0)
+att_call:       ds 1            ; ... its call-up press this frame (IN_CALL or 0)
+att_think:      ds 1            ; ... frames to its next think
+att_calls:      ds 1            ; ... thinks to its next call-up roll
+att_target:     ds 1            ; ... the column it moves the front's ship_x to
+att_pause:      ds 1            ; ... thinks it still stands there
+att_tw:         ds 1            ; ... attract_dodge: the threat's width - 1
+title_left:     ds 2            ; splash: frames until attract mode
 input:          ds 1            ; IN_* this frame
 input_prev:     ds 1            ; ... and last frame (fire is edge-triggered)
 kill_keys:      ds 1            ; the test keys 1..4 held (bits 1..4) this frame
@@ -393,7 +431,8 @@ call_left:      ds 1            ; nonzero: coming from the left
 call_target:    ds 1            ; its art's left column once glued
 call_rem:       ds 2            ; px still to fly (up to CALL_DIST)
 call_acc:       ds 1            ; Bresenham remainder
-over_on:        ds 1            ; nonzero: game over (GAME OVER shows)
+over_on:        ds 1            ; nonzero: game over
+over_text:      ds 1            ; nonzero: GAME OVER shows (game over, not in attract mode)
 over_time:      ds 2            ; ... frames since it began
 volleys:        ds MAX_VOLLEYS*VOLLEY
 ebullets:       ds EB_N*EB      ; the enemies' bullets
@@ -532,7 +571,7 @@ init:
 
 ; Game over's end: back to the title, the game's RAM as at power-on
 restart:
-        call show_score         ; (score_shown: the game's last score, for the title)
+        call show_score         ; (score_shown: the game's last score, for the title; not attract mode's)
         call display_off
         ld hl,(GRPATR)          ; no sprites on the title
         call vdp_write
@@ -548,7 +587,10 @@ new_game:
         call load_formation     ; the first wave's (form_enemy, form_cidx: 0)
         ld a,1
         ld (level),a
-        call level_text         ; L1 W1
+        call level_text         ; L1 W1 (attract mode: none, the top row as the title had it)
+        ld a,(attract)
+        or a
+        jr nz,.shown
         ld hl,score_shown       ; (the title's, the last game's) not printed yet: every cell
         ld b,SCORE_LEN
 .unshown:
@@ -558,6 +600,7 @@ new_game:
         ld a,1
         ld (score_dirty),a
         call show_score         ; 0
+.shown:
 
         ld hl,SHIP_PATTERN      ; the six ship patterns follow each other
         ld de,(GRPPAT)
@@ -605,6 +648,9 @@ new_game:
 
         call init_sound
         call init_stars         ; (drawn by the first move_stars)
+        ld a,(attract)
+        or a
+        call nz,attract_init
         call build_sat
         ld a,RESERVES
         call draw_reserves
@@ -633,10 +679,13 @@ main_loop:
         call collide            ; after the moves: where the enemies and the front show
         call next_wave          ; after them: a new wave shows from this frame's SAT on
         call show_score         ; after the hits and collisions
+        ld a,(attract)
+        or a
+        jr nz,.quiet            ; attract mode: no sound
         call sfx
         call brk_sfx            ; after sfx: its noise period wins over the shot's ...
         call death              ; ... and the death sound's over both
-        call build_sat
+.quiet: call build_sat
         jr main_loop
 
 ; The frame interrupt: reading the VDP's status acknowledges it
@@ -652,8 +701,10 @@ isr:    push af
 ; ---- Splash ----------------------------------------------------------------
 
 ; The title screen (images/title.png) until space or either joystick's
-; button A goes down (a press: held from before doesn't count); it leaves
-; the display off and SCREEN 2's tables cleared, all black. Busy-polls the
+; button A goes down (a press: held from before doesn't count), or for
+; TITLE_WAIT_MS (then attract is set: attract mode); it leaves the display
+; off and SCREEN 2's tables cleared, all black (attract mode: but the top
+; status row, as the title had it). Busy-polls the
 ; inputs; every change (a key or button going down or up) mixes the time,
 ; in polls since the splash began, into entropy.
 splash:
@@ -680,6 +731,8 @@ splash:
 .score: call print_text
         call print_press
         call display_on
+        ld hl,(title_wait)
+        ld (title_left),hl
         ld a,(blink_on)
         ld (blink_left),a
         ld a,1
@@ -715,7 +768,26 @@ splash:
         jr z,.poll
         ld (hl),a               ; a new frame (the loop keeps up: one at a time)
 .blink: call blink
-        jr .poll
+        ld hl,(title_left)
+        dec hl
+        ld (title_left),hl
+        ld a,h
+        or l
+        jr nz,.poll
+        inc a                   ; left alone: attract mode
+        ld (attract),a
+        call display_off
+        ld hl,(GRPCGP)          ; the tables cleared from row 1 on (the top row stays)
+        inc h
+        ld bc,23*256
+        xor a
+        call FILVRM
+        ld hl,(GRPCOL)
+        inc h
+        ld bc,23*256
+        ld a,BG_COLOR*16+BG_COLOR
+        jp FILVRM
+        assert LW_ROW == 0 && SCORE_ROW == 0
 .go:    call display_off
         ld hl,(GRPCGP)
         ld bc,24*256
@@ -993,7 +1065,22 @@ read_input:
         ld b,4Ch                ; joystick 2: (R15 and DFh) or 4Ch
         ld e,0DFh
         call read_joy
+        ld a,(attract)
+        or a
+        jr nz,.cpu
         ld a,c
+        ld (input),a
+        ret
+.cpu:   ld hl,att_real          ; attract mode: the real input only quits it (a
+        ld a,(hl)               ; press of fire), the pseudo-player's plays
+        ld (hl),c
+        cpl
+        and c
+        and IN_FIRE
+        ld (att_quit),a
+        xor a
+        ld (kill_keys),a        ; (no test keys)
+        call attract_cpu
         ld (input),a
         ret
         assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h
@@ -1027,6 +1114,249 @@ joy_r14:
         in a,(PSG_READ)
 .r14:   ei
         ret
+
+; ---- Attract mode ----------------------------------------------------------
+
+; Attract mode's start (new_game, after init_stars: rand is seeded): its
+; time, the real input all held (a press must come after it), the first
+; think in think_frames, the first call-up roll ATTRACT_CALL_MS on, a random
+; target column
+attract_init:
+        ld hl,(attract_len)
+        ld (att_left),hl
+        ld a,0FFh
+        ld (att_real),a
+        ld a,(think_frames)
+        ld (att_think),a
+        ld a,ATTRACT_CALL_MS/ATTRACT_THINK_MS
+        ld (att_calls),a
+        call rand
+        ld (att_target),a
+        ret
+
+; A = the pseudo-player's input this frame (IN_*): right or left towards
+; att_target (the front's last column at most) until ship_x is within
+; ATTRACT_NEAR px of it, then a new random target after a random pause.
+; Every think (think_frames): fire held is released, else pressed with a
+; chance of 1 in ATTRACT_FIRE_CHANCE; every ATTRACT_CALL_MS of thinks, a
+; roll: call-up pressed (for this frame) with a chance of 1 in
+; ATTRACT_CALL_CHANCE.
+attract_cpu:
+        xor a
+        ld (att_call),a
+        ld hl,att_think
+        dec (hl)
+        jr nz,.move
+        ld a,(think_frames)
+        ld (hl),a
+        ld a,(att_fire)
+        or a
+        ld a,0
+        jr nz,.fire             ; held: released
+        call rand
+        and ATTRACT_FIRE_CHANCE-1
+        ld a,0
+        jr nz,.fire
+        ld a,IN_FIRE
+.fire:  ld (att_fire),a
+        ld hl,att_calls
+        dec (hl)
+        jr nz,.wait
+        ld (hl),ATTRACT_CALL_MS/ATTRACT_THINK_MS
+        call rand
+.roll:                          ; (test.tcl: A = the roll)
+        and ATTRACT_CALL_CHANCE-1
+        jr nz,.wait
+        ld a,IN_CALL
+        ld (att_call),a
+.wait:  ld hl,att_pause
+        ld a,(hl)
+        or a
+        jr z,.dodge
+        dec (hl)
+.dodge: call attract_dodge
+.move:  ld c,0                  ; the direction
+        ld a,(att_pause)
+        or a
+        jr nz,.put              ; standing still
+        ld a,(front_w)
+        neg                     ; the front's last column (256 - front_w)
+        ld b,a
+        ld a,(att_target)
+        cp b
+        jr c,.t
+        ld a,b
+.t:     ld hl,ship_x
+        sub (hl)
+        jr c,.left
+        ld c,IN_RIGHT
+        cp ATTRACT_NEAR+1
+        jr nc,.put
+        jr .there
+.left:  neg
+        ld c,IN_LEFT
+        cp ATTRACT_NEAR+1
+        jr nc,.put
+.there: call rand               ; reached: a new target, and a pause
+        ld (att_target),a
+        call rand
+        and ATTRACT_PAUSE_MAX-1
+        ld (att_pause),a
+        ld c,0
+.put:   ld a,(att_fire)
+        or c
+        ld hl,att_call
+        or (hl)
+        ret
+        assert (ATTRACT_FIRE_CHANCE & (ATTRACT_FIRE_CHANCE-1)) == 0 && (ATTRACT_CALL_CHANCE & (ATTRACT_CALL_CHANCE-1)) == 0
+        assert (ATTRACT_PAUSE_MAX & (ATTRACT_PAUSE_MAX-1)) == 0 && ATTRACT_PAUSE_MAX <= 256
+        assert ATTRACT_NEAR >= (SHIP_SPEED+49)/50 && FRONT_MAX*SHIP_ART_W < 256
+
+; At a think, with a chance of 1 in ATTRACT_DODGE_CHANCE (the front there
+; and free to move): the first threat seen (enemy bullets first, then free
+; enemies) whose lowest line is ATTRACT_DODGE_LINES above the front's art's
+; first or lower, and whose columns (a bullet's one, a free enemy's art's
+; 8) come within ATTRACT_DODGE_MARGIN px of the front's: the target becomes
+; the place that has the front ATTRACT_DODGE_MARGIN px clear of it, on the
+; side away from it (right of it if its middle is left of the front's or
+; on it); if that's off the screen, the other side's (at the edge if
+; neither fits); no pause. Only that threat is looked at.
+attract_dodge:
+        ld a,(call_on)
+        or a
+        ret nz
+        ld a,(front_w)
+        or a
+        ret z
+        call rand
+        and ATTRACT_DODGE_CHANCE-1
+        ret nz
+        ld (att_tw),a           ; (0: a bullet's 1 column)
+        ld hl,ebullets
+        ld b,EB_N
+.eb:    ld a,(hl)
+        inc hl
+        or a
+        jr z,.ebn
+        cp DODGE_LINE
+        jr c,.ebn
+        push hl
+        push bc
+        ld l,(hl)
+        ld h,0
+        call .threat
+        pop bc
+        pop hl
+        ret c
+.ebn:   inc hl
+        djnz .eb
+        ld a,7                  ; an enemy's art: 8 columns
+        ld (att_tw),a
+        ld iy,enemies
+        ld b,ENEMY_N
+.en:    ld a,(iy+EN.ST)
+        cp EN_FREE
+        jr nz,.enn
+        ld a,(form_art_b)
+        add a,(iy+EN.Y)
+        cp DODGE_LINE
+        jr c,.enn
+        ld l,(iy+EN.X)
+        ld h,(iy+EN.X+1)
+        call to_screen
+        push bc
+        call .threat
+        pop bc
+        ret c
+.enn:   ld de,EN
+        add iy,de
+        djnz .en
+        ret
+; Carry: columns HL (signed) .. HL + att_tw come within ATTRACT_DODGE_MARGIN
+; px of the front's: the target set to dodge them
+.threat:                        ; (test.tcl: HL = the first column)
+        push hl
+        ld a,(att_tw)
+        add a,ATTRACT_DODGE_MARGIN
+        ld e,a
+        ld d,0
+        add hl,de
+        ld a,(ship_x)
+        ld e,a
+        or a
+        sbc hl,de               ; e = last column + margin - ship_x: within if 0 <= e < k
+        ld a,h
+        or a
+        jr nz,.no
+        ld c,l
+        ld a,(front_w)
+        ld b,a
+        ld a,(att_tw)
+        add a,b
+        add a,2*ATTRACT_DODGE_MARGIN    ; k = front_w + att_tw + 2 * margin
+        cp c
+        jr c,.no
+        jr z,.no
+        pop hl                  ; the first column
+        push hl
+        ld a,(att_tw)
+        add a,ATTRACT_DODGE_MARGIN+1
+        ld e,a
+        ld d,0
+        add hl,de
+        ex de,hl                ; DE = the right side's target
+        pop hl
+        push de
+        ld de,-ATTRACT_DODGE_MARGIN
+        add hl,de
+        ld e,b
+        ld d,0
+        or a
+        sbc hl,de               ; HL = the left side's target
+        pop de
+        ld a,(att_tw)
+        add a,b
+        add a,2*ATTRACT_DODGE_MARGIN
+        sla c                   ; (e < k < 128) 2e < k: its middle left of the front's or on it
+        cp c
+        jr c,.left
+        jr z,.left
+        push hl                 ; right first: it fits if DE + front_w <= 256
+        ld l,b
+        ld h,0
+        add hl,de
+        ld a,h
+        dec a
+        or l                    ; (Z: exactly 256)
+        ld a,h
+        pop hl
+        jr z,.r
+        or a
+        jr z,.r
+        jr .put
+.left:  bit 7,h
+        jr z,.put               ; fits: 0 or more
+.r:     ex de,hl
+.put:   bit 7,h                 ; HL clamped to 0..255
+        jr z,.pos
+        ld hl,0
+.pos:   ld a,h
+        or a
+        ld a,l
+        jr z,.set
+        ld a,255
+.set:                           ; (test.tcl: A = the target)
+        ld (att_target),a
+        xor a
+        ld (att_pause),a
+        scf
+        ret
+.no:    pop hl
+        or a
+        ret
+DODGE_LINE      equ SHIP_TOP+SHIP_ART_T-ATTRACT_DODGE_LINES
+        assert DODGE_LINE >= PLAY_TOP && 2*(2*ATTRACT_DODGE_MARGIN+FRONT_MAX*SHIP_ART_W+7) < 256
+        assert (ATTRACT_DODGE_CHANCE & (ATTRACT_DODGE_CHANCE-1)) == 0
 
 ; ---- Movement --------------------------------------------------------------
 
@@ -2319,7 +2649,7 @@ volley_px:
 ; cells (over_at)
 bullet_px:
         ld b,BULLET_H
-.cell:  ld a,(over_on)
+.cell:  ld a,(over_text)
         or a                    ; (no carry)
         call nz,over_cell
         jr c,.skip
@@ -2952,8 +3282,11 @@ call_up:
 
 ; The level and wave ("L1 W1" .. "L255 W10": level, form_enemy+1) in
 ; lw_text, printed on LW_ROW from LW_COL, blank cells after it up to LW_LEN
-; (a shorter text than the last leaves none of it)
+; (a shorter text than the last leaves none of it); not in attract mode
 level_text:
+        ld a,(attract)
+        or a
+        ret nz                  ; (attract mode: the title's kept)
         ld de,lw_text
         ld a,'L'
         ld (de),a
@@ -3076,6 +3409,9 @@ PTS_FREE        equ 2
 ; The score, if it changed, on SCORE_ROW's last SCORE_LEN cells,
 ; right-aligned, no leading zeros: only the cells that changed are printed
 show_score:
+        ld a,(attract)
+        or a
+        ret nz                  ; (attract mode: the title's kept)
         ld a,(score_dirty)
         or a
         ret z
@@ -3144,11 +3480,25 @@ show_score:
 
 ; Carry: game over's end, back to the title. The front empty with no
 ; call-up flying (none left in reserve: call_up sends one by itself) is
-; game over: GAME OVER centred on OVER_ROW, the game running on
+; game over: GAME OVER centred on OVER_ROW (not in attract mode), the game running on
 ; (the front can't move, shoot or call up) until GAME_OVER_MS later, or a
 ; press of fire (space or either joystick's button A) from OVER_SKIP_MS on.
 game_over:
-        ld a,(over_on)
+        ld a,(attract)
+        or a
+        jr z,.game
+        ld a,(att_quit)         ; attract mode: a press of fire, or its time over
+        or a
+        scf
+        ret nz
+        ld hl,(att_left)
+        dec hl
+        ld (att_left),hl
+        ld a,h
+        or l
+        scf
+        ret z
+.game:  ld a,(over_on)
         or a
         jr nz,.on
         ld a,(front_mask)
@@ -3159,6 +3509,11 @@ game_over:
         ret nz
         inc a
         ld (over_on),a          ; (over_time: 0)
+        ld a,(attract)
+        or a
+        ret nz                  ; attract mode: no text, just the timeout (no carry after the or)
+        inc a
+        ld (over_text),a
         ld hl,OVER_TEXT
         ld de,OVER_ROW*256+OVER_COL*8
         ld c,TEXT_COLOR*16+BG_COLOR
@@ -3179,6 +3534,9 @@ game_over:
         sbc hl,de
         ccf
         ret nc                  ; too soon for fire
+        ld a,(attract)
+        or a
+        ret nz                  ; (attract mode: the pseudo-player's fire doesn't count)
         ld a,(input_prev)
         cpl
         ld b,a
@@ -3189,10 +3547,10 @@ game_over:
         scf
         ret
 
-; Carry: game over, and pixel (D, E)'s bitmap byte is in GAME OVER's cells
+; Carry: GAME OVER shows, and pixel (D, E)'s bitmap byte is in its cells
 ; (no star or bullet is drawn there meanwhile). Keeps BC, DE, HL.
 over_at:
-        ld a,(over_on)
+        ld a,(over_text)
         or a
         ret z
 ; ... the same, game over or not
@@ -3932,6 +4290,8 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 db 300/60
                 dw 100*60
                 dw BONUS_60
+                dw TITLE_WAIT_MS*60/1000, ATTRACT_MS*60/1000
+                db ATTRACT_THINK_MS*60/1000
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
@@ -3943,6 +4303,8 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
                 db 300/50
                 dw 100*50
                 dw BONUS_50
+                dw TITLE_WAIT_MS*50/1000, ATTRACT_MS*50/1000
+                db ATTRACT_THINK_MS*50/1000
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
         assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0
@@ -3951,6 +4313,10 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
         assert GAME_OVER_MS*60%1000 == 0 && GAME_OVER_MS*50%1000 == 0
         assert OVER_SKIP_MS*60%1000 == 0 && OVER_SKIP_MS*50%1000 == 0
         assert OVER_SKIP_MS < GAME_OVER_MS && GAME_OVER_MS*60/1000 < 65536
+        assert TITLE_WAIT_MS*60%1000 == 0 && TITLE_WAIT_MS*50%1000 == 0 && TITLE_WAIT_MS*60/1000 < 65536
+        assert ATTRACT_MS*60%1000 == 0 && ATTRACT_MS*50%1000 == 0 && ATTRACT_MS*60/1000 < 65536
+        assert ATTRACT_THINK_MS*60%1000 == 0 && ATTRACT_THINK_MS*50%1000 == 0 && ATTRACT_THINK_MS*50/1000 > 0
+        assert ATTRACT_CALL_MS%ATTRACT_THINK_MS == 0 && ATTRACT_CALL_MS/ATTRACT_THINK_MS < 256
 
 FORM_COLORS:    db FORM_COLOR_LIST
 FORM_COLORS_N   equ $-FORM_COLORS
@@ -3987,6 +4353,9 @@ PTS:    PTS_FOR SHARE_1         ; (none: as one)
         PTS_FOR SHARE_4
         assert $-PTS == (FRONT_MAX+1)*4 && PTS_FREE == 2
 
+        if ($ & 0FFh) > 100h-24     ; (PIXEL_BIT and BL_MASKS in one 256-byte page)
+        ds 100h-($ & 0FFh),0FFh
+        endif
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 BL_MASKS:                       ; lines n..n+2 of a byte's 8 (and the next one's): (E000h >> n), high byte first
         dup 8, n

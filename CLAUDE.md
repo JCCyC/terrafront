@@ -69,6 +69,41 @@ rates, `frames`, `entropy`, `polls`, `lw_text`, `score_digits`,
 and its score on its right, as in the game, from `score_shown`, its leading
 blanks not printed (the picture stays);
 none at power-on), and a new game as at power-on.
+**Attract mode:** the title left alone 20 s (`TITLE_WAIT_MS`, counted per
+frame `splash` sees; `title_left`) plays a pseudo-game (`attract`, set by
+`splash`) for 40 s (`ATTRACT_MS`, `att_left`; or till game over's 10 s,
+if that comes first): a new game's start (`attract_init`), but the top
+status row stays as the title had it (the last game's level, wave and
+score; none at power-on: `splash` clears from row 1 on, `level_text` and
+`show_score` do nothing, `lw_text` and `score_shown` kept for the next
+title), and no sound (`sfx`, `brk_sfx`, `death` not called; the PSG
+stays as `init_sound` left it). A pseudo-player (`attract_cpu`, called
+from `read_input`) presses virtual keys through the game's own code:
+right or left towards a random column (`att_target`, at most the front's
+last), and within 3 px of it (`ATTRACT_NEAR`) a new one after a pause of
+0..7 thinks (`ATTRACT_PAUSE_MAX`); at a think, with a chance of 1 in 2
+(`ATTRACT_DODGE_CHANCE`), it dodges (`attract_dodge`): the first enemy
+bullet, else free enemy, whose lowest line is 40 lines
+(`ATTRACT_DODGE_LINES`) above the front's art or lower and whose columns
+(1, or the art's 8) come within 4 px (`ATTRACT_DODGE_MARGIN`) of the
+front's becomes the target's reason: the front 4 px clear of it, on the
+side away from its middle (right if left of the front's or on it), the
+other side if that's off screen, no pause (only that threat is looked at,
+so it isn't too good: measured over 24 runs, about 4.0 ships lost per 40 s
+against 4.8 with no dodging, game over in about half the runs); every think (0.1 s,
+`ATTRACT_THINK_MS`: 6 / 5 frames) fire held is released, else pressed
+with a chance of 1 in 2 (`ATTRACT_FIRE_CHANCE`); every 50 thinks (5 s,
+`ATTRACT_CALL_MS`) a roll (`attract_cpu.roll`): 1 in 2
+(`ATTRACT_CALL_CHANCE`) presses call-up for that frame (refused as C
+would be: one flying, no reserve, a span of 4). The real input only
+quits: a press of fire (space or either joystick's button A; held from
+before doesn't count: `att_real` starts all held) goes to the title that
+frame (`game_over`, `att_quit`); arrows, C and the test keys do nothing.
+Enemy bullets and crashes kill ships as in a game; game over in it shows
+no GAME OVER (`over_text` stays 0: no cells kept from stars and bullets),
+just its 10 s with the enemies flying on (the pseudo-player's fire doesn't
+cut it short). Then
+`restart`: the title (its 20 s from the start again).
 **Levels:** a level is 10 waves (enemies 0..9); `level` (1.., stays at
 255) goes up when `form_enemy` wraps to 0. "L1 W1" .. "L1 W10", "L2 W1",
 ... (`level`, `form_enemy`+1) is on the top status row's left in the font,
@@ -313,8 +348,22 @@ the staged test below. Then the enemies' part, hits on,
   left and its score, 99999999, on its right; "0" after games 2 and 3), no sprites, a held space not starting; the new game as at
   power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
   Then twice no reserves, the front killed: joystick 1's button A, then
-  space, seen exactly at 3 s goes to the title at once; a fourth game for
-  the final screenshot. Every wave's end: the bonus model (ship deaths
+  space, seen exactly at 3 s goes to the title at once. Then the title
+  left alone: attract mode, three times. Each: exactly 20 s of title
+  first; the top row as the title had it (L1 W1 and the score) and the
+  bitmap below blank as it begins, a new game's state; every frame silent
+  (R7..R10) and the top row unchanged; a call-up roll (a breakpoint)
+  exactly every 5 s, a call-up starting exactly on the heads that could
+  (against `call_up`'s start, a snapshot) and none else but an empty
+  front's; no dropped frame. The first plays 40 s (test keys 1..4 and C
+  held 1 s ignored; a game over, staged at 25 s if none came by itself:
+  no GAME OVER on any of its frames, the title 10 s on; the front moves
+  both ways over 100+ columns, shoots,
+  calls up, dodges: each dodge's target, from the threat tried (a
+  breakpoint), against the rule), back to the title (its VRAM as before); the second ends at
+  joystick 1's button A 3 s in, the third at space 2 s in, that frame;
+  then a press of space: a fourth game, as at power-on, for the final
+  screenshot. Every wave's end: the bonus model (ship deaths
   seen at `ship_dies`, the streak, the reserve that frame in RAM and VRAM,
   `bonus_start` calls). The score, every frame of the game: each `score_add` call
   (a breakpoint) with the front's living ships before the hit (the front

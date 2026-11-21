@@ -2,7 +2,7 @@
 # -call before .png: a call-up in flight).
 # Driven by a breakpoint at main_loop (once a frame, before its halt: the
 # frame's work is done, VRAM holds the previous frame's SAT).
-after time 440 { fail "timeout" ; finish }
+after time 600 { fail "timeout" ; finish }
 set save_settings_on_exit off
 set throttle off
 
@@ -13,6 +13,7 @@ proc fail {s} { incr ::fails ; say "FAIL: $s" }
 proc ok {s} { say "ok: $s" }
 proc check {cond s} { if {[uplevel 1 [list expr $cond]]} { ok $s } else { fail $s } }
 proc finish {} {
+	say [format "emulated time %.1f s" [machine_info time]]
 	say [expr {$::fails ? "$::fails FAILED" : "ALL PASSED"}]
 	close $::log
 	exit
@@ -79,7 +80,6 @@ set blost 0 ; set bstreak 0 ; set bwant {} ; set bseq {} ; set bonew 0
 set bonus_bad 0 ; set bonus_first "" ; set b_awards 0 ; set b_vram 0
 set beepidx -1 ; set beepruns {} ; set beepframes 0 ; set beepshot 0
 proc bonus_bad {s} { if {!$::bonus_bad} { set ::bonus_first "frame $::n: $s" } ; incr ::bonus_bad }
-debug set_bp $sym(ship_dies) {} { set ::blost 1 }
 debug set_bp $sym(new_game) {} { set ::blost 0 ; set ::bstreak 0 }
 debug set_bp $sym(bonus_start) {} { incr ::bonew }
 debug set_bp $sym(next_wave.done) {} {
@@ -215,8 +215,10 @@ proc score_end {} {
 
 proc frame {} {
 	incr ::n
-	try score_frame     ;# (before the steps and stagings: they may write the enemies)
-	try bonus_frame     ;# (before them: they may write the reserve)
+	if {!$::attr} {
+		try score_frame     ;# (before the steps and stagings: they may write the enemies)
+		try bonus_frame     ;# (before them: they may write the reserve)
+	}
 	set due {} ; set rest {}
 	foreach s $::steps { if {[lindex $s 0] == $::n} { lappend due $s } else { lappend rest $s } }
 	set ::steps $rest   ;# (before running them: a step may plan more)
@@ -247,6 +249,7 @@ proc frame {} {
 		try enemy_frame
 	}
 	if {$::ephase} { try aim_frame }
+	if {$::attr} { try attract_frame }
 	set ::sc_prev [en_sts]     ;# (after the steps and stagings that write the enemies)
 	set ::nohits_was $::nohits
 	set fr [m frames]
@@ -1147,12 +1150,14 @@ proc splash_frame {} {
 	if {$::phase == 3} {
 		if {$::sn == 1} { up 0x01 ; joyup 1 ; joyup 2 }
 		if {$::sn == 3} {
-			check {[vdp_r1] & 0x40} "back at the title after game over $::games: display on (R1 [format %02X [vdp_r1]])"
-			check_title 1 "after game over $::games (text shown; the last game's level, wave and score kept)" $::lw_last $::score_last
+			check {[vdp_r1] & 0x40} "back at the title after $::twhy: display on (R1 [format %02X [vdp_r1]])"
+			check_title 1 "after $::twhy (text shown; the last game's level, wave and score kept)" $::lw_last $::score_last
 			check {[sat 0] == 0xD0} "back at the title: no sprites (the SAT's first Y [format %02X [sat 0]])"
 		}
-		if {$::sn == 6} { down 0x01 }
-		if {$::sn == 9} { fail "space doesn't start a new game after game over $::games" ; finish }
+		if {$::tnext eq "press"} {
+			if {$::sn == 6} { down 0x01 }
+			if {$::sn == 9} { fail "space doesn't start a new game after $::twhy" ; finish }
+		} elseif {$::sn > 20*[m fps]} { fail "the title left alone 20 s after $::twhy: no attract mode" ; finish }
 		return
 	}
 	set F [m fps]
@@ -1228,10 +1233,12 @@ debug set_bp $sym(main_loop) {} {
 		return
 	}
 	if {$::phase == 3} {
-		check {$::sn == 6} "after game over $::games, a new press of space starts a new game (splash frame $::sn; want 6)"
-		up 0x01
-		set ::phase 4
-		try new_game_checks
+		if {[m attract]} { try attract_begin } else {
+			check {$::sn == 6 && $::tnext eq "press"} "after $::twhy, a new press of space starts a new game (splash frame $::sn; want 6)"
+			up 0x01
+			set ::phase 4
+			try new_game_checks
+		}
 	}
 	if {!$::started} {
 		check {$::sn == 3*[m fps]} "space starts the game (splash frame $::sn)"
@@ -1973,7 +1980,11 @@ proc wave_step {} {
 			set want {1:lost 2:1 3:+1 4:1 5:+1 6:1 7:+1 8:1 9:lost 10:1 11:+1 12:1 13:full 14:1 15:full 16:1 17:full 18:1 19:full}
 			set got [lrange $::bseq end-18 end]
 			set bf [expr {$::F == 60 ? 15 : 13}]
-			check {$got eq $want && $::bonus_bad == 0 && $::b_awards >= 3 && $::b_vram == $::b_awards && [lsort -unique $::beepruns] eq $bf && [llength $::beepruns] == $::b_awards && $::beepshot > 0} "bonus ships: 2 waves in a row with no ship lost, a reserve ship more (none at RESERVE_MAX; a ship lost starts the count again), shown in the reserve that frame, the happy beep on channel A as the BONUS table every frame ($bf frames, [format %.2f [expr {double($bf)/$::F}]] s; $::beepshot of them over a shot) (waves 2..20 at wave_n:streak/lost/+1/full: $got; $::b_awards bonus ships, beeps $::beepruns; [expr {$::bonus_bad ? "first wrong: $::bonus_first" : "none wrong"}])"
+			# (+1 or full: by the reserve then, which the run's randomness can
+			# change, e.g. a forced call-up as the test writes the reserve;
+			# bonus_frame checks each against RAM)
+			set gotb [string map {+1 B full B} $got] ; set wantb [string map {+1 B full B} $want]
+			check {$gotb eq $wantb && [lsearch $got *:full] >= 0 && $::bonus_bad == 0 && $::b_awards >= 3 && $::b_vram == $::b_awards && [lsort -unique $::beepruns] eq $bf && [llength $::beepruns] == $::b_awards && $::beepshot > 0} "bonus ships: 2 waves in a row with no ship lost, a reserve ship more (none at RESERVE_MAX; a ship lost starts the count again), shown in the reserve that frame, the happy beep on channel A as the BONUS table every frame ($bf frames, [format %.2f [expr {double($bf)/$::F}]] s; $::beepshot of them over a shot) (waves 2..20 at wave_n:streak/lost/+1/full: $got; $::b_awards bonus ships, beeps $::beepruns; [expr {$::bonus_bad ? "first wrong: $::bonus_first" : "none wrong"}])"
 			check {$::wave_bad == 0} "waves 3..21 (enemy/colour; the level and wave on the top status row: L1 W1 .. L1 W10, L2 W1 ..): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 			at [expr {$::n + 3}] plan_eb_levels    ;# (after this wave's wipe of the test's bullets)
 		}
@@ -2525,7 +2536,7 @@ proc over_plan_skip {} {
 }
 # Game over's end (restart): frames from the one it began in to this one
 # (whose work stops here)
-debug set_bp $sym(restart) {} { try over_restart }
+debug set_bp $sym(restart) {} { if {$::attr} { try attract_restart } else { try over_restart } }
 proc over_restart {} {
 	set k [expr {$::n - $::N0 + 1}]
 	set ::lw_last "L[m level] W[expr {[m form_enemy] + 1}]"
@@ -2540,6 +2551,7 @@ proc over_restart {} {
 	check {$::ostate eq "on" && $k == $::owant} "game over $::games: back to the title $k frames after it began (want $::owant: $::owhy)"
 	check {$::dropped == $::odropped} "game over $::games: the game ran every frame of it ([expr {$::dropped - $::odropped}] dropped)"
 	set ::ostate "" ; set ::phase 3 ; set ::sn 0
+	set ::twhy "game over $::games" ; set ::tnext [expr {$::games < 3 ? "press" : "wait"}]
 	set ::score_last [string trim [score_str $::score_model]]
 	set ::score_model 0 ; set ::sc_calls {} ; set ::sc_shown 0
 	unset -nocomplain ::last_frames
@@ -2561,4 +2573,168 @@ proc new_game_checks {} {
 		check {[sat 0] == $y && [sat 1] == $x || [sat 48] == $y && [sat 49] == $x} "new game $::games: the ship's sprite in the middle"
 	}
 	if {$::games < 3} { at [expr {$::n+$::F}] { plan_over [expr {$::games + 1}] } } else { at [expr {$::n+$::F}] { screenshot_and_finish } }
+}
+
+# Attract mode. After game over 3 the title is left alone: 20 s on
+# (TITLE_WAIT_MS), attract mode, a pseudo-game: the top status row as the
+# title had it (the last game's level, wave and score) every frame, silent
+# every frame (R8..R10 0, the mixer all off), the front moving both ways
+# and shooting; every 5 s a call-up roll (attract_cpu.roll, a breakpoint):
+# heads (1 in 2), a call-up starts that frame if one can (none flying, a
+# reserve, a span under 4; as call_up began: a breakpoint's snapshot), and
+# none starts otherwise but by itself (the front empty); no test key or C
+# does anything (held 1 s in the first). Three times: the first plays its
+# 40 s (or till game over's 10 s, if it comes first), then the title (left
+# alone again); the second ends at joystick 1's button A, the third at
+# space, pressed 3 s and 2 s in, that frame; then the title, a press of
+# space, a new game as at power-on.
+set attr 0 ; set attracts 0 ; set tnext press ; set twhy ""
+proc top_want {} {
+	set t [title_with $::lw_last $::score_last]
+	set ::topwant {}
+	foreach v [concat [lrange $t 0 255] [lrange $t 6144 6399]] { lappend ::topwant [expr 0x$v] }
+}
+proc top_bad {} {
+	set bad {}
+	for {set i 0} {$i < 256} {incr i} {
+		if {[debug read VRAM $i] != [lindex $::topwant $i]} { lappend bad [format %04X $i] }
+		if {[debug read VRAM [expr {0x2000 + $i}]] != [lindex $::topwant [expr {256 + $i}]]} { lappend bad [format %04X [expr {0x2000 + $i}]] }
+	}
+	return $bad
+}
+proc att_bad {s} { if {!$::att_bad} { set ::att_first "frame $::an: $s" } ; incr ::att_bad }
+debug set_bp $sym(attract_cpu.roll) {} {
+	if {$::attr} { lappend ::arolls $::an ; set ::aroll [expr {([reg A] & ($::sym(ATTRACT_CALL_CHANCE) - 1)) == 0}] }
+}
+debug set_bp $sym(call_up) {} {
+	if {$::attr} { set ::asnap [list [m call_on] [m reserves] [m front_slots] [m front_mask]] }
+}
+debug set_bp $sym(kill_nth) {} { if {$::attr} { incr ::akills } }
+# Dodges: the threat tried (attract_dodge.threat: DE, its column) and the
+# target set for the last one (attract_dodge.set: A) against the rule: the
+# front ATTRACT_DODGE_MARGIN px clear of it, away from it (right if it's
+# left of the front's middle or on it), else the other side, clamped
+debug set_bp $sym(attract_dodge.threat) {} {
+	if {$::attr} { set c [reg HL] ; if {$c > 32767} { incr c -65536 } ; set ::athreat [list $c [m att_tw] [m ship_x] [m front_w]] }
+}
+debug set_bp $sym(attract_dodge.set) {} { if {$::attr} { try dodge_check } }
+debug set_bp $sym(ship_dies) {} { set ::blost 1 ; if {$::attr} { incr ::adeaths } }
+proc dodge_check {} {
+	set M $::sym(ATTRACT_DODGE_MARGIN)
+	lassign $::athreat c tw x w
+	set c1 [expr {$c + $tw}]
+	set threat [expr {$c - $M <= $x + $w - 1 && $c1 + $M >= $x}]
+	set R [expr {$c1 + $M + 1}] ; set L [expr {$c - $M - $w}]
+	set rfit [expr {$R >= 0 && $R + $w <= 256}]
+	if {$c + $c1 <= 2*$x + $w - 1} { set t [expr {$rfit ? $R : $L}] } else { set t [expr {$L >= 0 ? $L : $R}] }
+	set t [expr {$t < 0 ? 0 : ($t > 255 ? 255 : $t)}]
+	incr ::adodges
+	if {!$threat || [reg A] != $t} { att_bad "a dodge of columns $c..$c1 (front at $x, $w px): target [reg A], want $t[expr {$threat ? "" : " (not a threat)"}]" }
+	# where it leads, the front is clear of it (or at an edge)
+	set e [expr {$t > 256 - $w ? 256 - $w : $t}]
+	if {$c - $M <= $e + $w - 1 && $c1 + $M >= $e} { incr ::adodge_edge }
+}
+# The main loop's first frame in attract mode (before its work)
+proc attract_begin {} {
+	incr ::attracts
+	set F [m fps]
+	check {$::sn == 20*$F} "the title left alone after $::twhy: attract mode $::attracts after $::sn frames (want [expr {20*$F}]: 20 s)"
+	check {[vdp_r1] & 0x40} "attract mode $::attracts: display on (R1 [format %02X [vdp_r1]])"
+	top_want
+	set bad [top_bad]
+	for {set a 256} {$a < 23*256} {incr a} { if {[debug read VRAM $a]} { lappend bad [format %04X $a] } }
+	check {![llength $bad]} "attract mode $::attracts: the top status row as the title had it (\"$::lw_last\" on its left, \"$::score_last\" on its right), the bitmap below it blank (wrong: [lrange $bad 0 5])"
+	set st {} ; for {set k 0} {$k < 4} {incr k} { lappend st [m boom_stage $k] }
+	set left [expr {[m att_left] + 256*[m att_left 1]}]
+	check {[m front_mask] == 1 && [m ship_x] == $::sym(SHIP_X_MAX)/2 && $st eq {0 0 0 0} && [m reserves] == 4 && [m form_enemy] == 0 && [m form_color] == 2 && ![m over_on] && $left == 40*$F} "attract mode $::attracts: as a new game (one ship in the middle, 4 in reserve, the first wave), for [expr {$left/$F}] s"
+	check_reserves 4
+	set ::attr 1 ; set ::an 0 ; set ::att_bad 0 ; set ::att_first ""
+	set ::arolls {} ; set ::aroll -1 ; set ::aheads 0 ; set ::acalls 0 ; set ::aforced 0 ; set ::akills 0
+	set ::ax [m ship_x] ; set ::alefts 0 ; set ::arights 0 ; set ::axmin 255 ; set ::axmax 0
+	set ::spawns 0 ; set ::aover -1 ; set ::aquit_at -1 ; set ::adropped $::dropped
+	set ::adodges 0 ; set ::adodge_edge 0 ; set ::adeaths 0 ; set ::aoverframes 0 ; set ::astaged 0
+	unset -nocomplain ::asnap
+	set ::ebhits 1       ;# (enemy bullets kill ships: a real pseudo-game)
+	set ::phase 4
+}
+# Every main loop frame in attract mode (::an: frames so far; after frame
+# ::an-1's work)
+proc attract_frame {} {
+	incr ::an
+	set F $::F
+	set ::sc_calls {} ; set ::in_col 0     ;# (score_add's checks stand; the score isn't shown)
+	if {[psg 8] || [psg 9] || [psg 10] || ([psg 7] & 0x3F) != 0x3F} { att_bad "not silent (R7 [format %02X [psg 7]], R8..R10 [psg 8] [psg 9] [psg 10])" }
+	set bad [top_bad]
+	if {[llength $bad]} { att_bad "the top status row changed (at [lrange $bad 0 3])" }
+	set x [m ship_x]
+	if {$x > $::ax} { incr ::arights } elseif {$x < $::ax} { incr ::alefts }
+	set ::ax $x
+	if {$x < $::axmin} { set ::axmin $x } ; if {$x > $::axmax} { set ::axmax $x }
+	if {[m over_on] && $::aover < 0} { set ::aover $::an }
+	if {[m over_on]} {
+		incr ::aoverframes
+		if {[m over_text]} { att_bad "game over in attract mode flagged as showing GAME OVER" }
+		set bad [over_text_bad 0]
+		if {[llength $bad]} { att_bad "GAME OVER's letters show in attract mode ($bad)" }
+	}
+	# attract 1: no game over by 25 s, one staged (no reserve, every ship
+	# booming, once no call-up flies)
+	if {$::attracts == 1 && $::an >= 25*$F && $::aover < 0 && !$::astaged && ![m call_on]} {
+		set ::astaged 1
+		debug write memory $::sym(reserves) 0
+		for {set k 0} {$k < 4} {incr k} {
+			if {([m front_mask] >> $k & 1) && ![m boom_stage $k]} {
+				debug write memory [expr {$::sym(boom_stage) + $k}] 1
+				debug write memory [expr {$::sym(boom_left) + $k}] 1
+			}
+		}
+	}
+	if {[info exists ::asnap]} {
+		lassign $::asnap con res slots mask
+		set started [expr {[m call_on] && !$con}]
+		set can [expr {!$con && $res > 0 && $slots < 4}]
+		set heads [expr {$::aroll == 1}]
+		if {$heads} { incr ::aheads }
+		set want [expr {$can && ($heads || $mask == 0)}]
+		if {$started != $want} { att_bad "a call-up [expr {$started ? "started" : "didn't start"}] (roll [expr {$::aroll < 0 ? "none" : ($heads ? "heads" : "tails")}], call_on $con, $res in reserve, span $slots, mask $mask before)" }
+		if {$started} {
+			if {[m reserves] != $res - 1} { att_bad "a call-up: [m reserves] in reserve, want [expr {$res - 1}]" }
+			if {$mask} { incr ::acalls } else { incr ::aforced }
+		}
+		unset ::asnap
+	}
+	set ::aroll -1
+	if {$::attracts == 1} {
+		if {$::an == 2*$F} { keymatrixdown 0 0x1E ; cdown }
+		if {$::an == 3*$F} { keymatrixup 0 0x1E ; cup }
+	} elseif {$::attracts == 2} {
+		if {$::an == 3*$F} { joydown 1 0x10 ; set ::aquit_at $::an }
+	} elseif {$::an == 2*$F} { down 0x01 ; set ::aquit_at $::an }
+	if {$::an > 40*$F + 2} { fail "attract mode $::attracts: still on after 40 s" ; finish }
+}
+# Attract mode's end (restart): ::an frames into it (the last one's work stops here)
+proc attract_restart {} {
+	set F $::F
+	set want [expr {40*$F}] ; set why "40 s"
+	if {$::aover >= 0 && $::aover - 1 + 10*$F < $want} { set want [expr {$::aover - 1 + 10*$F}] ; set why "game over's 10 s (it began [expr {$::aover - 1}] frames in)" }
+	if {$::aquit_at >= 0} { set want $::aquit_at ; set why [expr {$::attracts == 2 ? "joystick 1's button A pressed" : "space pressed"}] }
+	check {$::an == $want} "attract mode $::attracts: back to the title [format %.2f [expr {double($::an)/$F}]] s in ($::an frames; want $want: $why)"
+	set nrolls [expr {$::an / (5*$F)}]
+	set rbad {} ; set k 0
+	foreach r $::arolls { incr k ; if {$r != $k*5*$F} { lappend rbad $r } }
+	check {[llength $::arolls] == $nrolls && ![llength $rbad]} "attract mode $::attracts: a call-up roll every 5 s ($::arolls; want $nrolls, at multiples of [expr {5*$F}])"
+	check {$::att_bad == 0} "attract mode $::attracts: silent, the top status row unchanged, every frame; a call-up exactly on the rolls' heads that could ($::aheads heads, $::acalls call-ups by them, $::aforced by an empty front[expr {$::attracts == 1 ? "; test keys 1..4 and C held 1 s ignored" : ""}]; [expr {$::att_bad ? "first wrong: $::att_first" : "none wrong"}])"
+	check {$::akills == 0} "attract mode $::attracts: no test key kills a ship ($::akills)"
+	if {$::attracts == 1} {
+		check {$::aover >= 0 && $::aoverframes > 0} "attract mode 1: game over ([expr {$::astaged ? "staged at 25 s" : "by itself"}], [expr {$::aover - 1}] frames in): no GAME OVER shown on its $::aoverframes frames, back to the title 10 s on (above)"
+	}
+	say "attract mode $::attracts: $::adodges dodges ($::adodge_edge of them can't clear it: an edge), $::adeaths ships lost in [format %.1f [expr {double($::an)/$F}]] s"
+	check {$::dropped == $::adropped} "attract mode $::attracts: no frame dropped ([expr {$::dropped - $::adropped}])"
+	if {$::attracts == 1} {
+		check {$::alefts > 0 && $::arights > 0 && $::axmax - $::axmin >= 100 && $::spawns > 10 && $::aheads > 0 && $::acalls > 0 && $::adodges > 0} "attract mode 1: dodges ($::adodges, each target as the rule), the front moves both ways ($::alefts frames left, $::arights right, columns $::axmin..$::axmax) and shoots ($::spawns volleys); call-ups by the rolls ($::acalls of $::aheads heads in [llength $::arolls] rolls)"
+	}
+	set ::attr 0 ; set ::ebhits 0 ; set ::phase 3 ; set ::sn 0
+	set ::twhy "attract mode $::attracts" ; set ::tnext [expr {$::attracts < 3 ? "wait" : "press"}]
+	set ::sc_calls {} ; set ::in_col 0 ; set ::bwant {} ; set ::bonew 0 ; set ::eb_expect ""
+	unset -nocomplain ::last_frames ::asnap
 }
