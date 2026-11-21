@@ -55,14 +55,23 @@ can't move or shoot, and a call-up lands there: the frame the front is
 empty (its last boom over), with no call-up flying, one starts by itself
 (no C needed; `call_up`). With no reserve left, that frame is game over
 (`game_over`, after `call_up`): "GAME OVER" (`OVER_TEXT`) in the font,
-white, on the top status row (`OVER_ROW` 0), centred to the cell (columns
-11..19), and the game runs on (enemies, waves, stars; the front can't
+white, in the screen's middle (`OVER_ROW` 12, lines 96..103), centred to
+the cell (columns 11..19, `OVER_COL`; meanwhile no star or bullet is drawn
+in its cells: `over_at`, from `bullet_at` and `bullet_px`, and `eb_draw`'s
+shared rows), and the game runs on (enemies, waves, stars; the front can't
 move, shoot or call up) for 10 s (`GAME_OVER_MS`; 600 / 500 frames), or
 until a press of fire (`IN_FIRE`: space or either joystick's button A)
 seen from 3 s on (`OVER_SKIP_MS`; held from before doesn't count); then
 `restart`: display off, no sprites, the game's RAM (from `game_ram`; the
-rates, `frames`, `entropy`, `polls` kept) cleared, the splash, and a new
-game as at power-on. Behind it all, 15
+rates, `frames`, `entropy`, `polls`, `lw_text` kept) cleared, the splash
+(with the last game's level and wave on its top row's left, from `lw_text`;
+none at power-on), and a new game as at power-on.
+**Levels:** a level is 10 waves (enemies 0..9); `level` (1.., stays at
+255) goes up when `form_enemy` wraps to 0. "L1 W1" .. "L1 W10", "L2 W1",
+... (`level`, `form_enemy`+1) is on the top status row's left in the font,
+white (`level_text`: into `lw_text`, printed from `LW_COL` 0 on `LW_ROW`
+0, blank cells after it up to `LW_LEN` 8), at a new game and when each
+wave begins (`next_wave`). Behind it all, 15
 one-pixel light grey stars (random columns, random lines, never two on a
 line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 50 Hz), drawn in the bitmap (`move_stars`, after `fire`); one leaving past
@@ -206,7 +215,7 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `font.py --raw`'s glyphs (text shown and hidden; the space glyph blank), the blink every frame (on/off
   frame counts, 0.5 s period between frame interrupts in emulated time, no frame missed), A, C and
   button B changing `entropy` without starting, and space starting; then
-  the status rows blank after it. Then: ship start, speed
+  "L1 W1" on the top status row, the rest of the status rows blank. Then: ship start, speed
   over 1 s, both arrows, edge clamps for 1, 2 and 4 ships and their sprite
   X / EC, bullet spawn point, speed, removal at the top, the shot sound's
   length, the 2-volley limit, one shot per press, the reserve ships' pixels
@@ -249,7 +258,8 @@ the staged test below. Then the enemies' part, hits on,
   2 lines short of lines 8 and 183, flying straight at them, away from
   the front: a bounce at each, as modelled); then, with the
   per-frame models off, the test makes every enemy gone in RAM 19 times
-  and checks waves 3..21 (both lists wrap; none begun a frame before
+  and checks waves 3..21 (both lists wrap; the top status row's level
+  and wave at every wave, L3 W1 at the 21st; none begun a frame before
   its 0.7 s; the frame before each begins, the test puts 3 enemy
   bullets in flight: the model has them gone the frame after). Then the
   enemy bullets' levels (rolls forced to hit): the
@@ -264,11 +274,13 @@ the staged test below. Then the enemies' part, hits on,
   in ship 2's column 0 over its rows without pixels flies on; 3 death
   sound starts. Then game over, twice: 1 reserve left (RAM), the front
   killed (keys 1..4 at once): it's called up, no game over; killed again:
-  GAME OVER on the top row that frame (VRAM against `font.py --raw`), the
+  GAME OVER in the middle row that frame (VRAM against `font.py --raw`),
+  intact every frame of game over (a star and an enemy bullet the test
+  puts in it fly through, not drawn in its cells, and show past them), the
   front can't move, shoot or call up, the formation and stars move
   (screenshot `build/shot-<machine>-over.png`), space and joystick 2's
   button A pressed a frame before 3 s and held past it ignored, the title exactly 10 s on; the
-  title's VRAM, no sprites, a held space not starting; the new game as at
+  title's VRAM (with the game's level and wave, L3 W1, on its top row), no sprites, a held space not starting; the new game as at
   power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
   Then twice no reserves, the front killed: joystick 1's button A, then
   space, seen exactly at 3 s goes to the title at once; a fourth game for

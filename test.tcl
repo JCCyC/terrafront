@@ -755,8 +755,8 @@ proc put_star0 {} {
 	set ::bitmap_skip 1
 }
 
-# Every frame: the bitmap's playfield and top status rows (lines 0..183)
-# hold exactly the volleys' and the enemies' bullets, BULLET_COLOR on black
+# Every frame: the bitmap's playfield rows (lines 8..183; the top status
+# row holds the level text, checked as each wave begins) hold exactly the volleys' and the enemies' bullets, BULLET_COLOR on black
 # (a byte two share: both), and the stars
 # not in a bullet's byte, STAR_COLOR on black; the rest of the playfield's
 # colour bytes are BULLET_COLOR on black
@@ -802,11 +802,11 @@ proc check_bitmap {} {
 		}
 		incr i
 	}
-	set blk [debug read_block VRAM 0 [expr {23*256}]]
+	set blk [debug read_block VRAM 256 [expr {22*256}]]
 	set got [dict create]
 	foreach p [regexp -all -indices -inline {[^\x00]} $blk] {
-		set a [lindex $p 0]
-		binary scan [string index $blk $a] cu b
+		set a [expr {[lindex $p 0] + 256}]
+		binary scan [string index $blk [lindex $p 0]] cu b
 		dict set got $a $b
 	}
 	incr ::bitmap_frames
@@ -926,6 +926,49 @@ for {set i 0} {$i < [string length $PRESS]} {incr i} {
 		set TITLE_OFF [lreplace $TITLE_OFF [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] 11]
 	}
 }
+# Text str in font.py's glyphs on character row `row` from column col, over
+# ncells cells (blank cells past its end): the VRAM addresses wrong
+# (patterns: glyph rows on lines 0..5, 6..7 blank; colours TEXT_COLOR on black)
+proc text_bad {row col str ncells} {
+	set bad {}
+	set cc [expr {$::sym(TEXT_COLOR)*16 + 1}]
+	for {set k 0} {$k < $ncells} {incr k} {
+		scan [expr {$k < [string length $str] ? [string index $str $k] : " "}] %c ch
+		set a [expr {$row*256 + ($col + $k)*8}]
+		for {set y 0} {$y < 8} {incr y} {
+			set p [expr {$y < 6 ? "0x[lindex $::FONT [expr {($ch - 32)*6 + $y}]]" : 0}]
+			if {[debug read VRAM [expr {$a + $y}]] != $p} { lappend bad [format %04X [expr {$a + $y}]] }
+			if {[debug read VRAM [expr {0x2000 + $a + $y}]] != $cc} { lappend bad [format %04X [expr {0x2000 + $a + $y}]] }
+		}
+	}
+	return $bad
+}
+# The level and wave for wave w (0 the first): a level is 10 waves
+proc lw_str {w} { set l [expr {$w/10 + 1}] ; if {$l > 255} { set l 255 } ; return "L$l W[expr {$w%10 + 1}]" }
+# The top status row: text str from its left over LW_LEN cells (blank past
+# its end), the rest of the row blank: the addresses wrong
+proc lw_bad {str} {
+	set bad [text_bad $::sym(LW_ROW) $::sym(LW_COL) $str $::sym(LW_LEN)]
+	for {set a [expr {$::sym(LW_LEN)*8}]} {$a < 256} {incr a} {
+		if {[debug read VRAM $a] || [debug read VRAM [expr {0x2000 + $a}]] != 0x11} { lappend bad [format %04X $a] }
+	}
+	return $bad
+}
+# The title's tables with text str on the top status row from its left
+# (the last game's level and wave): TITLE_ON's
+proc title_with {str} {
+	set t $::TITLE_ON
+	for {set k 0} {$k < [string length $str]} {incr k} {
+		scan [string index $str $k] %c ch
+		set p [expr {$::sym(LW_ROW)*256 + ($::sym(LW_COL) + $k)*8}]
+		for {set y 0} {$y < 8} {incr y} {
+			set g [expr {$y < 6 ? [lindex $::FONT [expr {($ch - 32)*6 + $y}]] : "00"}]
+			set t [lreplace $t [expr {$p + $y}] [expr {$p + $y}] $g]
+			set t [lreplace $t [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] [format %02x [expr {$::sym(TEXT_COLOR)*16 + 1}]]]
+		}
+	}
+	return $t
+}
 set phase 1
 set sn 0
 proc vdp_r1 {} { debug read "VDP regs" 1 }
@@ -942,15 +985,15 @@ proc blink_state {} {
 	expr {$on ? 1 : ($off ? 0 : -1)}
 }
 # VRAM's tables against the picture and the text ($shown or hidden)
-proc check_title {shown what} {
+proc check_title {shown what {lw ""}} {
 	set bad {}
-	set want [expr {$shown ? $::TITLE_ON : $::TITLE_OFF}]
+	set want [expr {$lw ne "" ? [title_with $lw] : ($shown ? $::TITLE_ON : $::TITLE_OFF)}]
 	for {set i 0} {$i < 12288} {incr i} {
 		set w [expr 0x[lindex $want $i]]
 		set a [expr {$i < 6144 ? $i : 0x2000 + $i - 6144}]
 		if {[debug read VRAM $a] != $w} { lappend bad [format %04X $a] ; if {[llength $bad] > 5} break }
 	}
-	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::PRESS\" in images/font.png, centred on row $::BROW (wrong at: $bad)"
+	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::PRESS\" in images/font.png, centred on row $::BROW[expr {$lw ne "" ? ", \"$lw\" on the top status row's left" : ""}] (wrong at: $bad)"
 }
 proc entropy {} { expr {[m entropy] + 256*[m entropy 1]} }
 set blinks {}        ;# {state time} each splash frame
@@ -970,7 +1013,7 @@ proc splash_frame {} {
 		if {$::sn == 1} { up 0x01 ; joyup 1 ; joyup 2 }
 		if {$::sn == 3} {
 			check {[vdp_r1] & 0x40} "back at the title after game over $::games: display on (R1 [format %02X [vdp_r1]])"
-			check_title 1 "after game over $::games (text shown)"
+			check_title 1 "after game over $::games (text shown; the last game's level and wave kept)" $::lw_last
 			check {[sat 0] == 0xD0} "back at the title: no sprites (the SAT's first Y [format %02X [sat 0]])"
 		}
 		if {$::sn == 6} { down 0x01 }
@@ -1028,16 +1071,14 @@ debug set_bp $sym(splash.blink) {} { try splash_frame }
 # the frame's time: its interrupt's (not when the poll loop sees it)
 set isr_time 0
 debug set_bp $sym(isr) {} { if {$::phase == 2 && $::sn < 3*[m fps]} { set ::isr_time [machine_info time] } }
-# blank after the splash: the top status row, and the bottom one past the reserves
+# after the splash: "L1 W1" on the top status row's left, the rest of it
+# blank, and the bottom one past the reserves
 proc check_cleared {} {
-	set bad {}
-	for {set a 0} {$a < 256} {incr a} {
-		if {[debug read VRAM $a] || [debug read VRAM [expr {0x2000 + $a}]] != 0x11} { lappend bad [format %04X $a] }
-	}
+	set bad [lw_bad "L1 W1"]
 	for {set a [expr {23*256 + $::sym(RESERVE_CELLS)*8}]} {$a < 6144} {incr a} {
 		if {[debug read VRAM $a] || [debug read VRAM [expr {0x2000 + $a}]] != 0x11} { lappend bad [format %04X $a] }
 	}
-	check {[llength $bad] == 0} "after the splash: status rows blank (wrong: [lrange $bad 0 5])"
+	check {[llength $bad] == 0} "after the splash: \"L1 W1\" on the top status row's left, white on black, the rest of the status rows blank (wrong: [lrange $bad 0 5])"
 }
 
 down 0x01            ;# boot 1: space held from power-on
@@ -1383,6 +1424,8 @@ proc enemy_model {cur vols} {
 		if {[llength $bad]} { wave_bad "wave $::waves: VRAM patterns wrong: $bad" }
 		if {[m form_tick] || [m form_tick 1] || [m form_acc] || [m form_x] != $::FX0 || [m form_x 1]} { wave_bad "wave $::waves: the loop not at its start" }
 		if {[m wave_n] != $::waves} { wave_bad "wave $::waves: wave_n [m wave_n]" }
+		set bad [lw_bad [lw_str $::waves]]
+		if {[llength $bad]} { wave_bad "wave $::waves: the top status row isn't \"[lw_str $::waves]\" (wrong: [lrange $bad 0 5])" }
 		load_art
 		set st {0 0 0 0 0 0 0 0}
 		say "wave $::waves began at frame $::n: enemy [m form_enemy], colour [m form_color]"
@@ -1775,9 +1818,12 @@ proc wave_step {} {
 			wave_bad "wave $w: enemy [m form_enemy], colour [m form_color], states $sts, VRAM wrong: $bad (want enemy $we, colour [lindex $::COLS $wc])"
 		}
 		if {[m wave_n] != $w} { wave_bad "wave $w: wave_n [m wave_n]" }
+		set bad [lw_bad [lw_str $w]]
+		if {[llength $bad]} { wave_bad "wave $w: the top status row isn't \"[lw_str $w]\" (wrong: [lrange $bad 0 5])" }
 		lappend ::wseq "[m form_enemy]/[m form_color]"
 		if {$w < 20} { wave_step } else {
-			check {$::wave_bad == 0} "waves 3..21 (enemy/colour): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
+			check {[llength [lw_bad "L3 W1"]] == 0 && [lw_str 9] eq "L1 W10" && [lw_str 10] eq "L2 W1"} "wave 21: \"L3 W1\" on the top status row's left, the rest blank (\"L2 W10\"'s last cell gone)"
+			check {$::wave_bad == 0} "waves 3..21 (enemy/colour; the level and wave on the top status row: L1 W1 .. L1 W10, L2 W1 ..): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 			at [expr {$::n + 3}] plan_eb_levels    ;# (after this wave's wipe of the test's bullets)
 		}
 	}
@@ -2187,24 +2233,67 @@ proc eb_end {} {
 set a [expr {$sym(OVER_TEXT) - 0x4000}]
 set OVER [string range $rom $a [expr {[string first "\0" $rom $a] - 1}]]
 check {$OVER eq "GAME OVER"} "game over: the text is \"$OVER\""
-# The top status row (OVER_ROW): the text centred in font.py's glyphs,
-# white on black ($shown), or all blank
-proc check_over_text {shown what} {
-	set len [string length $::OVER]
-	set c0 [expr {(32 - $len) / 2}]
-	set base [expr {$::sym(OVER_ROW)*256}]
+# The screen's middle row (OVER_ROW, in the playfield): the text centred in
+# font.py's glyphs, white on black ($shown: the addresses wrong), or not
+# there (no letter's cell holds its glyph: the letters wrong)
+set OCOL [expr {(32 - [string length $OVER]) / 2}]
+check {$OCOL == $sym(OVER_COL) && $sym(OVER_ROW) == 12} "game over: the text's cells: row $sym(OVER_ROW) (lines 96..103, the screen's middle), from column $OCOL"
+proc over_text_bad {shown} {
+	if {$shown} { return [text_bad $::sym(OVER_ROW) $::OCOL $::OVER [string length $::OVER]] }
 	set bad {}
-	for {set i 0} {$i < 256} {incr i} {
-		set k [expr {$i/8 - $c0}] ; set y [expr {$i % 8}]
-		set p 0 ; set cc 0x11
-		if {$shown && $k >= 0 && $k < $len} {
-			scan [string index $::OVER $k] %c ch
-			if {$y < 6} { set p [expr 0x[lindex $::FONT [expr {($ch - 32)*6 + $y}]]] }
-			set cc [expr {$::sym(TEXT_COLOR)*16 + 1}]
-		}
-		if {[debug read VRAM [expr {$base + $i}]] != $p || [debug read VRAM [expr {0x2000 + $base + $i}]] != $cc} { lappend bad [format %04X [expr {$base + $i}]] }
+	for {set k 0} {$k < [string length $::OVER]} {incr k} {
+		if {[string index $::OVER $k] eq " "} continue
+		if {![llength [text_bad $::sym(OVER_ROW) [expr {$::OCOL + $k}] [string index $::OVER $k] 1]]} { lappend bad [string index $::OVER $k] }
 	}
+	return $bad
+}
+proc check_over_text {shown what} {
+	set bad [over_text_bad $shown]
 	check {[llength $bad] == 0} "$what (wrong at: [lrange $bad 0 5])"
+}
+# During game over 1: star 0 moved onto a free line of the text's glyph
+# rows, near its right end, and an enemy bullet over its middle: both fly
+# through the text (the star left, the bullet down) not drawn in its
+# cells, and show again past them
+proc over_stage {} {
+	lassign [lindex [star_list] 0] x y on
+	if {$on} {
+		set a [expr {($y/8)*256 + ($x & 0xF8) + $y%8}]
+		debug write VRAM $a 0
+		debug write VRAM [expr {0x2000 + $a}] 0xF1
+	}
+	set used [lmap e [lrange [star_list] 1 end] {lindex $e 1}]
+	set ny -1
+	for {set l [expr {$::sym(OVER_ROW)*8}]} {$l < $::sym(OVER_ROW)*8 + 6} {incr l} { if {$l ni $used} { set ny $l ; break } }
+	if {$ny < 0} { fail "game over: no free line for star 0 in the text's row" ; return }
+	set b $::sym(stars)
+	debug write memory $b [expr {($::OCOL + [string length $::OVER])*8 - 3}]
+	debug write memory [expr {$b+1}] $ny
+	debug write memory [expr {$b+2}] 0
+	eb_set [list [list [expr {$::sym(OVER_ROW)*8 - 6}] [expr {$::OCOL*8 + 36}]]]
+	set ::ostage 1 ; set ::os_star 0 ; set ::os_eb 0 ; set ::os_star_out 0 ; set ::os_eb_out 0 ; set ::os_bad {}
+}
+# Every frame of game over (1: with over_stage's star and bullet)
+set otext_bad 0 ; set otext_frames 0 ; set ostage 0
+proc over_on_frame {} {
+	incr ::otext_frames
+	set bad [over_text_bad 1]
+	if {[llength $bad] && !$::otext_bad} { set ::otext_first "frame [expr {$::n - $::N0}]: [lrange $bad 0 5]" }
+	if {[llength $bad]} { incr ::otext_bad }
+	if {!$::ostage} return
+	set x0 [expr {$::OCOL*8}] ; set x1 [expr {$x0 + [string length $::OVER]*8}]
+	lassign [lindex [star_list] 0] x y on
+	set a [expr {($y/8)*256 + ($x & 0xF8) + $y%8}]
+	if {$x >= $x0 && $x < $x1} { incr ::os_star ; if {$on} { lappend ::os_bad "star shown at $x" } } elseif {$x < $x0 && ![bullet_in $x $y]} {
+		if {!$on || [debug read VRAM $a] != (0x80 >> ($x%8)) || [debug read VRAM [expr {0x2000 + $a}]] != 0xE1} { lappend ::os_bad "star not shown at $x" } else { incr ::os_star_out }
+	}
+	lassign [lindex [eb_list] 0] t bx
+	set r0 [expr {$::sym(OVER_ROW)*8}]
+	if {$t && $t + 2 >= $r0 && $t < $r0 + 8} { incr ::os_eb } elseif {$t >= $r0 + 8} {
+		set ok 1
+		for {set r $t} {$r < $t + 3} {incr r} { if {!([debug read VRAM [expr {($r/8)*256 + ($bx & 0xF8) + $r%8}]] & (0x80 >> ($bx%8)))} { set ok 0 } }
+		if {$ok} { incr ::os_eb_out } else { lappend ::os_bad "bullet not shown at line $t" }
+	}
 }
 proc kill_all {} {
 	keymatrixdown 0 0x1E
@@ -2224,7 +2313,7 @@ proc over_frame {} {
 		kill {
 			if {[m front_mask]} return
 			check {[m call_on] && [m reserves] == 0 && ![m over_on]} "game over 1, first: the front emptied with 1 in reserve: called up by itself, no game over (call_on [m call_on], over_on [m over_on])"
-			check_over_text 0 "... the top status row blank"
+			check_over_text 0 "... no \"$::OVER\" in the screen's middle"
 			set ::ostate land
 		}
 		land {
@@ -2236,9 +2325,11 @@ proc over_frame {} {
 			if {[m front_mask]} return
 			set ::N0 $::n ; set ::odropped $::dropped ; set ::ostate on
 			check {![m call_on] && [m reserves] == 0 && [m over_on]} "game over $::games: the front emptied with none in reserve (frame $::n): no call-up, game over (call_on [m call_on], over_on [m over_on])"
-			check_over_text 1 "game over $::games: \"$::OVER\" centred on the top status row, white on black, from that frame"
+			check_over_text 1 "game over $::games: \"$::OVER\" centred on the screen's middle row, white on black, from that frame"
+			set ::otext_bad 0 ; set ::otext_frames 0 ; set ::ostage 0
 			if {$::games == 1} over_plan_10 else over_plan_skip
 		}
+		on { over_on_frame }
 	}
 }
 proc over_plan_10 {} {
@@ -2248,6 +2339,7 @@ proc over_plan_10 {} {
 	set ::owant [expr {10*$F}]
 	set ::owhy "10 s; space and joystick 2's button A pressed one frame before 3 s and held past it ignored"
 	at [expr {$N0+$F}] {
+		over_stage
 		set ::spawns 0 ; down 0x81 ; cdown
 		set ::throttle on
 		after realtime 0.1 {
@@ -2285,6 +2377,15 @@ proc over_plan_skip {} {
 debug set_bp $sym(restart) {} { try over_restart }
 proc over_restart {} {
 	set k [expr {$::n - $::N0 + 1}]
+	set ::lw_last "L[m level] W[expr {[m form_enemy] + 1}]"
+	set bad [lw_bad $::lw_last]
+	set lwant [expr {$::games > 1 ? "L1 W1" : "L3 W[expr {[m form_enemy] + 1}]"}]
+	check {[llength $bad] == 0 && $::lw_last eq $lwant} "game over $::games: \"$::lw_last\" (want \"$lwant\") on the top status row's left to its end (wrong: [lrange $bad 0 5])"
+	check {$::otext_bad == 0 && $::otext_frames >= $k - 1} "game over $::games: \"$::OVER\" intact every frame of it ($::otext_frames frames; [expr {$::otext_bad ? "first wrong: $::otext_first" : "none wrong"}])"
+	if {$::ostage} {
+		check {$::os_bad eq "" && $::os_star > 0 && $::os_star_out > 0 && $::os_eb > 0 && $::os_eb_out > 0} "game over: a star and an enemy bullet through the text, not drawn in its cells ($::os_star / $::os_eb frames), shown past them ($::os_star_out / $::os_eb_out frames; wrong: [lrange $::os_bad 0 3])"
+		set ::ostage 0
+	}
 	check {$::ostate eq "on" && $k == $::owant} "game over $::games: back to the title $k frames after it began (want $::owant: $::owhy)"
 	check {$::dropped == $::odropped} "game over $::games: the game ran every frame of it ([expr {$::dropped - $::odropped}] dropped)"
 	set ::ostate "" ; set ::phase 3 ; set ::sn 0

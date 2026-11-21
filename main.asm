@@ -25,8 +25,8 @@
 ; It wins over the shot's sound where they clash (the PSG's one noise period).
 ; An empty front stays where its last ship died, can't move or shoot, and a
 ; call-up lands there: one starts by itself the frame the front empties. With
-; no reserve left, GAME OVER shows on the top status row, centred, and the
-; game runs on for GAME_OVER_MS (a press of fire, space or either joystick's
+; no reserve left, GAME OVER shows in the screen's middle (OVER_ROW), centred
+; (no star or bullet is drawn in its cells meanwhile), and the game runs on for GAME_OVER_MS (a press of fire, space or either joystick's
 ; button A, from OVER_SKIP_MS on cuts it short); then it's back to the title.
 ; Behind it all, STARS one-pixel STAR_COLOR stars in the playfield's bitmap
 ; scroll left at STAR_SPEED px/s; one that leaves past column 0 comes back
@@ -123,7 +123,11 @@ TEXT_COLOR      equ 15          ; white: the game's text
 WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins this much later
 GAME_OVER_MS    equ 10000       ; GAME OVER shows this long, the game running on, then the title
 OVER_SKIP_MS    equ 3000        ; ... a press of fire from this much on: the title at once
-OVER_ROW        equ 0           ; GAME OVER's character row (the top status area), centred on it
+OVER_ROW        equ 12          ; GAME OVER's character row (lines 96..103: the screen's middle), centred on it
+OVER_COL        equ (32-OVER_LEN)/2 ; ... its first column
+LW_ROW          equ 0           ; the level and wave ("L1 W1"): the top status row ...
+LW_COL          equ 0           ; ... from its left; a level is ENEMIES waves, images/enemy-0..9.png
+LW_LEN          equ 8           ; ... cells kept for it ("L255 W10")
 ;
 ; Enemy bullets: every EB_ROLL_MS a roll; one in EB_CHANCE fires one
 EB_ROLL_MS      equ 250
@@ -338,6 +342,7 @@ RATES_SIZE      equ $-rates
 frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
 polls:          ds 2            ; the splash's input polls so far
+lw_text:        ds LW_LEN+1     ; the level and wave as shown (0-terminated; the title shows the last game's)
 
 ; From here on, cleared for every new game
 game_ram:
@@ -381,6 +386,7 @@ hc_n:           ds 1            ; ... how many
 hc_i:           ds 1            ; bullet_hit: the enemy tried
 bl_lines:       ds BL_SIZE      ; move_stars: bit 80h >> (line%8) of byte line/8: a bullet is on the line
 wave_n:         ds 1            ; the wave: 0 the first, up to 255 (then it stays)
+level:          ds 1            ; the level: 1 the first, up to 255 (then it stays); its wave: form_enemy+1
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
 bullet_step:    ds 1            ; this frame's px
 pat_hi:         ds 1            ; GRPCGP's high byte with the VDP's write bit
@@ -507,6 +513,9 @@ restart:
 new_game:
         call splash
         call load_formation     ; the first wave's (form_enemy, form_cidx: 0)
+        ld a,1
+        ld (level),a
+        call level_text         ; L1 W1
 
         ld hl,SHIP_PATTERN      ; the six ship patterns follow each other
         ld de,(GRPPAT)
@@ -611,7 +620,10 @@ splash:
         ld hl,TITLE_COL_ROWS
         ld de,(GRPCOL)
         call unpack_rows
+        ld hl,lw_text           ; the last game's level and wave (at power-on: none)
+        ld de,LW_ROW*256+LW_COL*8
         ld c,TEXT_COLOR*16+BG_COLOR
+        call print_text
         call print_press
         call display_on
         ld a,(blink_on)
@@ -1659,13 +1671,15 @@ eb_draw:
         jr .done
 .shared:
         ld b,BULLET_H
-.row:   call bullet_bits
+.row:   call over_at
+        jr c,.rnext             ; GAME OVER's
+        call bullet_bits
         ld c,a
         ld a,(pat_hi)
         call vdp_at
         ld a,c
         out (VDP_DATA),a
-        inc e
+.rnext: inc e
         djnz .row
 .done:  pop hl
         pop bc
@@ -2240,10 +2254,15 @@ volley_px:
         assert SHIP_ART_W > 8
 
 ; Lines E..E+BULLET_H-1 of the bitmap at pixel column D's cell := C (outside
-; vertical blank too: 40 T between the VRAM writes)
+; vertical blank too: 40 T between the VRAM writes), but for GAME OVER's
+; cells (over_at)
 bullet_px:
         ld b,BULLET_H
-.cell:  ld a,e                  ; byte (E/8)*256 + (D and F8h) + E%8
+.cell:  ld a,(over_on)
+        or a                    ; (no carry)
+        call nz,over_cell
+        jr c,.skip
+        ld a,e                  ; byte (E/8)*256 + (D and F8h) + E%8
         and 7
         ld l,a
         ld a,d
@@ -2273,6 +2292,13 @@ bullet_px:
         ld a,e
         and 7
         jr nz,.row              ; same cell: the next byte
+        jr .cell
+.skip:  dec b                   ; GAME OVER's: its lines left alone
+        ret z
+        inc e
+        ld a,e
+        and 7
+        jr nz,.skip
         jr .cell
 
 ; ---- Stars -----------------------------------------------------------------
@@ -2434,7 +2460,8 @@ star:
         ret
 
 ; Carry: a bullet in flight (a volley's or an enemy's) is in pixel (D, E)'s
-; bitmap byte (line E, the 8-px cell of column D). Keeps BC, DE.
+; bitmap byte (line E, the 8-px cell of column D), or GAME OVER is
+; (over_at). Keeps BC, DE.
 bullet_at:
         push bc
         ld a,e                  ; first: none on line E (bl_lines), none
@@ -2493,8 +2520,7 @@ bullet_at:
 .ne:    inc hl
         djnz .e
 .none:  pop bc
-        or a
-        ret
+        jp over_at
 .hit:   pop hl
 .ehit:  pop bc
         scf
@@ -2662,7 +2688,11 @@ next_wave:
         inc a
         cp ENEMIES
         jr c,.en
-        xor a
+        ld hl,level             ; the next level (stays at 255)
+        inc (hl)
+        jr nz,.lv
+        dec (hl)
+.lv:    xor a
 .en:    ld (form_enemy),a
         ld a,(form_cidx)
         inc a
@@ -2671,6 +2701,7 @@ next_wave:
         xor a
 .cn:    ld (form_cidx),a
         call load_formation
+        call level_text
         ld hl,enemies           ; all EN_FORM, as at the start
         ld de,enemies+1
         ld bc,ENEMY_N*EN-1
@@ -2833,9 +2864,72 @@ call_up:
         set 0,(hl)
         jp front_span
 
+; The level and wave ("L1 W1" .. "L255 W10": level, form_enemy+1) in
+; lw_text, printed on LW_ROW from LW_COL, blank cells after it up to LW_LEN
+; (a shorter text than the last leaves none of it)
+level_text:
+        ld de,lw_text
+        ld a,'L'
+        ld (de),a
+        inc de
+        ld a,(level)
+        call decimal
+        ld a,' '
+        ld (de),a
+        inc de
+        ld a,'W'
+        ld (de),a
+        inc de
+        ld a,(form_enemy)
+        inc a
+        call decimal
+        xor a
+        ld (de),a
+        ld hl,lw_text
+        ld de,LW_ROW*256+LW_COL*8
+        ld c,TEXT_COLOR*16+BG_COLOR
+        call print_text         ; (DE: the next cell)
+.pad:   ld a,e
+        cp (LW_COL+LW_LEN)*8
+        ret nc
+        ld hl,SPACE_TEXT
+        call print_text
+        jr .pad
+        assert (LW_COL+LW_LEN)*8 < 256 && ENEMIES < 100
+
+; A (1..255) in decimal at DE.., no leading zeros; DE past it
+decimal:
+        ld c,0                  ; nonzero: a digit written
+        ld b,100
+        call .dig
+        ld b,10
+        call .dig
+        add a,'0'
+        ld (de),a
+        inc de
+        ret
+; A's digit for B (A / B) at DE unless a leading zero; A = the rest
+.dig:   ld h,'0'-1
+.sub:   inc h
+        sub b
+        jr nc,.sub
+        add a,b
+        ld l,a
+        ld a,h
+        cp '0'
+        jr nz,.put
+        inc c
+        dec c
+        jr z,.skip
+.put:   ld (de),a
+        inc de
+        ld c,1
+.skip:  ld a,l
+        ret
+
 ; Carry: game over's end, back to the title. The front empty with no
 ; call-up flying (none left in reserve: call_up sends one by itself) is
-; game over: GAME OVER centred on the top status row, the game running on
+; game over: GAME OVER centred on OVER_ROW, the game running on
 ; (the front can't move, shoot or call up) until GAME_OVER_MS later, or a
 ; press of fire (space or either joystick's button A) from OVER_SKIP_MS on.
 game_over:
@@ -2851,7 +2945,7 @@ game_over:
         inc a
         ld (over_on),a          ; (over_time: 0)
         ld hl,OVER_TEXT
-        ld de,OVER_ROW*256+(32-OVER_LEN)/2*8
+        ld de,OVER_ROW*256+OVER_COL*8
         ld c,TEXT_COLOR*16+BG_COLOR
         call print_text
         or a
@@ -2879,6 +2973,28 @@ game_over:
         ret z                   ; (no carry after the and)
         scf
         ret
+
+; Carry: game over, and pixel (D, E)'s bitmap byte is in GAME OVER's cells
+; (no star or bullet is drawn there meanwhile). Keeps BC, DE, HL.
+over_at:
+        ld a,(over_on)
+        or a
+        ret z
+; ... the same, game over or not
+over_cell:
+        ld a,e
+        and 0F8h
+        cp OVER_ROW*8
+        jr nz,.no
+        ld a,d
+        sub OVER_COL*8
+        cp OVER_LEN*8
+        ret
+.no:    or a
+        ret
+        assert OVER_ROW >= PLAY_TOP/8 && OVER_ROW*8+7 <= PLAY_BOTTOM && OVER_COL*8+OVER_LEN*8 <= 256
+        ; (a star leaving one of its bytes sets the byte's colour to BULLET_COLOR's: the text's)
+        assert TEXT_COLOR == BULLET_COLOR
 
 ; HL = the incoming ship's art's left column (-SHIP_ART_W..256, signed)
 call_pos:
@@ -3581,6 +3697,7 @@ PRESS_LEN       equ $-PRESS_TEXT-1
         assert PRESS_LEN <= 32
 OVER_TEXT:      db "GAME OVER",0
 OVER_LEN        equ $-OVER_TEXT-1
+SPACE_TEXT:     db " ",0
 
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 BL_MASKS:                       ; lines n..n+2 of a byte's 8 (and the next one's): (E000h >> n), high byte first
