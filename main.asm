@@ -192,6 +192,11 @@ EB_N            equ 5           ; slots: EB_MAX_LIST's largest
 ;
 ; the waves' colours in turn (their enemies: images/enemy-0..9.png in turn)
         define FORM_COLOR_LIST 2, 3, 5, 7, 8, 9, 10, 11, 13
+; the same colours by hue, bluest to reddest (for a boss, later): from light
+; blue (245°) down through cyan (189°), green (126°, 125°), yellow (55°, 50°)
+; to red (6°: light, then the more saturated medium), then magenta (302°),
+; past red; hues from the TMS9918's usual RGB values
+        define FORM_COLOR_REDDENING 5, 7, 3, 2, 10, 11, 9, 8, 13
 ; (the formation's loop: path.py)
 
 ; ---- Layout ----------------------------------------------------------------
