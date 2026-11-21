@@ -76,9 +76,12 @@
 ; BONUS_WAVES waves in a row finished (each one's last enemy gone) with no
 ; ship lost: a reserve ship more, if the reserve has room (RESERVE_MAX),
 ; with a 0.25 s "happy beep" on PSG channel A (it wins over the shot's).
-; It starts with a splash screen, images/title.png (title.py), and "PRESS
-; SPACE OR FIRE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
-; font.py; print_text, for all the game's text) on it, blinking BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
+; It starts with a splash screen, images/title.png (title.py), with
+; "(C) 2026 JCCYC" and "HTTPS://RETROPOLIS.COM.BR" on rows 21 and 22 and
+; "PRESS SPACE OR FIRE TO BEGIN" on row 23, centred, in the game's font
+; (U-boat Killer's, images/font.png, font.py; print_text, for all the
+; game's text), the last one blinking BLINK_ON_MS on and BLINK_OFF_MS
+; off; space (or either
 ; joystick's button A) starts the game. Meanwhile the keyboard and the
 ; joysticks are polled as fast as the loop goes, and the time of every
 ; press and release (the polls so far, and R) is mixed into entropy, kept
@@ -139,7 +142,9 @@ STAR_SPEED      equ 10          ; px/s to the left: 1 px every 6 frames at 60 Hz
         assert STAR_SPEED < 50  ; at most 1 px a frame
 BLINK_ON_MS     equ 300         ; the splash's "PRESS SPACE OR FIRE TO BEGIN" shows this long ...
 BLINK_OFF_MS    equ 200         ; ... then is hidden this long
-BLINK_ROW       equ 22          ; its character row (lines 176..183), centred on it
+BLINK_ROW       equ 23          ; its character row (lines 184..191), centred on it
+CREDIT_ROW      equ 21          ; the splash's credit line (CREDIT_TEXT), centred, not blinking
+URL_ROW         equ 22          ; ... and the URL (URL_TEXT) under it
 TEXT_COLOR      equ 15          ; white: the game's text
 WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins this much later
 GAME_OVER_MS    equ 10000       ; GAME OVER shows this long, the game running on, then the title
@@ -735,6 +740,12 @@ splash:
         ld e,a
         jr .lead
 .score: call print_text
+        ld hl,CREDIT_TEXT       ; the credit and URL, centred, staying
+        ld de,CREDIT_ROW*256+(32-CREDIT_LEN)/2*8
+        call print_text
+        ld hl,URL_TEXT
+        ld de,URL_ROW*256+(32-URL_LEN)/2*8
+        call print_text
         call print_press
         call display_on
         ld hl,(title_wait)
@@ -4344,6 +4355,12 @@ EB_MAXES_N      equ $-EB_MAXES
 PRESS_TEXT:     db "PRESS SPACE OR FIRE TO BEGIN",0
 PRESS_LEN       equ $-PRESS_TEXT-1
         assert PRESS_LEN <= 32
+CREDIT_TEXT:    db "(C) 2026 JCCYC",0
+CREDIT_LEN      equ $-CREDIT_TEXT-1
+        assert CREDIT_LEN <= 32
+URL_TEXT:       db "HTTPS://RETROPOLIS.COM.BR",0
+URL_LEN         equ $-URL_TEXT-1
+        assert URL_LEN <= 32
 OVER_TEXT:      db "GAME OVER",0
 OVER_LEN        equ $-OVER_TEXT-1
 SPACE_TEXT:     db " ",0

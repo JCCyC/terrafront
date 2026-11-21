@@ -8,10 +8,12 @@ cartridge ROM at 4000h..7FFFh (`terrafnt.rom`, an 8.3 name). RAM at E000h.
 
 **Current state:** it starts with a splash screen, `images/title.png`
 (256×192, the user may retouch it: MSX1 colours, at most two per 8×1
-byte), the logo solid cyan, and "PRESS SPACE OR FIRE TO BEGIN" printed on it in
-white (`TEXT_COLOR`), centred on character row 22 (`BLINK_ROW`; the
-picture's row is blank), blinking 0.3 s on, 0.2 s off by its cells'
-colours. **Text:** all the game's text (scores later too) is in U-boat
+byte), the logo solid cyan (its last line 155: rows 20..23 blank), and
+printed on it in white (`TEXT_COLOR`), each centred on its character row:
+"(C) 2026 JCCYC" (`CREDIT_TEXT`, row 21, `CREDIT_ROW`) and
+"HTTPS://RETROPOLIS.COM.BR" (`URL_TEXT`, row 22, `URL_ROW`), staying, and
+"PRESS SPACE OR FIRE TO BEGIN" (row 23, `BLINK_ROW`), blinking 0.3 s on,
+0.2 s off by its cells' colours. **Text:** all the game's text (scores later too) is in U-boat
 Killer's font (`images/font.png`, copied from `../ubhunter/images/Font.png`:
 8×6 glyphs for ASCII 20h..5Fh, black letters on blue, black = ink), drawn
 in the SCREEN 2 bitmap by `print_text` (HL = text, 0-terminated; DE = first
@@ -272,7 +274,7 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `build/shot-<machine>-call.png`, a call-up in flight). It boots twice:
   first space held from power-on (then let go) doesn't start, joystick 1's
   button A does, then a reset; then the splash's VRAM against
-  `title.py --raw` with the text (read from the ROM) overlaid in
+  `title.py --raw` with the three lines of text (read from the ROM) overlaid in
   `font.py --raw`'s glyphs (text shown and hidden; the space glyph blank), the blink every frame (on/off
   frame counts, 0.5 s period between frame interrupts in emulated time, no frame missed), A, C and
   button B changing `entropy` without starting, and space starting; then

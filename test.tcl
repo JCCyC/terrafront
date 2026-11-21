@@ -1046,20 +1046,36 @@ set a [expr {$sym(PRESS_TEXT) - 0x4000}]
 set PRESS [string range $rom $a [expr {[string first "\0" $rom $a] - 1}]]
 check {$PRESS eq "PRESS SPACE OR FIRE TO BEGIN"} "splash: the text is \"$PRESS\""
 check {[lrange $FONT 0 5] eq {00 00 00 00 00 00} && [lsearch -not $FONT 00] >= 0} "font: the space glyph is blank (ink is the PNG's black), others aren't"
-set TCOL [expr {(32 - [string length $PRESS]) / 2}]
+# the credit and the URL above it, centred on their rows, never blinking
+proc rom_text {name} {
+	set a [expr {$::sym($name) - 0x4000}]
+	string range $::rom $a [expr {[string first "\0" $::rom $a] - 1}]
+}
+set CREDIT [rom_text CREDIT_TEXT]
+set URL [rom_text URL_TEXT]
+check {$CREDIT eq "(C) 2026 JCCYC" && $URL eq "HTTPS://RETROPOLIS.COM.BR"} "splash: the credit is \"$CREDIT\", the URL \"$URL\""
 set TITLE_ON $TITLE
 set TITLE_OFF $TITLE
-for {set i 0} {$i < [string length $PRESS]} {incr i} {
-	scan [string index $PRESS $i] %c c
-	set p [expr {$BROW*256 + ($TCOL + $i)*8}]
-	for {set y 0} {$y < 8} {incr y} {
-		set g [expr {$y < 6 ? [lindex $FONT [expr {($c - 32)*6 + $y}]] : "00"}]
-		set TITLE_ON [lreplace $TITLE_ON [expr {$p + $y}] [expr {$p + $y}] $g]
-		set TITLE_OFF [lreplace $TITLE_OFF [expr {$p + $y}] [expr {$p + $y}] $g]
-		set TITLE_ON [lreplace $TITLE_ON [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] [format %02x [expr {$sym(TEXT_COLOR)*16 + 1}]]]
-		set TITLE_OFF [lreplace $TITLE_OFF [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] 11]
+# text str centred on character row `row` in TITLE_ON (and in TITLE_OFF,
+# with its colours black if blinks)
+proc overlay {str row blinks} {
+	set col [expr {(32 - [string length $str]) / 2}]
+	for {set i 0} {$i < [string length $str]} {incr i} {
+		scan [string index $str $i] %c c
+		set p [expr {$row*256 + ($col + $i)*8}]
+		for {set y 0} {$y < 8} {incr y} {
+			set g [expr {$y < 6 ? [lindex $::FONT [expr {($c - 32)*6 + $y}]] : "00"}]
+			set w [format %02x [expr {$::sym(TEXT_COLOR)*16 + 1}]]
+			set ::TITLE_ON [lreplace $::TITLE_ON [expr {$p + $y}] [expr {$p + $y}] $g]
+			set ::TITLE_OFF [lreplace $::TITLE_OFF [expr {$p + $y}] [expr {$p + $y}] $g]
+			set ::TITLE_ON [lreplace $::TITLE_ON [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] $w]
+			set ::TITLE_OFF [lreplace $::TITLE_OFF [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] [expr {$blinks ? 11 : $w}]]
+		}
 	}
 }
+overlay $CREDIT $sym(CREDIT_ROW) 0
+overlay $URL $sym(URL_ROW) 0
+overlay $PRESS $BROW 1
 # Text str in font.py's glyphs on character row `row` from column col, over
 # ncells cells (blank cells past its end): the VRAM addresses wrong
 # (patterns: glyph rows on lines 0..5, 6..7 blank; colours TEXT_COLOR on black)
@@ -1131,7 +1147,7 @@ proc check_title {shown what {lw ""} {sc ""}} {
 		set a [expr {$i < 6144 ? $i : 0x2000 + $i - 6144}]
 		if {[debug read VRAM $a] != $w} { lappend bad [format %04X $a] ; if {[llength $bad] > 5} break }
 	}
-	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::PRESS\" in images/font.png, centred on row $::BROW[expr {$lw ne "" ? ", \"$lw\" on the top status row's left and \"$sc\" on its right" : ""}] (wrong at: $bad)"
+	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::CREDIT\", \"$::URL\", \"$::PRESS\" in images/font.png, centred on rows $::sym(CREDIT_ROW), $::sym(URL_ROW), $::BROW[expr {$lw ne "" ? ", \"$lw\" on the top status row's left and \"$sc\" on its right" : ""}] (wrong at: $bad)"
 }
 proc entropy {} { expr {[m entropy] + 256*[m entropy 1]} }
 set blinks {}        ;# {state time} each splash frame
