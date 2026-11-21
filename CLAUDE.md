@@ -279,6 +279,10 @@ from the `RATES_60` / `RATES_50` tables), sound tables per rate.
 MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
 `../HARD-EARNED-EXPERIENCE.md` before MSX work.
 
+**Open issues:** `ISSUES.md` lists problems found but not dealt with yet
+(and only those): read it before working on the game, add new ones
+there, and remove an entry when it's fixed.
+
 ## Build / run / test
 
 - `make` runs `png2spr.py` (→ `build/sprites.inc`: ship pattern, colour,
