@@ -69,6 +69,59 @@ debug set_bp $sym(death_start) {} { incr ::dnew }  ;# each call (two booms can s
 set bnew 0 ; set bidx -1 ; set bruns {} ; set bstarts 0
 set bbad 0 ; set bframes 0 ; set bfirst ""
 debug set_bp $sym(brk_start) {} { incr ::bnew }  ;# each call (two pairs can break up in one frame)
+# The bonus ship: BONUS_WAVES (2) waves in a row finished (next_wave.done:
+# the frame's work that made the last enemy gone) with no ship lost
+# (ship_dies) gain a reserve ship, if under RESERVE_MAX (4) and not game
+# over; that frame the reserve shows it and the happy beep starts
+# (bonus_start), every frame of it on channel A as the BONUS table (tone
+# only), the shot (if one runs) unheard
+set blost 0 ; set bstreak 0 ; set bwant {} ; set bseq {} ; set bonew 0
+set bonus_bad 0 ; set bonus_first "" ; set b_awards 0 ; set b_vram 0
+set beepidx -1 ; set beepruns {} ; set beepframes 0 ; set beepshot 0
+proc bonus_bad {s} { if {!$::bonus_bad} { set ::bonus_first "frame $::n: $s" } ; incr ::bonus_bad }
+debug set_bp $sym(ship_dies) {} { set ::blost 1 }
+debug set_bp $sym(new_game) {} { set ::blost 0 ; set ::bstreak 0 }
+debug set_bp $sym(bonus_start) {} { incr ::bonew }
+debug set_bp $sym(next_wave.done) {} {
+	set lost $::blost ; set ::blost 0 ; set award 0 ; set r [m reserves]
+	if {$lost} { set what lost ; set ::bstreak 0 } else {
+		incr ::bstreak ; set what $::bstreak
+		if {$::bstreak >= $::sym(BONUS_WAVES)} {
+			set ::bstreak 0
+			if {[m over_on]} { set what over } elseif {$r < $::sym(RESERVE_MAX)} { set award 1 ; set what "+1" } else { set what full }
+		}
+	}
+	set ::bwant [list [expr {$r + $award}] $award]
+	lappend ::bseq "[m wave_n]:$what"
+}
+proc bonus_frame {} {
+	if {[llength $::bwant]} {
+		lassign $::bwant r a
+		if {[m reserves] != $r || $::bonew != $a} { bonus_bad "a wave finished: [m reserves] in reserve, $::bonew beeps, want $r, $a" }
+		if {$a} {
+			incr ::b_awards
+			set bad [reserves_bad $r]
+			if {[llength $bad]} { bonus_bad "the reserve after a bonus ship isn't $r ships (wrong: [lrange $bad 0 5])" } else { incr ::b_vram }
+		}
+		set ::bwant {}
+	} elseif {$::bonew} { bonus_bad "$::bonew beeps with no wave finished" }
+	if {$::bonew} { set ::beepidx 0 ; set ::bonew 0 }
+	if {$::beepidx < 0} return
+	set mix [psg 7]
+	set t [expr {$::sym(BONUS_$::F) + 3*$::beepidx}]
+	set v [debug read memory $t]
+	if {$v == 0} {
+		lappend ::beepruns $::beepidx ; set ::beepidx -1
+		if {[vol] && ![m sfx_ptr] && ![m sfx_ptr 1]} { bonus_bad "the beep over, channel A at volume [vol], no shot playing" }
+		return
+	}
+	set got [list [vol] [psg 0] [psg 1] [expr {$mix & 0x09}]]
+	set want [list $v [debug read memory [expr {$t+1}]] [debug read memory [expr {$t+2}]] 8]
+	if {$got != $want} { bonus_bad "the beep's frame $::beepidx: R8 R0 R1 mix-A $got, want $want" }
+	if {[m sfx_ptr] || [m sfx_ptr 1]} { incr ::beepshot }
+	incr ::beepframes ; incr ::beepidx
+}
+
 # Hits are off (volley_hits returns at once) until the enemies' part
 set nohits 1 ; set nohits_was 1
 debug set_bp $sym(volley_hits) {} {
@@ -163,6 +216,7 @@ proc score_end {} {
 proc frame {} {
 	incr ::n
 	try score_frame     ;# (before the steps and stagings: they may write the enemies)
+	try bonus_frame     ;# (before them: they may write the reserve)
 	set due {} ; set rest {}
 	foreach s $::steps { if {[lindex $s 0] == $::n} { lappend due $s } else { lappend rest $s } }
 	set ::steps $rest   ;# (before running them: a step may plan more)
@@ -903,6 +957,14 @@ proc check_bitmap {} {
 # The bottom status row (lines 184..191): RESERVES ships, art from column
 # RESERVE_X, every RESERVE_STEP px, white on black; nothing else on it
 proc check_reserves {{count 4}} {
+	set bad [reserves_bad $count lit]
+	check {[llength $bad] == 0 && $lit > 0} "$count reserve ships at the bottom left, 1 px apart ($lit px lit; wrong: [lrange $bad 0 9])"
+	set names {}
+	for {set c 0} {$c < 32} {incr c} { if {[debug read VRAM [expr {0x1800 + 23*32 + $c}]] != 0xE0 + $c} { lappend names $c } }
+	check {[llength $names] == 0} "bottom row's names are INIGRP's (wrong at: $names)"
+}
+proc reserves_bad {count {litvar ""}} {
+	if {$litvar ne ""} { upvar 1 $litvar lit }
 	set shape {}
 	for {set r 0} {$r < 8} {incr r} { lappend shape [m RESERVE_SHAPE $r] }
 	set w $::sym(RESERVE_ART_W)
@@ -921,10 +983,7 @@ proc check_reserves {{count 4}} {
 			if {$got != $want || $col != 15} { lappend bad "($x,$y)" }
 		}
 	}
-	check {[llength $bad] == 0 && $lit > 0} "$count reserve ships at the bottom left, 1 px apart ($lit px lit; wrong: [lrange $bad 0 9])"
-	set names {}
-	for {set c 0} {$c < 32} {incr c} { if {[debug read VRAM [expr {0x1800 + 23*32 + $c}]] != 0xE0 + $c} { lappend names $c } }
-	check {[llength $names] == 0} "bottom row's names are INIGRP's (wrong at: $names)"
+	return $bad
 }
 
 # The single shot: its Y each frame, until gone; the PSG channel A volume
@@ -1874,6 +1933,9 @@ proc enemy_end {} {
 	check {$::edropped == 0} "no frame dropped while the enemies are hit and fly, a new wave too ($::edropped: frames $::edrops)"
 	set ::nocheck 1
 	set ::wseq {}
+	# the bonus ships: 2 in reserve (RAM); wave 2 lost ships (the staged
+	# collisions), the rest none but the one key 1 kills in wave 10
+	debug write memory $::sym(reserves) 2
 	wave_step
 }
 # The lists' turns: the test makes every enemy gone (EN.ST = EN_GONE in
@@ -1882,6 +1944,8 @@ proc enemy_end {} {
 # (waves 2..20: both lists wrap). The frame before each begins, the test
 # puts 3 enemy bullets in flight (the model: gone the frame after).
 proc wave_step {} {
+	# wave 4's bonus ship: a shot sounding as it comes (the beep wins)
+	if {$::waves == 3} { down 0x01 ; at [expr {$::n + 2}] { up 0x01 } }
 	at [expr {$::n + 1}] {
 		for {set i 0} {$i < 8} {incr i} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 5 }
 	}
@@ -1903,8 +1967,13 @@ proc wave_step {} {
 		set bad [lw_bad [lw_str $w]]
 		if {[llength $bad]} { wave_bad "wave $w: the top status row isn't \"[lw_str $w]\" (wrong: [lrange $bad 0 5])" }
 		lappend ::wseq "[m form_enemy]/[m form_color]"
+		if {$w == 9} { kdown 1 ; at [expr {$::n + 1}] { kup 1 } }   ;# (wave 10: a ship lost)
 		if {$w < 20} { wave_step } else {
 			check {[llength [lw_bad "L3 W1"]] == 0 && [lw_str 9] eq "L1 W10" && [lw_str 10] eq "L2 W1"} "wave 21: \"L3 W1\" on the top status row's left, the rest blank but the score (\"L2 W10\"'s last cell gone)"
+			set want {1:lost 2:1 3:+1 4:1 5:+1 6:1 7:+1 8:1 9:lost 10:1 11:+1 12:1 13:full 14:1 15:full 16:1 17:full 18:1 19:full}
+			set got [lrange $::bseq end-18 end]
+			set bf [expr {$::F == 60 ? 15 : 13}]
+			check {$got eq $want && $::bonus_bad == 0 && $::b_awards >= 3 && $::b_vram == $::b_awards && [lsort -unique $::beepruns] eq $bf && [llength $::beepruns] == $::b_awards && $::beepshot > 0} "bonus ships: 2 waves in a row with no ship lost, a reserve ship more (none at RESERVE_MAX; a ship lost starts the count again), shown in the reserve that frame, the happy beep on channel A as the BONUS table every frame ($bf frames, [format %.2f [expr {double($bf)/$::F}]] s; $::beepshot of them over a shot) (waves 2..20 at wave_n:streak/lost/+1/full: $got; $::b_awards bonus ships, beeps $::beepruns; [expr {$::bonus_bad ? "first wrong: $::bonus_first" : "none wrong"}])"
 			check {$::wave_bad == 0} "waves 3..21 (enemy/colour; the level and wave on the top status row: L1 W1 .. L1 W10, L2 W1 ..): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 			at [expr {$::n + 3}] plan_eb_levels    ;# (after this wave's wipe of the test's bullets)
 		}

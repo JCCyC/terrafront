@@ -73,6 +73,9 @@
 ; right: BREAK_PTS a pair broken up, FREE_PTS a free enemy's death (shot or
 ; crashing into a ship), with a one-ship front; with more, the front's share
 ; (SHARE_2..4 %) by its living ships before the hit.
+; BONUS_WAVES waves in a row finished (each one's last enemy gone) with no
+; ship lost: a reserve ship more, if the reserve has room (RESERVE_MAX),
+; with a 0.25 s "happy beep" on PSG channel A (it wins over the shot's).
 ; It starts with a splash screen, images/title.png (title.py), and "PRESS
 ; SPACE OR FIRE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
 ; font.py; print_text, for all the game's text) on it, blinking BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
@@ -107,6 +110,8 @@ BULLET_COLOR    equ 15          ; white
 MAX_VOLLEYS     equ 2           ; volleys (a bullet from each ship) in flight at once
 FRONT_MAX       equ 4           ; ships in the front at most
 RESERVES        equ 4           ; reserve ships at the start
+RESERVE_MAX     equ 5           ; ... and at most (a bonus ship: none past it)
+BONUS_WAVES     equ 2           ; waves in a row finished with no ship lost: a reserve ship more
 CALL_TIME_MS    equ 250         ; a call-up's flight from the far edge takes at most this
 RESERVE_X       equ 0           ; the first reserve ship's art's left column
 RESERVE_GAP     equ 1           ; black pixels between two reserve ships
@@ -222,9 +227,10 @@ CALL_SPEED      equ (CALL_DIST*50+CALL_FRAMES_50-1)/CALL_FRAMES_50
 RESERVE_ROW     equ 23
         assert STATUS_LINES == 8 && RESERVE_ROW*8 == PLAY_BOTTOM+1
 RESERVE_STEP    equ RESERVE_ART_W+RESERVE_GAP
-RESERVE_CELLS   equ (RESERVE_X+(RESERVES-1)*RESERVE_STEP+RESERVE_ART_W-1)/8+1
+RESERVE_CELLS   equ (RESERVE_X+(RESERVE_MAX-1)*RESERVE_STEP+RESERVE_ART_W-1)/8+1
 RESERVE_VRAM    equ RESERVE_ROW*32*8    ; the row's first cell, from GRPCGP / GRPCOL
-        assert RESERVE_X+(RESERVES-1)*RESERVE_STEP+RESERVE_ART_W <= 256
+        assert RESERVE_X+(RESERVE_MAX-1)*RESERVE_STEP+RESERVE_ART_W <= 256
+        assert RESERVES <= RESERVE_MAX && BONUS_WAVES > 0
 
 ; Sprite names (16x16 sprites: patterns in steps of 4)
 NAME_SHIP       equ 0
@@ -355,6 +361,7 @@ over_end:       ds 2            ; frames GAME OVER shows
 over_skip:      ds 2            ; ... and from which fire cuts it short
 eb_tick:        ds 1            ; 1/300 s a frame (the enemy bullets' roll clock)
 eb_unit:        ds 2            ; 100 * fps (their Bresenham: 1/100 px a second)
+bonus_sound:    ds 2            ; BONUS_60 or BONUS_50
 RATES_SIZE      equ $-rates
 frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
@@ -409,6 +416,8 @@ level:          ds 1            ; the level: 1 the first, up to 255 (then it sta
 score:          ds 4            ; BCD, 8 digits, the lowest two first
 score_dirty:    ds 1            ; nonzero: changed since show_score
 score_cell:     ds 2            ; ... one cell's text (0-terminated)
+wave_lost:      ds 1            ; nonzero: a ship lost since the last wave finished
+clean_waves:    ds 1            ; waves finished in a row with no ship lost (0..BONUS_WAVES-1)
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
 bullet_step:    ds 1            ; this frame's px
 pat_hi:         ds 1            ; GRPCGP's high byte with the VDP's write bit
@@ -423,6 +432,7 @@ death_ptr:      ds 2            ; the death sound's next frame in its table, 0 =
 death_mix:      ds 1            ; ... the mixer bits it switches on now
 brk_ptr:        ds 2            ; the same for the break sound
 brk_mix:        ds 1
+bonus_ptr:      ds 2            ; the happy beep's next frame in its table, 0 = silent
 psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
 key_state:      ds KEY_ROWS+2   ; the splash's last poll: keyboard rows 0.., joysticks 1 and 2 (R14)
@@ -2728,7 +2738,32 @@ next_wave:
         djnz .e
         ld a,(wave_delay)       ; the last one just went: the wait starts
         ld (wave_wait),a
-        ret
+; The wave is finished: BONUS_WAVES in a row with no ship lost, a reserve
+; ship more, if the reserve has room (else none: the count starts again);
+; not in game over
+.done:  ld hl,wave_lost
+        ld a,(hl)
+        ld (hl),0
+        ld hl,clean_waves
+        or a
+        jr nz,.lost
+        inc (hl)
+        ld a,(hl)
+        cp BONUS_WAVES
+        ret c
+        xor a
+.lost:  ld (hl),0
+        ret nz                  ; (a ship lost)
+        ld a,(over_on)
+        or a
+        ret nz
+        ld a,(reserves)
+        cp RESERVE_MAX
+        ret nc
+        inc a
+        ld (reserves),a
+        call draw_reserves
+        jp bonus_start
 .go:    ld a,1                  ; the last wave's enemy bullets go (next frame's eb_move)
         ld (eb_wipe),a
         ld hl,wave_n            ; (stays at 255)
@@ -3284,6 +3319,8 @@ kill_nth:
 ; (the death sound). Keeps BC.
 ship_dies:
         ld (hl),1
+        ld a,1
+        ld (wave_lost),a
         ld de,FRONT_MAX
         add hl,de
         ld a,(boom_frames)
@@ -3607,7 +3644,7 @@ upload_sat:
 
 ; ---- Status area -----------------------------------------------------------
 
-; A (0..RESERVES) reserve ships in the bottom status area, from its left
+; A (0..RESERVE_MAX) reserve ships in the bottom status area, from its left
 ; (the rest of RESERVE_CELLS blank), through the BIOS's VRAM routines
 draw_reserves:
         ld hl,reserve_buf
@@ -3722,11 +3759,56 @@ mixer:  ld a,(shot_mix)
         ld a,PSG_MIXER
         jp psg_write
 
+; One frame of channel A: the happy beep while it plays (the shot's
+; table, if one runs, goes on unheard), else the shot sound
+sfx:
+        ld hl,(bonus_ptr)
+        ld a,h
+        or l
+        jr z,shot_sfx
+        ld a,(hl)
+        or a
+        jr z,.bend
+        ld e,a                  ; the beep: volume, tone period (sfx.py's table)
+        ld a,PSG_VOL_A
+        call psg_write
+        inc hl
+        ld e,(hl)
+        ld a,PSG_TONE_A
+        call psg_write
+        inc hl
+        ld e,(hl)
+        ld a,PSG_TONE_A+1
+        call psg_write
+        inc hl
+        ld (bonus_ptr),hl
+        ld a,MIX_TONE_A         ; tone only
+        ld (shot_mix),a
+        ld hl,(sfx_ptr)         ; the shot's frame passes, unheard
+        ld a,h
+        or l
+        jr z,mixer
+        ld a,(hl)
+        or a
+        jr z,.sgone
+        ld de,4
+        add hl,de
+        jr .skeep
+.sgone: ld hl,0
+.skeep: ld (sfx_ptr),hl
+        jr mixer
+.bend:  ld hl,0                 ; the beep's end: the shot's frame, if one still runs, else silence
+        ld (bonus_ptr),hl
+        ld hl,(sfx_ptr)
+        ld a,h
+        or l
+        jr z,shot_sfx.end
+
 ; One frame of the shot sound on channel A: volume, tone period, noise
 ; bit (sfx.py's table; with the noise on, the noise period is the shot's
 ; unless the death sound plays: it shares R6 and wins); its end marker
 ; silences the channel
-sfx:
+shot_sfx:
         ld hl,(sfx_ptr)
         ld a,h
         or l
@@ -3757,7 +3839,7 @@ sfx:
         inc hl
         ld (sfx_ptr),hl
         ld (shot_mix),a
-        jr mixer
+        jp mixer
 .end:   ld hl,0
         ld (sfx_ptr),hl
         ld a,l
@@ -3765,13 +3847,19 @@ sfx:
         ld e,a
         ld a,PSG_VOL_A
         call psg_write
-        jr mixer
+        jp mixer
         assert ((SHOT_NOISE_BIT|MIX_TONE_A) & (DEATH_MIX|BREAK_MIX)) == 0 && (DEATH_MIX & BREAK_MIX) == 0
 
 ; (Re)start the death sound (test.tcl: it starts here)
 death_start:
         ld hl,(death_sound)
         ld (death_ptr),hl
+        ret
+
+; Start the happy beep (test.tcl: it starts here)
+bonus_start:
+        ld hl,(bonus_sound)
+        ld (bonus_ptr),hl
         ret
 
 ; (Re)start the break sound (test.tcl: it starts here)
@@ -3843,6 +3931,7 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 dw GAME_OVER_MS*60/1000, OVER_SKIP_MS*60/1000
                 db 300/60
                 dw 100*60
+                dw BONUS_60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
@@ -3853,6 +3942,7 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
                 dw GAME_OVER_MS*50/1000, OVER_SKIP_MS*50/1000
                 db 300/50
                 dw 100*50
+                dw BONUS_50
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
         assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0

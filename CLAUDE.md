@@ -88,7 +88,15 @@ the top status row's right (`SCORE_ROW` 0, `SCORE_COL` 24, `SCORE_LEN` 8),
 right-aligned, no leading zeros ("0" at the start), white, printed by
 `show_score` (after `next_wave`; and at `restart`, for the title) only on a
 frame it changed, only the cells that changed (`score_shown`); a new game
-starts at 0 (`score_shown` cleared after the splash: every cell printed). Behind it all, 15
+starts at 0 (`score_shown` cleared after the splash: every cell printed).
+**Bonus ship:** 2 waves in a row (`BONUS_WAVES`) finished (the frame the
+last enemy is gone, `next_wave.done`) with no ship lost (`ship_dies` sets
+`wave_lost`; a death in the 0.7 s wait counts against the next wave) gain
+a reserve ship, if under `RESERVE_MAX` (5; 4 at the start) and not in game over; that
+frame it shows in the reserve and a 0.25 s "happy beep" (`BONUS_60/50`:
+C6 E6 G6 C7, tone only) plays on PSG channel A (`bonus_start`, `sfx`), winning over
+the shot (whose table runs on unheard). The count (`clean_waves`) starts
+again after each pair of waves, a bonus or not (reserve full). Behind it all, 15
 one-pixel light grey stars (random columns, random lines, never two on a
 line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 50 Hz), drawn in the bitmap (`move_stars`, after `fire`); one leaving past
@@ -209,7 +217,7 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `build/path.inc`: the formation loop's tunables and its table, 300
   entries per second of cycle, stepped by Bresenham on frames; only
   `CYCLE_SECS` sets the timing; the free enemies' velocity tables) and `sfx.py` (→ `build/sfx.inc`: the shot, death and break
-  sound tables; the death one is Skyfighter's `BOOM_SHIP`, the break one its
+  sound tables and the bonus beep's; the death one is Skyfighter's `BOOM_SHIP`, the break one its
   `BOOM_ROCK`, byte for byte) and
   `font.py` (→ `build/font.inc`: `FONT`, 6 bytes a glyph; `font.py --raw`
   prints them for the test) and
@@ -276,7 +284,10 @@ the staged test below. Then the enemies' part, hits on,
   2 lines short of lines 8 and 183, flying straight at them, away from
   the front: a bounce at each, as modelled); then, with the
   per-frame models off, the test makes every enemy gone in RAM 19 times
-  and checks waves 3..21 (both lists wrap; the top status row's level
+  and checks waves 3..21 (the bonus ships too: 2 reserves written first,
+  wave 2 lost ships, a shot fired a frame before wave 4 ends, key 1 kills
+  a ship in wave 10: bonuses at the ends of waves 4, 6, 8 and 12, none at 5
+  in reserve, the beep every frame as its table; both lists wrap; the top status row's level
   and wave at every wave, L3 W1 at the 21st; none begun a frame before
   its 0.7 s; the frame before each begins, the test puts 3 enemy
   bullets in flight: the model has them gone the frame after). Then the
@@ -303,7 +314,9 @@ the staged test below. Then the enemies' part, hits on,
   power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
   Then twice no reserves, the front killed: joystick 1's button A, then
   space, seen exactly at 3 s goes to the title at once; a fourth game for
-  the final screenshot. The score, every frame of the game: each `score_add` call
+  the final screenshot. Every wave's end: the bonus model (ship deaths
+  seen at `ship_dies`, the streak, the reserve that frame in RAM and VRAM,
+  `bonus_start` calls). The score, every frame of the game: each `score_add` call
   (a breakpoint) with the front's living ships before the hit (the front
   then; for a crash, as `collide` began), one call per pair broken and per
   enemy booming (from the enemies' states), the score in RAM the spec's
