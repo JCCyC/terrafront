@@ -202,8 +202,8 @@ at least 8 lines over the front's art's first (`EB_CLEAR`: line 160 or
 above), its column 3 (`EB_DX`, the art's middle) on screen; none, no
 bullet. The bullet: the player's shape and colour (1×3, white, in the
 bitmap), its top right under the art's last row, going down at
-`EB_SPEED_LIST`% of the player's 230 px/s (70% in wave 1, +10% a wave,
-140% from wave 8 on; `wave_n` counts the waves, stopping at 255),
+`EB_SPEED_LIST`% of the player's 230 px/s (70% in wave 1, +7% a wave,
+119% from wave 8 on; `wave_n` counts the waves, stopping at 255),
 Bresenham in 1/100 px (one table for both rates); gone once its bottom
 would pass line 183. It hits a ship of the front (`eb_hit`, from `eb_move`)
 when its column has a pixel of the ship's art (`SHIP_ROWS`) on a line the

@@ -180,7 +180,7 @@ EB_CHANCE       equ 4           ; (a power of 2)
 EB_CLEAR        equ 8           ; a shooter's art's last line at least this many lines above the front's art's first
 EB_DX           equ 3           ; a bullet's column in its enemy's 8 (3 and 4: the art's middle)
 ; their speed in % of BULLET_SPEED, in waves 1, 2, ...; the last from then on
-        define EB_SPEED_LIST 70, 80, 90, 100, 110, 120, 130, 140
+        define EB_SPEED_LIST 70, 77, 84, 91, 98, 105, 112, 119
 ; at most this many in flight, in waves 1, 2, ...; the last from then on
         define EB_MAX_LIST 3, 3, 3, 4, 4, 4, 5
 EB_N            equ 5           ; slots: EB_MAX_LIST's largest
@@ -652,6 +652,12 @@ new_game:
         or a
         call nz,attract_init
         call build_sat
+        ld hl,(GRPCOL)          ; the reserve ships' colour, once (draw_reserves: patterns only)
+        ld de,RESERVE_VRAM
+        add hl,de
+        ld bc,RESERVE_CELLS*8
+        ld a,RESERVE_COLOR*16+BG_COLOR
+        call FILVRM
         ld a,RESERVES
         call draw_reserves
 
@@ -4003,7 +4009,9 @@ upload_sat:
 ; ---- Status area -----------------------------------------------------------
 
 ; A (0..RESERVE_MAX) reserve ships in the bottom status area, from its left
-; (the rest of RESERVE_CELLS blank), through the BIOS's VRAM routines
+; (the rest of RESERVE_CELLS blank): their patterns, straight to the VDP (40 T
+; between the VRAM writes: outside vertical blank too); their colour is set
+; once, at the game's start
 draw_reserves:
         ld hl,reserve_buf
         ld de,reserve_buf+1
@@ -4055,19 +4063,24 @@ draw_reserves:
         add a,RESERVE_STEP
         ld c,a
         djnz .ship
-.show:  ld hl,(GRPCGP)
-        ld de,RESERVE_VRAM
-        add hl,de
-        ex de,hl
+.show:  ld a,(pat_hi)
+        or RESERVE_VRAM>>8
+        ld h,a
+        di
+        xor a                   ; (RESERVE_VRAM's low byte)
+        out (VDP_ADDR),a
+        ld a,h
+        out (VDP_ADDR),a
+        ei
         ld hl,reserve_buf
-        ld bc,RESERVE_CELLS*8
-        call LDIRVM
-        ld hl,(GRPCOL)
-        ld de,RESERVE_VRAM
-        add hl,de
-        ld bc,RESERVE_CELLS*8
-        ld a,RESERVE_COLOR*16+BG_COLOR
-        jp FILVRM
+        ld b,RESERVE_CELLS*8
+.out:   ld a,(hl)               ; 40 T a byte
+        out (VDP_DATA),a
+        inc hl
+        dec b
+        jr nz,.out
+        ret
+        assert (RESERVE_VRAM & 0FFh) == 0 && RESERVE_CELLS*8 < 256
 
 ; ---- Sound -----------------------------------------------------------------
 

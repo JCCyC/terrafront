@@ -2022,13 +2022,13 @@ proc vis_frame {} {
 
 # ---- The enemies' bullets ---------------------------------------------------
 # From the spec: wave w (0 the first): speed 70% of the player's bullet's
-# (230 px/s) in the first wave, +10% a wave, from the 8th on 140%; at most
+# (230 px/s) in the first wave, +7% a wave, from the 8th on 119%; at most
 # 3 in flight in waves 1..3, 4 in 4..6, 5 from the 7th on. A roll every
 # 0.25 s; one in 4 fires, from a random enemy (in a pair or free) whose
 # art's last row is at least 8 lines above the front's art's first, if
 # fewer than the most are in flight.
 proc eb_spec {w} {
-	set pct [expr {70 + 10*($w < 7 ? $w : 7)}]
+	set pct [expr {70 + 7*($w < 7 ? $w : 7)}]
 	set mx [expr {$w < 3 ? 3 : ($w < 6 ? 4 : 5)}]
 	list $pct $mx
 }
