@@ -26,6 +26,11 @@ while {[gets $f line] >= 0} {
 }
 close $f
 proc m {name {ofs 0}} { debug read memory [expr {$::sym($name) + $ofs}] }
+# Breakpoints go by address, not slot: while the BIOS boots, page 1 holds
+# MSX BASIC's ROM, whose code can pass the game's addresses. cart_bp's
+# body runs only when page 1 holds this cartridge ("AB" at 4000h).
+proc cart {} { expr {[debug read memory 0x4000] == 0x41 && [debug read memory 0x4001] == 0x42} }
+proc cart_bp {addr cond body} { debug set_bp $addr $cond [list if {[cart]} $body] }
 proc rem {} { expr {[m call_rem] + 256*[m call_rem 1]} }
 proc sat {i} { debug read VRAM [expr {0x1B00 + $i}] }
 # Byte b of SAT entry e as built (0..12: the front's slots, the incoming
@@ -41,16 +46,37 @@ proc down {bits} { keymatrixdown 8 $bits }
 proc up {bits} { keymatrixup 8 $bits }
 proc cdown {} { keymatrixdown 3 0x01 }
 proc cup {} { keymatrixup 3 0x01 }
-# The test keys 1..4: row 0, bits 1..4
-proc kdown {k} { keymatrixdown 0 [expr {1 << $k}] }
-proc kup {k} { keymatrixup 0 [expr {1 << $k}] }
+# Ships killed by the test: tkill k.. makes the front's kth living ships
+# (1.., from the left) start to die this frame, before move_bullets (a
+# breakpoint there calls ship_dies, the game's own, once per ship, from
+# the highest k down, so that a kill doesn't renumber the rest); a k with
+# no such ship does nothing (ship_dies's breakpoint doesn't fire when the
+# PC is set to it: its work, on_ship_dies, is done here)
+set tkills {}
+proc tkill {args} { set ::tkills [lsort -integer -decreasing -unique [concat $::tkills $args]] }
+cart_bp $sym(move_bullets) {} {
+	while {[llength $::tkills]} {
+		set k [lindex $::tkills 0] ; set ::tkills [lrange $::tkills 1 end]
+		set slot -1
+		for {set i 0} {$i < 4} {incr i} {
+			if {([m front_mask] >> $i & 1) && ![m boom_stage $i] && [incr k -1] == 0} { set slot $i ; break }
+		}
+		if {$slot < 0} continue
+		set sp [expr {[reg sp] - 2}]
+		poke16 $sp $::sym(move_bullets) ; reg sp $sp
+		reg HL [expr {$::sym(boom_stage) + $slot}]
+		reg pc $::sym(ship_dies)
+		on_ship_dies
+		break
+	}
+}
 # Joysticks: a breakpoint right after joy_r14's R14 read clears the held
 # lines (bit 4 = button A, 5 = B) of port 1 (B = 03h) or 2 (B = 4Ch)
 set joy(1) 0
 set joy(2) 0
 proc joydown {port bits} { set ::joy($port) $bits }
 proc joyup {port} { set ::joy($port) 0 }
-debug set_bp $sym(joy_r14.r14) {} {
+cart_bp $sym(joy_r14.r14) {} {
 	set p [expr {[reg B] == 0x03 ? 1 : 2}]
 	if {$::joy($p)} { reg A [expr {[reg A] & ~$::joy($p) & 0xFF}] }
 }
@@ -65,12 +91,12 @@ proc at {frame body} { lappend ::steps [list $frame $body] }
 # against the table every frame
 set dnew 0 ; set didx -1 ; set druns {} ; set dstarts 0
 set dbad 0 ; set dclash 0 ; set dframes 0 ; set dfirst ""
-debug set_bp $sym(death_start) {} { incr ::dnew }  ;# each call (two booms can start in one frame)
+cart_bp $sym(death_start) {} { incr ::dnew }  ;# each call (two booms can start in one frame)
 # The break sound: brk_start (re)starts it; brk_frame checks channel B
 set bnew 0 ; set bidx -1 ; set bruns {} ; set bstarts 0
 set bbad 0 ; set bframes 0 ; set bfirst ""
 set brk_all 0 ; set brk_seen 0
-debug set_bp $sym(brk_start) {} { incr ::bnew ; incr ::brk_all }  ;# each call (two pairs can break up in one frame)
+cart_bp $sym(brk_start) {} { incr ::bnew ; incr ::brk_all }  ;# each call (two pairs can break up in one frame)
 # The bonus ship: BONUS_WAVES (2) waves in a row finished (next_wave.done:
 # the frame's work that made the last enemy gone) with no ship lost
 # (ship_dies) gain a reserve ship, if under RESERVE_MAX (4) and not game
@@ -81,9 +107,9 @@ set blost 0 ; set bstreak 0 ; set bwant {} ; set bseq {} ; set bonew 0
 set bonus_bad 0 ; set bonus_first "" ; set b_awards 0 ; set b_vram 0
 set beepidx -1 ; set beepruns {} ; set beepframes 0 ; set beepshot 0
 proc bonus_bad {s} { if {!$::bonus_bad} { set ::bonus_first "frame $::n: $s" } ; incr ::bonus_bad }
-debug set_bp $sym(new_game) {} { set ::blost 0 ; set ::bstreak 0 }
-debug set_bp $sym(bonus_start) {} { incr ::bonew }
-debug set_bp $sym(next_wave.done) {} {
+cart_bp $sym(new_game) {} { set ::blost 0 ; set ::bstreak 0 }
+cart_bp $sym(bonus_start) {} { incr ::bonew }
+cart_bp $sym(next_wave.done) {} {
 	set lost $::blost ; set ::blost 0 ; set award 0 ; set r [m reserves]
 	if {$lost} { set what lost ; set ::bstreak 0 } else {
 		incr ::bstreak ; set what $::bstreak
@@ -125,7 +151,7 @@ proc bonus_frame {} {
 
 # Hits are off (volley_hits returns at once) until the enemies' part
 set nohits 1 ; set nohits_was 1
-debug set_bp $sym(volley_hits) {} {
+cart_bp $sym(volley_hits) {} {
 	if {$::nohits} { reg pc [peek16 [reg sp]] ; reg sp [expr {[reg sp] + 2}] }
 }
 
@@ -137,13 +163,13 @@ proc front_now {} {
 	for {set k 0} {$k < 4} {incr k} { lappend st [m boom_stage $k] }
 	list [m front_mask] [m ship_x] $st
 }
-debug set_bp $sym(fire.free) {} {
+cart_bp $sym(fire.free) {} {
 	incr ::spawns ; set ::fresh [expr {([reg HL] - $::sym(volleys)) / $::sym(VOLLEY)}]
 	set ::fsnap [front_now]     ;# the front the volley comes from
 }
 # The front when collide begins (after the moves, call-up and trims)
 set cfront {0 0 {0 0 0 0}}
-debug set_bp $sym(collide) {} { set ::cfront [front_now] ; set ::in_col 1 }
+cart_bp $sym(collide) {} { set ::cfront [front_now] ; set ::in_col 1 }
 
 # The score, from the spec: a break-up 50 points, a free enemy's death
 # (shot or crashing) 100, times the front's share by its living ships
@@ -167,7 +193,7 @@ proc living {fr} {
 proc ships_in {a} { set c 0 ; for {set k 0} {$k < 4} {incr k} { incr c [expr {$a >> $k & 1}] } ; return $c }
 # (the boss's bonus: with the front's living ships as it died, kept in
 # boss_alive; boss_frame checks that against its death)
-debug set_bp $sym(score_add) {} {
+cart_bp $sym(score_add) {} {
 	if {!$::started} return
 	set kind [expr {[reg B] == $::sym(PTS_BREAK) ? "break" : ([reg B] == $::sym(PTS_FREE) ? "free" : ([reg B] == $::sym(PTS_BOSS) ? "boss" : "?[reg B]"))}]
 	if {$kind eq "boss"} {
@@ -464,7 +490,7 @@ proc plan_calls {a} {
 	plan_kills [expr {$a+5}]
 }
 
-# The test keys: deaths, booms, holes, trims, the call-up rule on the
+# Kills (tkill): deaths, booms, holes, trims, the call-up rule on the
 # front's span, an emptied front. Start: four ships at the right edge, 1 in
 # reserve; the test gives the game more reserves (in RAM only: the status
 # row isn't redrawn) so that the call-ups below can run.
@@ -474,9 +500,8 @@ proc plan_kills {a} {
 		check {[m front_mask] == 15 && [m ship_x] == 256 - 4*$::W} "kills start: four ships at the right edge"
 		debug write memory $::sym(reserves) 3
 		set ::bwslot 1 ; set ::bw {}
-		kdown 2
+		tkill 2
 	}
-	at [expr {$a+1}] { kup 2 }
 	# a volley while ship 2 dies: no bullet from it
 	at [expr {$a+3}] { down 0x01 }
 	at [expr {$a+4}] {
@@ -489,32 +514,29 @@ proc plan_kills {a} {
 	at [expr {$a+25}] {
 		set runs [boom_runs $::bw] ; unset ::bw
 		set want [expr {$::F == 60 ? {12 6 16 4 20 5 parked} : {12 5 16 3 20 4 parked}}]
-		check {$runs eq $want} "key 2: ship 2's boom in the SAT, name and frames: $runs (want $want)"
+		check {$runs eq $want} "kill 2: ship 2's boom in the SAT, name and frames: $runs (want $want)"
 		check {[m front_mask] == 13 && [m front_slots] == 4 && [m ship_x] == 256 - 4*$::W} "ship 2 gone, a hole: mask [m front_mask], [m front_slots] slots, ship_x [m ship_x]"
-		kdown 2
+		tkill 2
 	}
-	# key 2 again: the second ship is now slot 2; ship-gap-gap-ship can't call up
-	at [expr {$a+26}] { kup 2 }
+	# kill 2 again: the second ship is now slot 2; ship-gap-gap-ship can't call up
 	at [expr {$a+46}] {
-		check {[m front_mask] == 9 && [m front_slots] == 4} "key 2 again: ship-gap-gap-ship (mask [m front_mask], [m front_slots] slots)"
+		check {[m front_mask] == 9 && [m front_slots] == 4} "kill 2 again: ship-gap-gap-ship (mask [m front_mask], [m front_slots] slots)"
 		set ::calls {} ; cdown
 	}
 	at [expr {$a+47}] { cup }
 	at [expr {$a+50}] {
 		check {[m call_on] == 0 && [llength $::calls] == 0 && [m reserves] == 3} "ship-gap-gap-ship: C does nothing (span 4, 3 in reserve)"
-		kdown 4
+		tkill 4
 	}
-	# key 4 with two ships: nothing
-	at [expr {$a+51}] { kup 4 }
+	# kill 4 with two ships: nothing
 	at [expr {$a+53}] {
 		set st [list [m boom_stage 0] [m boom_stage 1] [m boom_stage 2] [m boom_stage 3]]
-		check {[m front_mask] == 9 && $st == {0 0 0 0}} "key 4 with two ships: no death (mask [m front_mask], stages $st)"
-		kdown 1
+		check {[m front_mask] == 9 && $st == {0 0 0 0}} "kill 4 with two ships: no death (mask [m front_mask], stages $st)"
+		tkill 1
 	}
-	# key 1: the first ship dies, the front is trimmed to the last one
-	at [expr {$a+54}] { kup 1 }
+	# kill 1: the first ship dies, the front is trimmed to the last one
 	at [expr {$a+74}] {
-		check {[m front_mask] == 1 && [m front_slots] == 1 && [m front_w] == $::W && [m ship_x] == 256 - $::W} "key 1: trimmed to the last ship (mask [m front_mask], ship_x [m ship_x], [m front_w] px)"
+		check {[m front_mask] == 1 && [m front_slots] == 1 && [m front_w] == $::W && [m ship_x] == 256 - $::W} "kill 1: trimmed to the last ship (mask [m front_mask], ship_x [m ship_x], [m front_w] px)"
 		set ::calls {} ; cdown
 	}
 	at [expr {$a+75}] { cup }
@@ -528,12 +550,11 @@ proc plan_kills {a} {
 	at $b {
 		check_call 1 [expr {256 - 2*$::W}] [expr {256 - 3*$::W}] 3
 		check {[m front_mask] == 7} "three ships again (mask [m front_mask])"
-		kdown 2
+		tkill 2
 	}
 	# ship-gap-ship calls up from the left ...
-	at [expr {$b+1}] { kup 2 }
 	at [expr {$b+26}] {
-		check {[m front_mask] == 5 && [m front_slots] == 3} "key 2: ship-gap-ship (mask [m front_mask])"
+		check {[m front_mask] == 5 && [m front_slots] == 3} "kill 2: ship-gap-ship (mask [m front_mask])"
 		set ::calls {} ; cdown
 	}
 	at [expr {$b+27}] { cup }
@@ -542,12 +563,11 @@ proc plan_kills {a} {
 		check_call 1 [expr {256 - 3*$::W}] [expr {256 - 4*$::W}] 4
 		check {[m front_mask] == 11 && [m reserves] == 0} "ship-gap-ship: one more from the left (mask [m front_mask])"
 		debug write memory $::sym(reserves) 1
-		kdown 1
+		tkill 1
 	}
 	# ... and, at the left edge, from the right
-	at [expr {$b+1}] { kup 1 }
 	at [expr {$b+26}] {
-		check {[m front_mask] == 5 && [m ship_x] == 256 - 3*$::W} "key 1: trimmed to ship-gap-ship (mask [m front_mask], ship_x [m ship_x])"
+		check {[m front_mask] == 5 && [m ship_x] == 256 - 3*$::W} "kill 1: trimmed to ship-gap-ship (mask [m front_mask], ship_x [m ship_x])"
 		down 0x10
 	}
 	set b [expr {$b+26+3*$F}]
@@ -559,17 +579,15 @@ proc plan_kills {a} {
 		check_call 0 [expr {256 - 3*$::W}] [expr {3*$::W}] 4
 		check {[m front_mask] == 13 && [m reserves] == 0} "ship-gap-ship: one more from the right (mask [m front_mask])"
 		debug write memory $::sym(reserves) 1
-		kdown 3
+		tkill 3
 	}
-	# keys 3, 2, 1: all three die; the frame the front is empty (where its
+	# kills 3, 2, 1: all three die; the frame the front is empty (where its
 	# last died), the last reserve (1, written in RAM) is called up by
 	# itself, no C pressed (empty_frame)
-	at [expr {$b+1}] { kup 3 }
-	at [expr {$b+3}] { kdown 2 }
-	at [expr {$b+4}] { kup 2 }
-	at [expr {$b+6}] { kdown 1 }
-	at [expr {$b+7}] { kup 1 ; set ::calls {} ; set ::emptywatch 1 }
-	at [expr {$b+40}] { if {[info exists ::emptywatch]} { fail "keys 3, 2, 1: the front never emptied (mask [m front_mask])" ; unset ::emptywatch } }
+	at [expr {$b+3}] { tkill 2 }
+	at [expr {$b+6}] { tkill 1 }
+	at [expr {$b+7}] { set ::calls {} ; set ::emptywatch 1 }
+	at [expr {$b+40}] { if {[info exists ::emptywatch]} { fail "kills 3, 2, 1: the front never emptied (mask [m front_mask])" ; unset ::emptywatch } }
 	# the last death sound plays out
 	at [expr {$b+5+$F*3/2}] {
 		set want [expr {$::F == 60 ? 84 : 70}]
@@ -579,13 +597,13 @@ proc plan_kills {a} {
 	at [expr {$b+8+$F*3/2}] { plan_enemies }
 }
 
-# Every frame from keys 3, 2, 1 on: the frame the front is empty, a
+# Every frame from kills 3, 2, 1 on: the frame the front is empty, a
 # call-up starts by itself (the last reserve); meanwhile the front can't
 # move or shoot (right held, fire pressed); it lands where the last died
 proc empty_frame {} {
 	if {[m front_mask]} return
 	unset ::emptywatch
-	check {[m front_slots] == 0 && [m front_w] == 0 && [m ship_x] == 0} "keys 3, 2, 1: the front is empty at x [m ship_x]"
+	check {[m front_slots] == 0 && [m front_w] == 0 && [m ship_x] == 0} "kills 3, 2, 1: the front is empty at x [m ship_x]"
 	check {[m call_on] && ![m call_left] && [rem] == 256 && [m call_target] == 0 && [m reserves] == 0} "the front emptied: a call-up starts that frame by itself, no C pressed (on [m call_on], from the [expr {[m call_left] ? "left" : "right"}], [rem] px, target [m call_target], [m reserves] left in reserve)"
 	set ::spawns 0
 	down 0x80
@@ -1253,10 +1271,10 @@ proc check_blinks {F} {
 	check {[llength $tbad] == 0} "splash: blink period 0.5 s in emulated time (wrong: $tbad)"
 	check {$::frames_bad == 0} "splash: the poll loop sees every frame, one at a time"
 }
-debug set_bp $sym(splash.blink) {} { try splash_frame }
+cart_bp $sym(splash.blink) {} { try splash_frame }
 # the frame's time: its interrupt's (not when the poll loop sees it)
 set isr_time 0
-debug set_bp $sym(isr) {} { if {$::phase == 2 && $::sn < 3*[m fps]} { set ::isr_time [machine_info time] } }
+cart_bp $sym(isr) {} { if {$::phase == 2 && $::sn < 3*[m fps]} { set ::isr_time [machine_info time] } }
 # after the splash: "L1 W1" on the top status row's left, the score 0 on
 # its right, the rest of it blank, and the bottom one past the reserves
 proc check_cleared {} {
@@ -1270,7 +1288,7 @@ proc check_cleared {} {
 
 down 0x01            ;# boot 1: space held from power-on
 set started 0
-debug set_bp $sym(main_loop) {} {
+cart_bp $sym(main_loop) {} {
 	if {$::phase == 1} {
 		check {$::sn >= 8} "joystick 1's button A starts the game; space held from power-on, then let go, didn't (splash frame $::sn)"
 		joyup 1
@@ -1968,7 +1986,9 @@ proc enemy_end {} {
 	check {$::hit_bad == 0 && $::hits > 0} "hits = the model (each bullet against the enemies' art on the lines it covered, the first enemy hit, the bullet gone; pairs break, free ones boom) every frame ($::hits hits; [expr {$::hit_bad ? "first wrong: $::hit_first" : "none wrong"}])"
 	check {$::mot_bad == 0 && $::freeframes > 0} "free enemies = the model (velocity table, wrap, stopped at lines 8 / 183 and turned away) every frame, booms stationary ($::freeframes enemy-frames; [expr {$::mot_bad ? "first wrong: $::mot_first" : "none wrong"}])"
 	check {$::btop > 0 && $::bbottom > 0 && $::nonmirror > 0} "bounces: $::btop at the top, $::bbottom at the bottom, $::nonmirror not a mirror's"
-	check {[llength [lsort -unique $::dirs]] >= 5 && [lsearch -exact $::dirs 0] < 0 && [lsearch -exact $::dirs 32] < 0} "break-up directions at random, never level (0, 32): $::dirs"
+	# (at least 4 different: 7 or 8 random picks of 62 have fewer about
+	# 1 in 3000 games, simulated; at least 5 failed about 1 in 300)
+	check {[llength [lsort -unique $::dirs]] >= 4 && [lsearch -exact $::dirs 0] < 0 && [lsearch -exact $::dirs 32] < 0} "break-up directions at random, never level (0, 32): $::dirs"
 	check {$::flip_bad == 0} "the SAT reversed every other frame, the enemies' turn one back every two ($::flip_bad wrong)"
 	set want [expr {$::F == 60 ? {2 6 3 4 4 5 5} : {2 5 3 3 4 4 5}}]
 	set bad {}
@@ -1987,7 +2007,7 @@ proc enemy_end {} {
 	set ::nocheck 1
 	set ::wseq {}
 	# the bonus ships: 2 in reserve (RAM); wave 2 lost ships (the staged
-	# collisions), the rest none but the one key 1 kills in wave 10
+	# collisions), the rest none but the one tkill 1 kills in wave 10
 	debug write memory $::sym(reserves) 2
 	set ::bwatch 1
 	wave_step
@@ -2030,7 +2050,7 @@ proc wave_after {} {
 	set bad [lw_bad [lw_str $w]]
 	if {[llength $bad]} { wave_bad "wave $w: the top status row isn't \"[lw_str $w]\" (wrong: [lrange $bad 0 5])" }
 	lappend ::wseq "[m form_enemy]/[m form_color]"
-	if {$w == 9} { kdown 1 ; at [expr {$::n + 1}] { kup 1 } }   ;# (wave 10: a ship lost)
+	if {$w == 9} { tkill 1 }   ;# (wave 10: a ship lost)
 	if {$w < 20} { wave_step } else {
 		check {[llength [lw_bad "L3 W1"]] == 0 && [lw_str 9] eq "L1 W10" && [lw_str 10] eq "L2 W1"} "wave 21: \"L3 W1\" on the top status row's left, the rest blank but the score (\"L2 W10\"'s last cell gone)"
 		set want {1:lost 2:1 3:+1 4:1 5:+1 6:1 7:+1 8:1 9:lost 10:1 11:+1 12:1 13:full 14:1 15:full 16:1 17:full 18:1 19:full}
@@ -2108,7 +2128,7 @@ proc bgap {} {
 	expr {(158 + $smax - 1 + 4) / 5}
 }
 # the boss's bullet fired: its place (HL), under its art, from one of its columns
-debug set_bp $sym(boss_fire.shoot) {} {
+cart_bp $sym(boss_fire.shoot) {} {
 	if {!$::started} return
 	set hl [reg HL]
 	set b [list [debug read memory $hl] [debug read memory [expr {$hl+1}]]]
@@ -2118,7 +2138,7 @@ debug set_bp $sym(boss_fire.shoot) {} {
 	lappend ::eb_spawned $b
 	incr ::bshots_now
 }
-debug set_bp $sym(boss_dies) {} { if {$::started} { set ::bdead_alive [living [front_now]] } }
+cart_bp $sym(boss_dies) {} { if {$::started} { set ::bdead_alive [living [front_now]] } }
 proc vols {} {
 	set r {}
 	for {set i 0} {$i < $::sym(MAX_VOLLEYS)} {incr i} {
@@ -2258,26 +2278,31 @@ proc boss_frame {} {
 	if {$st >= 2} { lappend ::bhist $st }
 	# its bonus text
 	set pts [expr {500*[lindex $::SHARES [ships_in [m boss_alive]]]/100}]
-	if {$st == 5 && ![m over_text]} {
+	if {$st == $::sym(BS_BONUS) && ![m over_text]} {
+		# (its first frame: its first BONUS_HALF cells only, the others
+		# not its yet: the bitmap model has them)
+		set txt "BONUS $pts POINTS" ; set nc 16
+		if {!$::btext} { set nc $::sym(BONUS_HALF) ; set txt [string range $txt 0 $nc-1] }
 		incr ::btext
-		set bad [text_bad $::sym(OVER_ROW) 8 "BONUS $pts POINTS" 16]
-		if {[llength $bad] || ![m mid_text] || [m mid_x0] != 64 || [m mid_w] != 128} { bbad "the bonus text isn't \"BONUS $pts POINTS\" in row 12 from column 8 (wrong: [lrange $bad 0 3]; mid [m mid_text] [m mid_x0] [m mid_w])" }
+		set bad [text_bad $::sym(OVER_ROW) 8 $txt $nc]
+		set mw [expr {$::btext == 1 ? 8*$::sym(BONUS_HALF) : 128}]
+		if {[llength $bad] || ![m mid_text] || [m mid_x0] != 64 || [m mid_w] != $mw} { bbad "the bonus text's frame $::btext isn't \"$txt\" in row 12 from column 8 (wrong: [lrange $bad 0 3]; mid [m mid_text] [m mid_x0] [m mid_w])" }
 	}
-	if {$pst == 5 && $st != 5} {
+	if {$pst == $::sym(BS_BONUS) && $st != $::sym(BS_BONUS)} {
 		# its end: the text gone, the points; the next wave the next frame
 		set bad [text_bad $::sym(OVER_ROW) 8 "" 16]
 		if {[llength $bad] || [m mid_text]} { bbad "the bonus text not gone (wrong: [lrange $bad 0 3])" }
 		if {$::sc_boss != 1} { bbad "$::sc_boss boss scores at its end" }
-		if {$st != 7} { bbad "the bonus over: boss_st $st, want 7 (the next wave next frame)" }
+		if {$st != $::sym(BS_NEXT)} { bbad "the bonus over: boss_st $st, want $::sym(BS_NEXT) (the next wave next frame)" }
 		eb_set [eb_some 3]     ;# (in flight as the next wave begins: they must go)
 		set ::bm [list $st 0 0]
 		return
 	} elseif {$::sc_boss} { bbad "$::sc_boss boss scores in state $st" }
-	if {$pst == 7} {
+	if {$pst == $::sym(BS_NEXT)} {
 		if {$st} { bbad "the next wave not begun after the bonus (boss_st $st)" }
 		set F $::F
 		set runs [st_runs $::bhist]
-		set want [list 2 [expr {$F == 60 ? 6 : 5}] 3 [expr {$F == 60 ? 4 : 3}] 4 [expr {$F == 60 ? 5 : 4}] 5 [expr {2*$F}] 7 1]
+		set want [list 2 [expr {$F == 60 ? 6 : 5}] 3 [expr {$F == 60 ? 4 : 3}] 4 [expr {$F == 60 ? 5 : 4}] $::sym(BS_GAP) 1 $::sym(BS_BONUS) [expr {2*$F}] $::sym(BS_NEXT) 1]
 		lassign $::bwave we wn wl
 		set ok [expr {$runs eq $want && $::btext == 2*$F && ($::bshots <= 5 || $::bmin >= 4 && $::bmax == 5) && $::dropped == $::bdrop0}]
 		lappend ::bres [list $::bosses [ships_in [m boss_alive]] $pts $k $ok]
@@ -2356,7 +2381,7 @@ set eb_gone 0 ; set eb_maxseen [dict create] ; set eb_frames 0 ; set cs_on 0 ; s
 proc eb_bad {s} { if {!$::eb_bad} { set ::eb_first "frame $::n: $s" } ; incr ::eb_bad }
 # A new wave begun (next_wave): the next frame, every enemy bullet goes
 set eb_fresh 0 ; set eb_began 0 ; set eb_wipe 0 ; set eb_wiped 0 ; set eb_wipes 0
-debug set_bp $sym(next_wave.go) {} { if {$::started} { set ::eb_began 1 } }
+cart_bp $sym(next_wave.go) {} { if {$::started} { set ::eb_began 1 } }
 # Enemy bullets hit the front's ships only while ::ebhits (else eb_hit
 # returns at once, no hit: the parts before the enemies' and after it don't
 # expect ships to die). The front as eb_move begins ({on front}) and as
@@ -2364,11 +2389,11 @@ debug set_bp $sym(next_wave.go) {} { if {$::started} { set ::eb_began 1 } }
 set ebhits 0 ; set ebsnap "" ; set ebpost "" ; set eb_kills 0 ; set eb_shiphits 0 ; set ebk0 0
 set ebs_bad 0 ; set ebs_first "" ; set ebs_near 0
 proc ebs_bad {s} { if {!$::ebs_bad} { set ::ebs_first "frame $::n: $s" } ; incr ::ebs_bad }
-debug set_bp $sym(eb_hit) {} {
+cart_bp $sym(eb_hit) {} {
 	if {$::started && !$::ebhits} { reg pc [peek16 [reg sp]] ; reg sp [expr {[reg sp] + 2}] ; reg F [expr {[reg F] & 0xFE}] }
 }
-debug set_bp $sym(eb_move) {} { if {$::started} { set ::ebsnap [list $::ebhits [front_now]] } }
-debug set_bp $sym(fire) {} {
+cart_bp $sym(eb_move) {} { if {$::started} { set ::ebsnap [list $::ebhits [front_now]] } }
+cart_bp $sym(fire) {} {
 	if {$::started} {
 		set l {} ; for {set k 0} {$k < 4} {incr k} { lappend l [m boom_left $k] }
 		set ::ebpost [list [front_now] $l]
@@ -2389,7 +2414,7 @@ proc eb_ship_hit {x lo hi sx0 alive} {
 	return -1
 }
 # The roll (A, after rand): the decision against the model
-debug set_bp $sym(enemy_fire.rolled) {} { try eb_roll }
+cart_bp $sym(enemy_fire.rolled) {} { try eb_roll }
 proc eb_roll {} {
 	if {!$::started} return     ;# (the MSX2 BIOS boots with ROM code at these addresses too)
 	if {$::eb_force} { reg A [expr {[reg A] & 0xFC}] } else { incr ::eb_nat }
@@ -2409,7 +2434,7 @@ proc eb_roll {} {
 	set ::eb_last [list spawn $n $mx]
 }
 # The bullet fired: its place {Y X} (at HL), one of the model's
-debug set_bp $sym(enemy_fire.shoot) {} { try eb_shoot }
+cart_bp $sym(enemy_fire.shoot) {} { try eb_shoot }
 proc eb_shoot {} {
 	if {!$::started} return
 	set hl [reg HL]
@@ -2677,7 +2702,7 @@ proc eb_end {} {
 }
 
 # Game over, twice, after the waves (per-frame models off). 1: the test
-# leaves 1 reserve (RAM) and kills the front (test keys 1..4 at once): the
+# leaves 1 reserve (RAM) and kills the front (tkill 1 2 3 4): the
 # last reserve is called up by itself, no game over; killed again: GAME
 # OVER that frame, and the game runs on (the front can't move, shoot or
 # call up; the formation and stars move); space and joystick 2's button A
@@ -2751,10 +2776,7 @@ proc over_on_frame {} {
 		if {$ok} { incr ::os_eb_out } else { lappend ::os_bad "bullet not shown at line $t" }
 	}
 }
-proc kill_all {} {
-	keymatrixdown 0 0x1E
-	at [expr {$::n+1}] { keymatrixup 0 0x1E }
-}
+proc kill_all {} { tkill 1 2 3 4 }
 proc plan_over {g} {
 	set ::ebon 0     ;# (the per-frame enemy bullet model: not across the restarts)
 	if {[m call_on]} { at [expr {$::n+1}] [list plan_over $g] ; return }
@@ -2765,17 +2787,22 @@ proc plan_over {g} {
 	kill_all
 }
 # Game over 3 comes during a boss's bonus text: the boss written in its
-# last boom image's last frame (a one-ship front as it died: 500 points);
+# frame after its last boom (BS_GAP; a one-ship front as it died: 500 points);
 # the next frame its text shows; then the front killed: GAME OVER takes its
 # place (the text's other cells blank), the bonus runs on unseen: 2 s after
 # its text came, the points and the next wave (L1 W2), GAME OVER intact
 set obonus 0
 proc stage_bonus_over {} {
-	foreach {f v} {boss_st 4 boss_left 1 boss_alive 1 boss_x 96 boss_color 13} { debug write memory $::sym($f) $v }
+	foreach {f v} [list boss_st $::sym(BS_GAP) boss_left 1 boss_alive 1 boss_x 96 boss_color 13] { debug write memory $::sym($f) $v }
 	set ::obonus 1 ; set ::ob0 $::n ; set ::osc0 $::score_model
 	at [expr {$::n + 1}] {
+		set h [string range "BONUS 500 POINTS" 0 $::sym(BONUS_HALF)-1]
+		set bad [text_bad $::sym(OVER_ROW) 8 $h $::sym(BONUS_HALF)]
+		check {![llength $bad] && [m bonus_text] && [m boss_st] == $::sym(BS_BONUS)} "game over 3, staged: the boss's frame after its last boom over, \"$h\" (its first half; one ship) in the screen's middle (wrong: [lrange $bad 0 5])"
+	}
+	at [expr {$::n + 2}] {
 		set bad [text_bad $::sym(OVER_ROW) 8 "BONUS 500 POINTS" 16]
-		check {![llength $bad] && [m bonus_text] && [m boss_st] == 5} "game over 3, staged: the boss's last boom over, \"BONUS 500 POINTS\" (one ship) in the screen's middle (wrong: [lrange $bad 0 5])"
+		check {![llength $bad] && [m bonus_text] && [m boss_st] == $::sym(BS_BONUS)} "game over 3, staged: the next frame, all of \"BONUS 500 POINTS\" (wrong: [lrange $bad 0 5])"
 		set ::ostate wait
 		kill_all
 	}
@@ -2807,7 +2834,7 @@ proc over_frame {} {
 			check_over_text 1 "game over $::games: \"$::OVER\" centred on the screen's middle row, white on black, from that frame"
 			if {$::obonus} {
 				set bad [text_bad $::sym(OVER_ROW) 8 "   $::OVER" 16]
-				check {![llength $bad] && ![m bonus_text] && [m boss_st] == 5} "game over 3, during the boss's bonus text: \"$::OVER\" in its place, its other cells blank, the bonus running on (boss_st [m boss_st]; wrong: [lrange $bad 0 5])"
+				check {![llength $bad] && ![m bonus_text] && [m boss_st] == $::sym(BS_BONUS)} "game over 3, during the boss's bonus text: \"$::OVER\" in its place, its other cells blank, the bonus running on (boss_st [m boss_st]; wrong: [lrange $bad 0 5])"
 			}
 			set ::otext_bad 0 ; set ::otext_frames 0 ; set ::ostage 0
 			if {$::games == 1} over_plan_10 else over_plan_skip
@@ -2857,14 +2884,14 @@ proc over_plan_skip {} {
 }
 # Game over's end (restart): frames from the one it began in to this one
 # (whose work stops here)
-debug set_bp $sym(restart) {} { if {$::attr} { try attract_restart } else { try over_restart } }
+cart_bp $sym(restart) {} { if {$::attr} { try attract_restart } else { try over_restart } }
 proc over_restart {} {
 	set k [expr {$::n - $::N0 + 1}]
 	set ::lw_last "L[m level] W[expr {[m form_enemy] + 1}]"
 	set bad [lw_bad $::lw_last]
 	set lwant [expr {$::games == 2 ? "L1 W1" : ($::games == 3 ? "L1 W2" : "L3 W[expr {[m form_enemy] + 1}]")}]
 	if {$::obonus} {
-		check {$::obonus_end eq {7 0 500 0 1}} "game over 3: the boss's bonus over 2 s after its text came, under GAME OVER: its 500 points, the next frame the next wave, L1 W2 (boss_st, enemy, points; boss_st, enemy the next frame: $::obonus_end)"
+		check {$::obonus_end eq [list $::sym(BS_NEXT) 0 500 0 1]} "game over 3: the boss's bonus over 2 s after its text came, under GAME OVER: its 500 points, the next frame the next wave, L1 W2 (boss_st, enemy, points; boss_st, enemy the next frame: $::obonus_end)"
 		set ::obonus 0
 	}
 	check {[llength $bad] == 0 && $::lw_last eq $lwant} "game over $::games: \"$::lw_last\" (want \"$lwant\") on the top status row's left, the score \"$::score_model\" on its right (wrong: [lrange $bad 0 5])"
@@ -2907,8 +2934,8 @@ proc new_game_checks {} {
 # and shooting; every 5 s a call-up roll (attract_cpu.roll, a breakpoint):
 # heads (1 in 2), a call-up starts that frame if one can (none flying, a
 # reserve, a span under 4; as call_up began: a breakpoint's snapshot), and
-# none starts otherwise but by itself (the front empty); no test key or C
-# does anything (held 1 s in the first). Three times: the first plays its
+# none starts otherwise but by itself (the front empty); C does nothing
+# (held 1 s in the first). Three times: the first plays its
 # 40 s (or till game over's 10 s, if it comes first), then the title (left
 # alone again); the second ends at joystick 1's button A, the third at
 # space, pressed 3 s and 2 s in, that frame; then the title, a press of
@@ -2928,27 +2955,30 @@ proc top_bad {} {
 	return $bad
 }
 proc att_bad {s} { if {!$::att_bad} { set ::att_first "frame $::an: $s" } ; incr ::att_bad }
-debug set_bp $sym(attract_cpu.roll) {} {
+cart_bp $sym(attract_cpu.roll) {} {
 	if {!$::attr} return
-	# (attract 1: until a roll has called one up, a roll that can is made heads)
-	if {$::attracts == 1 && !$::acalls && ![m call_on] && [m reserves] && [m front_slots] < 4 && [m front_mask]} {
+	# (attract 1: until a roll has called one up, a roll that can is made
+	# heads; not with a ship dying: its boom ending this frame could empty
+	# the front, and the call-up be the empty front's)
+	set dying 0 ; for {set k 0} {$k < 4} {incr k} { if {[m boom_stage $k]} { set dying 1 } }
+	if {$::attracts == 1 && !$::acalls && ![m call_on] && [m reserves] && [m front_slots] < 4 && [m front_mask] && !$dying} {
 		reg A [expr {[reg A] & ~($::sym(ATTRACT_CALL_CHANCE) - 1) & 0xFF}] ; incr ::aforce
 	}
 	lappend ::arolls $::an ; set ::aroll [expr {([reg A] & ($::sym(ATTRACT_CALL_CHANCE) - 1)) == 0}]
 }
-debug set_bp $sym(call_up) {} {
+cart_bp $sym(call_up) {} {
 	if {$::attr} { set ::asnap [list [m call_on] [m reserves] [m front_slots] [m front_mask]] }
 }
-debug set_bp $sym(kill_nth) {} { if {$::attr} { incr ::akills } }
 # Dodges: the threat tried (attract_dodge.threat: DE, its column) and the
 # target set for the last one (attract_dodge.set: A) against the rule: the
 # front ATTRACT_DODGE_MARGIN px clear of it, away from it (right if it's
 # left of the front's middle or on it), else the other side, clamped
-debug set_bp $sym(attract_dodge.threat) {} {
+cart_bp $sym(attract_dodge.threat) {} {
 	if {$::attr} { set c [reg HL] ; if {$c > 32767} { incr c -65536 } ; set ::athreat [list $c [m att_tw] [m ship_x] [m front_w]] }
 }
-debug set_bp $sym(attract_dodge.set) {} { if {$::attr} { try dodge_check } }
-debug set_bp $sym(ship_dies) {} { set ::blost 1 ; if {$::attr} { incr ::adeaths } }
+cart_bp $sym(attract_dodge.set) {} { if {$::attr} { try dodge_check } }
+proc on_ship_dies {} { set ::blost 1 ; if {$::attr} { incr ::adeaths } }
+cart_bp $sym(ship_dies) {} on_ship_dies
 proc dodge_check {} {
 	set M $::sym(ATTRACT_DODGE_MARGIN)
 	lassign $::athreat c tw x w
@@ -2979,7 +3009,7 @@ proc attract_begin {} {
 	check {[m front_mask] == 1 && [m ship_x] == $::sym(SHIP_X_MAX)/2 && $st eq {0 0 0 0} && [m reserves] == 4 && [m form_enemy] == 0 && [m form_color] == 2 && ![m over_on] && $left == 40*$F} "attract mode $::attracts: as a new game (one ship in the middle, 4 in reserve, the first wave), for [expr {$left/$F}] s"
 	check_reserves 4
 	set ::attr 1 ; set ::an 0 ; set ::att_bad 0 ; set ::att_first ""
-	set ::arolls {} ; set ::aroll -1 ; set ::aheads 0 ; set ::acalls 0 ; set ::aforced 0 ; set ::akills 0
+	set ::arolls {} ; set ::aroll -1 ; set ::aheads 0 ; set ::acalls 0 ; set ::aforced 0
 	set ::ax [m ship_x] ; set ::alefts 0 ; set ::arights 0 ; set ::axmin 255 ; set ::axmax 0
 	set ::spawns 0 ; set ::aover -1 ; set ::aquit_at -1 ; set ::adropped $::dropped
 	set ::adodges 0 ; set ::adodge_edge 0 ; set ::adeaths 0 ; set ::aoverframes 0 ; set ::astaged 0 ; set ::aforce 0
@@ -3035,8 +3065,8 @@ proc attract_frame {} {
 	}
 	set ::aroll -1
 	if {$::attracts == 1} {
-		if {$::an == 2*$F} { keymatrixdown 0 0x1E ; cdown }
-		if {$::an == 3*$F} { keymatrixup 0 0x1E ; cup }
+		if {$::an == 2*$F} { cdown }
+		if {$::an == 3*$F} { cup }
 	} elseif {$::attracts == 2} {
 		if {$::an == 3*$F} { joydown 1 0x10 ; set ::aquit_at $::an }
 	} elseif {$::an == 2*$F} { down 0x01 ; set ::aquit_at $::an }
@@ -3053,8 +3083,7 @@ proc attract_restart {} {
 	set rbad {} ; set k 0
 	foreach r $::arolls { incr k ; if {$r != $k*5*$F} { lappend rbad $r } }
 	check {[llength $::arolls] == $nrolls && ![llength $rbad]} "attract mode $::attracts: a call-up roll every 5 s ($::arolls; want $nrolls, at multiples of [expr {5*$F}])"
-	check {$::att_bad == 0} "attract mode $::attracts: silent, the top status row unchanged, every frame; a call-up exactly on the rolls' heads that could ($::aheads heads, $::acalls call-ups by them, $::aforced by an empty front[expr {$::attracts == 1 ? "; test keys 1..4 and C held 1 s ignored" : ""}]; [expr {$::att_bad ? "first wrong: $::att_first" : "none wrong"}])"
-	check {$::akills == 0} "attract mode $::attracts: no test key kills a ship ($::akills)"
+	check {$::att_bad == 0} "attract mode $::attracts: silent, the top status row unchanged, every frame; a call-up exactly on the rolls' heads that could ($::aheads heads, $::acalls call-ups by them, $::aforced by an empty front[expr {$::attracts == 1 ? "; C held 1 s ignored" : ""}]; [expr {$::att_bad ? "first wrong: $::att_first" : "none wrong"}])"
 	if {$::attracts == 1} {
 		check {$::aover >= 0 && $::aoverframes > 0} "attract mode 1: game over ([expr {$::astaged ? "staged at 25 s" : "by itself"}], [expr {$::aover - 1}] frames in): no GAME OVER shown on its $::aoverframes frames, back to the title 10 s on (above)"
 	}

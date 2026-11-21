@@ -60,7 +60,19 @@ test: $(ROM) test.tcl
 		echo "== $$m"; cat build/test-$$m.log; \
 	done
 
+# The main loop's time per frame and per routine while test.tcl runs
+# (prof.tcl): build/profile-<machine>.txt; PROF_MACHINE (default the
+# Expert), PROF_MS (frames over it listed, default 14). openMSX sometimes
+# crashes under Xvfb (ISSUES.md): rerun if the file has no "frames" line.
+PROF_MACHINE ?= Gradiente_Expert_GPC-1
+PROF_MS ?= 14
+profile: $(ROM) test.tcl prof.tcl
+	@PROFLST=$(CURDIR)/build/terrafnt.lst PROFOUT=$(CURDIR)/build/profile-$(PROF_MACHINE).txt PROFMS=$(PROF_MS) \
+		LOGFILE=$(CURDIR)/build/prof-test-$(PROF_MACHINE).log SYMFILE=$(CURDIR)/build/terrafnt.sym SHOT=$(CURDIR)/build/prof-shot.png \
+		xvfb-run -a -s "-screen 0 1024x768x24" openmsx -machine $(PROF_MACHINE) -carta $(ROM) -script test.tcl -script prof.tcl >/dev/null 2>&1; \
+	grep "^frames\|^MAX" build/profile-$(PROF_MACHINE).txt; grep "^TOP" build/profile-$(PROF_MACHINE).txt | head -5
+
 clean:
 	rm -rf build $(ROM)
 
-.PHONY: all run run-cbios run-nms8250 test clean
+.PHONY: all run run-cbios run-nms8250 test profile clean

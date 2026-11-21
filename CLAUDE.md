@@ -46,8 +46,8 @@ at a constant 1067 px/s (the longest flight, 256 px into an empty front at
 an edge, in at most 0.25 s at 50 and 60 Hz), and glues on to that side.
 Meanwhile the front shoots but can't move. The front's span runs from its
 first ship to its last, holes included: ship-gap-ship can still call one
-up (from either side), ship-gap-gap-ship can't. Test keys 1..4 kill the
-front's 1st..4th living ship: it shows `images/player-ship-boom-1..3.png`
+up (from either side), ship-gap-gap-ship can't. A dying ship (`ship_dies`)
+shows `images/player-ship-boom-1..3.png`
 (9×16, the ship's art box) for 6/4/5 frames at 60 Hz, 5/3/4 at 50 Hz, and
 doesn't fire, and Skyfighter's ship-blown-up sound plays on PSG channel C
 (1.4 s, U-boat Killer's "water, loud"; another death restarts it; where
@@ -101,7 +101,7 @@ with a chance of 1 in 2 (`ATTRACT_FIRE_CHANCE`); every 50 thinks (5 s,
 would be: one flying, no reserve, a span of 4). The real input only
 quits: a press of fire (space or either joystick's button A; held from
 before doesn't count: `att_real` starts all held) goes to the title that
-frame (`game_over`, `att_quit`); arrows, C and the test keys do nothing.
+frame (`game_over`, `att_quit`); arrows and C do nothing.
 Enemy bullets and crashes kill ships as in a game; game over in it shows
 no GAME OVER (`over_text` stays 0: no cells kept from stars and bullets),
 just its 10 s with the enemies flying on (the pseudo-player's fire doesn't
@@ -158,8 +158,11 @@ last: it dies (`boss_dies`: `boss_alive` = the front's living ships then;
 the ship's death sound), booming as 8 ship booms side by side
 (`BOSS_BOOM_PATTERN`, png2spr.py: the 3 boom images at columns 0, 8, 16,
 24, 31, 39, 47, 55, as 4 sprites each, names 48.., in its last colour, the
-ship's boom frame counts; `boss_booms`, after `enemy_booms`); then
-"BONUS ddd POINTS" (`BONUS_TEXT`; 500 `BOSS_PTS` by the front's share
+ship's boom frame counts; `boss_booms`, after `enemy_booms`); then a
+frame with nothing (`BS_GAP`: its last boom gone, no text yet); then
+"BONUS ddd POINTS" (printed over two frames: its first 8 cells,
+`BONUS_HALF`, then the rest, `bonus_rest`; a star in its cells is
+erased by `mid_show`) (`BONUS_TEXT`; 500 `BOSS_PTS` by the front's share
 then: 500/400/300/250) on `OVER_ROW` from column 8, white, 2 s
 (`BONUS_TEXT_MS`; not over GAME OVER; GAME OVER coming during it takes
 its place, `bonus_erase`, the bonus running on unseen); then
@@ -224,7 +227,7 @@ shows this frame (after its move), against each living ship of the front
 (after the call-up and the move): a pixel of the enemy's art on a pixel of
 the ship's art (`touch`; `load_formation` keeps the wave's art rows
 rotated 0..7 bits in `rot_rows`, the ship's art rows are `SHIP_ROWS`).
-Both die: the enemy booms as when shot, the ship as by a test key (boom,
+Both die: the enemy booms as when shot, the ship by `ship_dies` (boom,
 death sound, then a hole and the trim). Every enemy and ship that touch:
 one enemy across two ships kills both; two enemies on one ship both boom
 (the ship dies once, one death sound start). Pairs never reach the
@@ -247,7 +250,7 @@ when its column has a pixel of the ship's art (`SHIP_ROWS`) on a line the
 bullet covered that frame (its old top to its new bottom), the front
 where it shows (before it moves), its ships living when `eb_move` began
 (`eb_alive`, worked out once a bullet reaches the front's lines): the
-bullet is gone and the ship dies as by a test key (boom, death sound,
+bullet is gone and the ship dies by `ship_dies` (boom, death sound,
 then a hole and the trim); two bullets on one ship: both gone, it dies
 once. Dying ships and the incoming ship aren't hit. When a wave begins
 (`next_wave`, `eb_wipe`), all enemy bullets go: the next frame's
@@ -256,14 +259,33 @@ any is drawn; an enemy bullet sharing a bitmap byte with another (a
 volley's or an enemy's) is drawn as the bits of all of them (`eb_draw`,
 after the volleys); stars hide in their bytes as in the volleys'. The
 SAT's reversal every other frame is done by `upload_sat` (the entries
-sent backwards, in vertical blank). The worst frame's work is about
-11.6 ms on the Expert (16.7 ms a frame; two full volleys on a star-step
-frame: `move_bullets` ~3.9 ms, `move_stars` ~3.0 ms). Speed-ups that
-keep it there: `hit_lines` puts each enemy's art's first line in
-`hc_first` once a frame, and `volley_hits` only tries, per bullet, the
-enemies whose art has a line the volley covered (`hc_list`); `move_stars`
-first marks the lines bullets are on (`bl_lines`, `bl_mark`), so
-`bullet_at` answers "none" for a star's line without one at once.
+sent backwards, in vertical blank). The worst frame measured (`make profile`, over the
+test's games) is about 14.6 ms on the Expert (16.67 ms a frame; ISSUES.md).
+Speed-ups that keep it there: `hit_lines` puts each enemy's art's first
+line in `hc_first` and its left column on screen (mod 256) in `hc_x` once
+a frame; `volley_hits` only tries, per bullet, the enemies whose art has a
+line the volley covered (`hc_list`), and `bullet_hit` skips one whose 8
+columns miss the bullet's (`hc_x`) before anything else; `volley_px`
+works out a volley's VRAM address once for all its bullets (no middle
+text; 31 T between writes); `eb_draw` finds the bits of every bullet in
+an enemy bullet's 3 bytes in one pass (`eb_masks`, `ROW_MASKS`);
+`move_stars` flags the lines bullets are on (and the middle text's row)
+in `LN_FLAGS` (a page at E400h, one byte a line, set from `ln_list` and
+cleared from it the next frame; `bullet_at` reads it first), and a star
+shown with nothing on its line, or a bullet there but not in its byte
+(nor the one it steps into: `bullet_at`), takes a fast path: nothing
+without a step, its new bit (`star_px`), or the old byte blanked and the
+new one drawn, with one; the full way (`star`) otherwise. `level_text`
+prints only the cells that changed (`lw_shown`); the middle-row texts
+print patterns only (`print_text` with C = 0: the playfield's colour bytes
+are the text's white, but a shown star's, which `mid_show` erases);
+`draw_reserves` copies one of 6 pictures made once at power-on
+(`make_reserves`, `RES_PICS` at E500h); `load_formation` writes the
+patterns straight to the VDP and leaves 7 of the art's 8 rotations to
+`rot_step`, one a frame from `collide` (no free enemy can reach the
+front's lines that soon: assert). `make profile` (`prof.tcl`, with
+`test.tcl`) writes each main-loop routine's worst and mean time and the
+heaviest frames to `build/profile-<machine>.txt`.
 
 **Reference speed:** "Galaga" means the user's MSX Galaga dump
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
@@ -327,12 +349,14 @@ there, and remove an entry when it's fixed.
   constant step, frozen front, glue point), a shot during one, C ignored
   with 4 ships, a 4-bullet volley; joystick buttons A (fires, no
   call-up) and B (calls up, no shot), faked by a breakpoint after
-  `joy_r14`'s R14 read; the test keys: a boom's images and frame counts
+  `joy_r14`'s R14 read; ships killed by the test (`tkill k`: the front's
+  kth living ship, `ship_dies` called from a breakpoint at `move_bullets`,
+  where the removed test keys were read): a boom's images and frame counts
   in the SAT, no bullet from a dying ship, holes, C refused for
   ship-gap-gap-ship, the death sound (every frame: channel C's volume,
   tone, noise period and mixer bits against the table, restarted by each
   death, its noise period winning over the shot's; the last
-  one plays out in 1.4 s), a key with no such ship, trims, ship-gap-ship calling
+  one plays out in 1.4 s), a kill with no such ship, trims, ship-gap-ship calling
   up from either side, an emptied front's call-up of the last reserve
   starting by itself that frame (no move, no shot meanwhile), landing
   where its last ship died (the test writes `reserves` in RAM for these
@@ -363,7 +387,7 @@ the staged test below. Then the enemies' part, hits on,
   the front: a bounce at each, as modelled); then, with the
   per-frame models off, the test makes every enemy gone in RAM 19 times
   and checks waves 3..21 (the bonus ships too: 2 reserves written first,
-  wave 2 lost ships, a shot fired a frame before wave 4 ends, key 1 kills
+  wave 2 lost ships, a shot fired a frame before wave 4 ends, `tkill 1` kills
   a ship in wave 10: bonuses at the ends of waves 4, 6, 8 and 12, none at 5
   in reserve, the beep every frame as its table; both lists wrap; the top status row's level
   and wave at every wave, L3 W1 at the 21st; none begun a frame before
@@ -379,11 +403,11 @@ the staged test below. Then the enemies' part, hits on,
   `boss_fire.shoot`: line 24, one of its 64 columns, exactly every gap px
 (at 70%); a break sound start per hit;
   5 in flight at most, 4 or 5 once going; the enemy bullet model takes
-  them), its booms' frames, "BONUS ddd POINTS" every frame of its 2 s,
+  them), its booms' frames, the one empty frame, "BONUS ddd POINTS" (its first half on its
+  first frame) every frame of its 2 s,
   then the text gone and one `PTS_BOSS` score, the next frame the next
-  wave (no frame dropped from its start to its bonus's end; the wave
-  begin frames of this part drop one on the Expert, the boss's or not:
-  not checked); boss 1
+  wave (no frame dropped from its start to its bonus's end; this
+  part's wave begin frames: not checked); boss 1
   fought all through by a 4-ship front (90 hits, the score written 0
   first: 250 after it, no frame dropped), bosses 2..4 with 1 hit left
   (written) by 1-, 2- and 3-ship fronts (500, 400, 300); the test steers
@@ -399,7 +423,7 @@ the staged test below. Then the enemies' part, hits on,
   one low on ship 1's column 0 hit them, two on ship 3 kill it once, one
   in ship 2's column 0 over its rows without pixels flies on; 3 death
   sound starts. Then game over, twice: 1 reserve left (RAM), the front
-  killed (keys 1..4 at once): it's called up, no game over; killed again:
+  killed (`tkill 1 2 3 4`): it's called up, no game over; killed again:
   GAME OVER in the middle row that frame (VRAM against `font.py --raw`),
   intact every frame of game over (a star and an enemy bullet the test
   puts in it fly through, not drawn in its cells, and show past them), the
@@ -412,7 +436,7 @@ the staged test below. Then the enemies' part, hits on,
   power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
   Then twice no reserves, the front killed: joystick 1's button A, then
   space, seen exactly at 3 s goes to the title at once; the second time
-  during a boss's bonus text (staged in RAM: its last boom's last frame,
+  during a boss's bonus text (staged in RAM: its empty frame after the booms,
   one ship as it died): the text shows, GAME OVER takes its place (the
   other cells blank), and 2 s after the text came its 500 points, the
   next frame the next wave (L1 W2 on the title). Then the title
@@ -422,8 +446,7 @@ the staged test below. Then the enemies' part, hits on,
   (R7..R10) and the top row unchanged; a call-up roll (a breakpoint)
   exactly every 5 s, a call-up starting exactly on the heads that could
   (against `call_up`'s start, a snapshot) and none else but an empty
-  front's; no dropped frame. The first plays 40 s (test keys 1..4 and C
-  held 1 s ignored; a game over, staged at 25 s if none came by itself:
+  front's; no dropped frame. The first plays 40 s (C held 1 s ignored; a game over, staged at 25 s if none came by itself:
   no GAME OVER on any of its frames, the title 10 s on; the front moves
   both ways over 100+ columns, shoots,
   calls up, dodges: each dodge's target, from the threat tried (a
@@ -470,3 +493,13 @@ the staged test below. Then the enemies' part, hits on,
   dying, the others unchanged; a new volley's bullets from the front as
   `fire` had it, a breakpoint's snapshot). The break checks count the
   first wave's (a bullet in flight may break a second wave's pair).
+- `test.tcl`'s breakpoints are set with `cart_bp`: their body runs only
+  while page 1 holds the cartridge ("AB" at 4000h). While the BIOS boots,
+  MSX BASIC's ROM is there, and its code passing one of the game's
+  addresses fired them (one that returns early broke the boot on the
+  Expert and the NMS 8250 once the code moved).
+- `make profile` runs `test.tcl` with `prof.tcl` on one machine
+  (`PROF_MACHINE`, default the Expert; `PROF_MS` 14) and writes
+  `build/profile-<machine>.txt`: each main-loop routine's worst frame and
+  mean, the frames over `PROF_MS` ms, the 40 heaviest with their state.
+  openMSX sometimes crashes under Xvfb (ISSUES.md): rerun then.
