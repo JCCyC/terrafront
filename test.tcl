@@ -2100,8 +2100,8 @@ proc vis_frame {} {
 # ---- The boss ----------------------------------------------------------------
 # From the spec: after waves 5 and 10 of a level, the boss (images/boss.png,
 # 64 x 16, four sprites; its art from BOSS_PATTERN) on the playfield's
-# first lines, cruising left and right 32 px from either edge (columns
-# 32..160), one way in 4 s (32 px/s, from the left end going right); its
+# first lines, cruising left and right, bumping into the playfield's edges
+# (columns 0..192), one way in 6 s (32 px/s, from the left end going right); its
 # bullets rain from a random column of its lower edge (their top on line
 # 24) at the last wave's speed, at the rate that keeps 5 in flight: one
 # every gap px they move (gap = ceil((158 + the longest step - 1) / 5): a
@@ -2119,8 +2119,8 @@ proc bpx {x l} {
 	expr {([m BOSS_PATTERN [expr {($x >> 3)*16 + $l}]] >> (7 - $x % 8)) & 1}
 }
 proc bstep_x {k} {
-	set d [expr {32*$k / $::F}] ; set p [expr {$d % 256}]
-	expr {32 + ($p <= 128 ? $p : 256 - $p)}
+	set d [expr {32*$k / $::F}] ; set p [expr {$d % 384}]
+	expr {$p <= 192 ? $p : 384 - $p}
 }
 proc bgap {} {
 	set pct $::sym(BOSS_EB_PCT)
@@ -2190,8 +2190,8 @@ proc boss_frame {} {
 		for {set i 0} {$i < 16*32} {incr i} {
 			if {[debug read VRAM [expr {0x3800 + 32*8 + $i}]] != [m BOSS_PATTERN $i]} { lappend bad $i ; break }
 		}
-		if {[m boss_x] != 32 || [m boss_dir] || [m boss_hits] || [m boss_cidx] || [m boss_color] != 5 || [m boss_gap] != $::bgap || $st != 1 || [m form_enemy] % 5 != 4 || [llength $bad]} {
-			bbad "boss [expr {$::bosses}] began: st $st x [m boss_x] dir [m boss_dir] hits [m boss_hits]/[m boss_cidx] colour [m boss_color] gap [m boss_gap] (want 32 0 0/0 5 $::bgap), after wave [expr {[m form_enemy] + 1}], patterns wrong at $bad"
+		if {[m boss_x] != 0 || [m boss_dir] || [m boss_hits] || [m boss_cidx] || [m boss_color] != 5 || [m boss_gap] != $::bgap || $st != 1 || [m form_enemy] % 5 != 4 || [llength $bad]} {
+			bbad "boss [expr {$::bosses}] began: st $st x [m boss_x] dir [m boss_dir] hits [m boss_hits]/[m boss_cidx] colour [m boss_color] gap [m boss_gap] (want 0 0 0/0 5 $::bgap), after wave [expr {[m form_enemy] + 1}], patterns wrong at $bad"
 		}
 		set ::bm [list 1 [m boss_x] [m boss_color]]   ;# (as this frame's SAT has it: before the writes)
 		# the fight: a front of 4, 1, 2, 3 ships (bosses 1..4); boss 1
@@ -2332,7 +2332,7 @@ proc boss_hunt {} {
 proc boss_end {} {
 	set ::bwatch 0
 	set offs [lsort -integer -unique $::boffs]
-	check {$::bbad == 0 && $::bosses == 4} "bosses after waves 5, 10, 15 and 20 = the model every frame: its sprites (patterns, colour, place), 32 px/s between columns 32 and 160, its rain (one every gap px at 70% of 230 px/s whatever the wave, 5 in flight at most, 4 or 5 once it's going), the hits (each bullet on its art: gone, the break sound (re)started ($::bbrk starts); every 10 the next colour of 5 7 3 2 10 11 9 8 13; 10 in 13: it dies), its booms, \"BONUS ddd POINTS\" for 2 s, its points by the front's share as it died, the next wave ($::bosses bosses: {boss ships points frames ok} $::bres; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
+	check {$::bbad == 0 && $::bosses == 4} "bosses after waves 5, 10, 15 and 20 = the model every frame: its sprites (patterns, colour, place), 32 px/s between columns 0 and 192, its rain (one every gap px at 70% of 230 px/s whatever the wave, 5 in flight at most, 4 or 5 once it's going), the hits (each bullet on its art: gone, the break sound (re)started ($::bbrk starts); every 10 the next colour of 5 7 3 2 10 11 9 8 13; 10 in 13: it dies), its booms, \"BONUS ddd POINTS\" for 2 s, its points by the front's share as it died, the next wave ($::bosses bosses: {boss ships points frames ok} $::bres; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
 	lassign $::b1 runs want hits shots mn mx txt drop sc
 	check {$hits == 90 && $sc == 250 && [llength $offs] >= 32 && [lindex $offs 0] >= 0 && [lindex $offs end] <= 63} "boss 1, fought through by a 4-ship front: 90 hits ([expr {$hits}]), states $runs (want $want), $shots bullets from [llength $offs] of its 64 columns ($mn..$mx in flight), the bonus text $txt frames, the score 0 + 250 = $sc, $drop frames dropped"
 }

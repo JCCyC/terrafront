@@ -140,9 +140,10 @@ enemy gone, the 0.7 s wait, then `next_wave.go` calls `boss_begin`
 instead of the next wave; `boss_done` set when it's over sends the next
 `.go` on to the wave), the boss (`images/boss.png`, 64×16, four 16×16
 sprites, names 32..44, in the enemies' SAT entries) with its art's top
-on line 8, from column 32 going right, cruising between columns 32 and
-160 (`BOSS_MARGIN`) one way in 4 s (`BOSS_TRAVERSE_MS`: 32 px/s,
-Bresenham, reflected at the ends; `boss_move`, from `next_wave`). It
+on line 8, from column 0 going right, cruising at 32 px/s
+(`BOSS_SPEED`) between the playfield's edges (columns 0 and 192;
+`BOSS_MARGIN` 0), one way in 6 s (Bresenham, reflected at the ends;
+`boss_move`, from `next_wave`). It
 rains enemy bullets (the same slots, `eb_move`, `eb_draw`, `eb_hit`; at
 `BOSS_EB_PCT` 70% of 230 px/s, wave 1's, whatever the wave: `eb_speed`
 while `boss_st` isn't 0) from a random one of its 64 columns,
@@ -397,7 +398,7 @@ the staged test below. Then the enemies' part, hits on,
   once its bonus is over: `boss_frame`'s model every frame: its patterns
   in VRAM, its start (column 32, colour 5, its gap from the spec), its
   four SAT entries (place, names, colour, booms), its move (32 px/s,
-  reflected at 32 and 160), each volley bullet against its art (gone; 10
+  reflected at 0 and 192), each volley bullet against its art (gone; 10
   hits a colour of the reddening list; the 90th kills it, `boss_alive` =
   the front's living ships at `boss_dies`), its rain (a breakpoint at
   `boss_fire.shoot`: line 24, one of its 64 columns, exactly every gap px

@@ -78,8 +78,8 @@
 ; with a 0.25 s "happy beep" on PSG channel A (it wins over the shot's).
 ; After waves 5 and 10 of a level (BOSS_AFTER_LIST), the boss
 ; (images/boss.png, four sprites) instead of the next wave: it cruises left
-; and right at the playfield's top, BOSS_MARGIN px from either edge, one way
-; in BOSS_TRAVERSE_MS, and rains bullets (the enemies', at BOSS_EB_PCT % of
+; and right at the playfield's top at BOSS_SPEED px/s, bumping into its
+; edges (BOSS_MARGIN px from them), and rains bullets (the enemies', at BOSS_EB_PCT % of
 ; BULLET_SPEED) from random columns of its lower edge at the rate that keeps
 ; BOSS_EB_N in flight. It starts in FORM_COLOR_REDDENING's first colour and
 ; takes the next every BOSS_HITS hits (each with the break sound);
@@ -211,8 +211,8 @@ EB_N            equ 5           ; slots: EB_MAX_LIST's largest
 ; The boss (images/boss.png): after these waves of a level (its last
 ; wave's last enemy gone, WAVE_DELAY_MS later), the boss instead of the next wave
         define BOSS_AFTER_LIST 5, 10
-BOSS_MARGIN     equ 32          ; it cruises left and right at the playfield's top, this many px from either edge ...
-BOSS_TRAVERSE_MS equ 4000       ; ... one way in this long
+BOSS_MARGIN     equ 0           ; it cruises left and right at the playfield's top, turning this many px from either edge ...
+BOSS_SPEED      equ 32          ; ... at this many px/s
 BOSS_EB_N       equ 5           ; its bullets rain at the rate that keeps this many in flight ...
 BOSS_EB_PCT     equ 70          ; ... at this % of BULLET_SPEED (wave 1's, whatever the wave)
 BOSS_HITS       equ 10          ; hits a colour: then the next of FORM_COLOR_REDDENING; past its last, it dies
@@ -259,9 +259,8 @@ FORM_WRAP       equ 256+16      ; x is mod this: a pair off the right edge comes
 BOSS_Y          equ PLAY_TOP
 BOSS_X_MIN      equ BOSS_MARGIN
 BOSS_X_MAX      equ 256-BOSS_MARGIN-BOSS_W
-BOSS_SPEED      equ (BOSS_X_MAX-BOSS_X_MIN)*1000/BOSS_TRAVERSE_MS
-        assert (BOSS_X_MAX-BOSS_X_MIN)*1000%BOSS_TRAVERSE_MS == 0 && BOSS_X_MAX > BOSS_X_MIN
-        assert BOSS_SPEED < 50 && BOSS_X_MIN > BOSS_SPEED/50+1 && BOSS_X_MAX+BOSS_SPEED/50+1 < 256   ; (a step reflects off an end once)
+        assert BOSS_X_MAX > BOSS_X_MIN+BOSS_SPEED/50+1
+        assert BOSS_SPEED < 50 && BOSS_X_MAX+BOSS_SPEED/50+1 < 256   ; (a step reflects off an end once)
 BOSS_EB_Y       equ BOSS_Y+BOSS_H
 BOSS_EB_RUN     equ PLAY_BOTTOM+2-BULLET_H-BOSS_EB_Y    ; (eb_move: gone once its top would reach line BOSS_EB_Y + this)
         assert BOSS_EB_N <= EB_N && BOSS_EB_RUN+256/50+BOSS_EB_N < 256
@@ -3607,9 +3606,10 @@ boss_move:
         ld c,1
         jr .turn
 .left:  sub b
+        jr c,.lref              ; (past column 0: BOSS_X_MIN 0)
         cp BOSS_X_MIN+1
         jr nc,.set
-        neg
+.lref:  neg
         add a,2*BOSS_X_MIN
         ld c,0
 .turn:  ld (hl),a
