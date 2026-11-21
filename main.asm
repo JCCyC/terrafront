@@ -69,6 +69,10 @@
 ; the bullet covered this frame, the front where it shows) is gone and the
 ; ship dies (as by a test key). They're gone at the playfield's bottom, and
 ; all of them as a new wave shows. A bitmap byte two bullets share holds both.
+; The score (8 BCD digits, 99999999 at most) shows on the top status row's
+; right: BREAK_PTS a pair broken up, FREE_PTS a free enemy's death (shot or
+; crashing into a ship), with a one-ship front; with more, the front's share
+; (SHARE_2..4 %) by its living ships before the hit.
 ; It starts with a splash screen, images/title.png (title.py), and "PRESS
 ; SPACE OR FIRE TO BEGIN" in the game's font (U-boat Killer's, images/font.png,
 ; font.py; print_text, for all the game's text) on it, blinking BLINK_ON_MS on and BLINK_OFF_MS off; space (or either
@@ -128,6 +132,19 @@ OVER_COL        equ (32-OVER_LEN)/2 ; ... its first column
 LW_ROW          equ 0           ; the level and wave ("L1 W1"): the top status row ...
 LW_COL          equ 0           ; ... from its left; a level is ENEMIES waves, images/enemy-0..9.png
 LW_LEN          equ 8           ; ... cells kept for it ("L255 W10")
+SCORE_ROW       equ 0           ; the score: the top status row ...
+SCORE_LEN       equ 8           ; ... its last cells, right-aligned, no leading zeros (99999999 at most)
+SCORE_COL       equ 32-SCORE_LEN
+;
+; Points: a pair broken up, a free enemy's death (shot, or crashing into a
+; ship), with a one-ship front; with more ships, the front's share of them
+; (% by its living ships before the hit: SHARE_1 for one ship or none)
+BREAK_PTS       equ 50
+FREE_PTS        equ 100
+SHARE_1         equ 100
+SHARE_2         equ 80
+SHARE_3         equ 60
+SHARE_4         equ 50
 ;
 ; Enemy bullets: every EB_ROLL_MS a roll; one in EB_CHANCE fires one
 EB_ROLL_MS      equ 250
@@ -343,6 +360,8 @@ frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
 polls:          ds 2            ; the splash's input polls so far
 lw_text:        ds LW_LEN+1     ; the level and wave as shown (0-terminated; the title shows the last game's)
+score_digits:   ds SCORE_LEN    ; show_score: the score's cells, ASCII ...
+score_shown:    ds SCORE_LEN+1  ; ... and as they show (0-terminated; the title shows the last game's; 0: none)
 
 ; From here on, cleared for every new game
 game_ram:
@@ -387,6 +406,9 @@ hc_i:           ds 1            ; bullet_hit: the enemy tried
 bl_lines:       ds BL_SIZE      ; move_stars: bit 80h >> (line%8) of byte line/8: a bullet is on the line
 wave_n:         ds 1            ; the wave: 0 the first, up to 255 (then it stays)
 level:          ds 1            ; the level: 1 the first, up to 255 (then it stays); its wave: form_enemy+1
+score:          ds 4            ; BCD, 8 digits, the lowest two first
+score_dirty:    ds 1            ; nonzero: changed since show_score
+score_cell:     ds 2            ; ... one cell's text (0-terminated)
 bullet_acc:     ds 1            ; Bresenham remainder, one for all (volleys keep their spacing)
 bullet_step:    ds 1            ; this frame's px
 pat_hi:         ds 1            ; GRPCGP's high byte with the VDP's write bit
@@ -500,6 +522,7 @@ init:
 
 ; Game over's end: back to the title, the game's RAM as at power-on
 restart:
+        call show_score         ; (score_shown: the game's last score, for the title)
         call display_off
         ld hl,(GRPATR)          ; no sprites on the title
         call vdp_write
@@ -516,6 +539,15 @@ new_game:
         ld a,1
         ld (level),a
         call level_text         ; L1 W1
+        ld hl,score_shown       ; (the title's, the last game's) not printed yet: every cell
+        ld b,SCORE_LEN
+.unshown:
+        ld (hl),0
+        inc hl
+        djnz .unshown
+        ld a,1
+        ld (score_dirty),a
+        call show_score         ; 0
 
         ld hl,SHIP_PATTERN      ; the six ship patterns follow each other
         ld de,(GRPPAT)
@@ -590,6 +622,7 @@ main_loop:
         call move_enemies       ; (a pair broken this frame: its enemies start from its place)
         call collide            ; after the moves: where the enemies and the front show
         call next_wave          ; after them: a new wave shows from this frame's SAT on
+        call show_score         ; after the hits and collisions
         call sfx
         call brk_sfx            ; after sfx: its noise period wins over the shot's ...
         call death              ; ... and the death sound's over both
@@ -624,6 +657,17 @@ splash:
         ld de,LW_ROW*256+LW_COL*8
         ld c,TEXT_COLOR*16+BG_COLOR
         call print_text
+        ld hl,score_shown       ; ... and score, right-aligned (none at power-on)
+        ld de,SCORE_ROW*256+SCORE_COL*8
+.lead:  ld a,(hl)
+        cp ' '                  ; (the leading blanks not printed: the picture stays)
+        jr nz,.score
+        inc hl
+        ld a,e
+        add a,8
+        ld e,a
+        jr .lead
+.score: call print_text
         call print_press
         call display_on
         ld a,(blink_on)
@@ -1951,9 +1995,13 @@ bullet_hit:
         add iy,de
         call free_en
         call brk_start
+        ld b,PTS_BREAK
         jr .done
 .boom:  call en_boom
-.done:  pop de
+        ld b,PTS_FREE
+.done:  call alive_mask         ; (keeps B) the front's ships now
+        call score_add
+        pop de
         scf
         ret
         assert EN_FORM == 0 && EN_FREE < EN_BOOM && EN == 8 && ENEMY_N*EN < 256
@@ -2151,7 +2199,10 @@ en_front:
         ld a,(col_hit)
         or a
         ret z
-        jp en_boom
+        call en_boom
+        ld a,(col_alive)        ; the front's ships before the crash
+        ld b,PTS_FREE
+        jp score_add
         assert SHIP_ART_W <= 9 && SHIP_ART_B <= 15
 
 ; Carry: the enemy's art and the ship's have a pixel in common on col_n
@@ -2927,6 +2978,135 @@ decimal:
 .skip:  ld a,l
         ret
 
+; ---- Score -----------------------------------------------------------------
+
+; Points to the score (BCD; at 99999999 it stays): B = PTS_BREAK or
+; PTS_FREE, A = the front's living ships' mask (their count picks the
+; share; none counts as one). Keeps IX, IY.
+score_add:
+        ld c,0                  ; the ships
+.cnt:   srl a
+        jr nc,.z
+        inc c
+        or a
+.z:     jr nz,.cnt
+        ld a,c
+        add a,a
+        add a,a                 ; 4 bytes a count
+        add a,b
+        ld hl,PTS
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld e,(hl)
+        inc hl
+        ld d,(hl)               ; the points, BCD
+        ld hl,score
+        ld a,(hl)
+        add a,e
+        daa
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        adc a,d
+        daa
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        adc a,0
+        daa
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        adc a,0
+        daa
+        ld (hl),a
+        jr nc,.ok
+        ld a,99h                ; past 99999999: it stays there
+        ld (hl),a
+        dec hl
+        ld (hl),a
+        dec hl
+        ld (hl),a
+        dec hl
+        ld (hl),a
+.ok:    ld a,1
+        ld (score_dirty),a
+        ret
+PTS_BREAK       equ 0
+PTS_FREE        equ 2
+        assert FRONT_MAX == 4
+
+; The score, if it changed, on SCORE_ROW's last SCORE_LEN cells,
+; right-aligned, no leading zeros: only the cells that changed are printed
+show_score:
+        ld a,(score_dirty)
+        or a
+        ret z
+        xor a
+        ld (score_dirty),a
+        ld hl,score+3
+        ld de,score_digits
+        ld bc,4*256+0           ; C nonzero: a digit written
+.byte:  ld a,(hl)
+        rrca
+        rrca
+        rrca
+        rrca
+        call .dig
+        ld a,(hl)
+        call .dig
+        dec hl
+        djnz .byte
+        dec de
+        ld a,(de)
+        cp ' '
+        jr nz,.cmp
+        ld a,'0'                ; 0: one digit
+        ld (de),a
+.cmp:   ld hl,score_digits
+        ld de,SCORE_ROW*256+SCORE_COL*8
+        ld b,SCORE_LEN
+.c:     ld a,(hl)
+        push hl
+        push bc
+        ld bc,SCORE_LEN
+        add hl,bc               ; score_shown's
+        cp (hl)
+        jr z,.same
+        ld (hl),a
+        ld (score_cell),a
+        push de
+        ld hl,score_cell
+        ld c,TEXT_COLOR*16+BG_COLOR
+        call print_text
+        pop de
+.same:  ld a,e
+        add a,8
+        ld e,a
+        pop bc
+        pop hl
+        inc hl
+        djnz .c
+        ret
+; digit A (low nibble) at DE, a space if a leading zero
+.dig:   and 0Fh
+        jr nz,.nz
+        inc c
+        dec c
+        ld a,' '
+        jr z,.put
+        ld a,'0'
+        jr .put
+.nz:    ld c,1
+        add a,'0'
+.put:   ld (de),a
+        inc de
+        ret
+        assert score_shown == score_digits+SCORE_LEN && SCORE_LEN == 8
+        assert SCORE_COL >= LW_COL+LW_LEN && SCORE_ROW == LW_ROW
+
 ; Carry: game over's end, back to the title. The front empty with no
 ; call-up flying (none left in reserve: call_up sends one by itself) is
 ; game over: GAME OVER centred on OVER_ROW, the game running on
@@ -3698,6 +3878,24 @@ PRESS_LEN       equ $-PRESS_TEXT-1
 OVER_TEXT:      db "GAME OVER",0
 OVER_LEN        equ $-OVER_TEXT-1
 SPACE_TEXT:     db " ",0
+
+; The points (BCD words) for 0..FRONT_MAX living ships: a break-up's, a
+; free enemy's
+        macro BCD16 val
+        assert (val) < 10000
+        dw ((val)/1000%10)*4096 + ((val)/100%10)*256 + ((val)/10%10)*16 + (val)%10
+        endm
+        macro PTS_FOR pct
+        assert BREAK_PTS*(pct)%100 == 0 && FREE_PTS*(pct)%100 == 0
+        BCD16 BREAK_PTS*(pct)/100
+        BCD16 FREE_PTS*(pct)/100
+        endm
+PTS:    PTS_FOR SHARE_1         ; (none: as one)
+        PTS_FOR SHARE_1
+        PTS_FOR SHARE_2
+        PTS_FOR SHARE_3
+        PTS_FOR SHARE_4
+        assert $-PTS == (FRONT_MAX+1)*4 && PTS_FREE == 2
 
 PIXEL_BIT:      db 80h, 40h, 20h, 10h, 08h, 04h, 02h, 01h   ; a column's bit in its byte
 BL_MASKS:                       ; lines n..n+2 of a byte's 8 (and the next one's): (E000h >> n), high byte first

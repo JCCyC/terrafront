@@ -89,10 +89,80 @@ debug set_bp $sym(fire.free) {} {
 }
 # The front when collide begins (after the moves, call-up and trims)
 set cfront {0 0 {0 0 0 0}}
-debug set_bp $sym(collide) {} { set ::cfront [front_now] }
+debug set_bp $sym(collide) {} { set ::cfront [front_now] ; set ::in_col 1 }
+
+# The score, from the spec: a break-up 50 points, a free enemy's death
+# (shot or crashing) 100, times the front's share by its living ships
+# (1: 100%, 2: 80%, 3: 60%, 4: 50%; none as one): those before the hit
+# (a bullet's: the front then; a crash's: as collide began). Each
+# score_add call (a breakpoint) against the front then; every frame the
+# calls against the enemies' state changes (pairs broken, enemies booming),
+# the score in RAM (BCD) against the model's sum (99999999 at most), and
+# on frames it changed (and the next) its cells on the top status row
+set SHARES {100 100 80 60 50}
+set score_model 0 ; set sc_calls {} ; set in_col 0 ; set sc_prev {}
+set sc_bad 0 ; set sc_first "" ; set sc_shown 0 ; set sc_hist [dict create] ; set sc_vram 0
+proc sc_bad {s} { if {!$::sc_bad} { set ::sc_first "frame $::n: $s" } ; incr ::sc_bad }
+proc living {fr} {
+	lassign $fr mask x st
+	set a 0
+	for {set k 0} {$k < 4} {incr k} { if {($mask >> $k & 1) && [lindex $st $k] == 0} { set a [expr {$a | 1 << $k}] } }
+	return $a
+}
+proc ships_in {a} { set c 0 ; for {set k 0} {$k < 4} {incr k} { incr c [expr {$a >> $k & 1}] } ; return $c }
+debug set_bp $sym(score_add) {} {
+	if {!$::started} return
+	set want [living [expr {$::in_col ? $::cfront : [front_now]}]]
+	set kind [expr {[reg B] == $::sym(PTS_BREAK) ? "break" : ([reg B] == $::sym(PTS_FREE) ? "free" : "?[reg B]")}]
+	if {[reg A] != $want} { sc_bad "score_add ($kind, [expr {$::in_col ? "a crash" : "a bullet"}]) with ships [reg A], want $want" }
+	lappend ::sc_calls [list $kind [ships_in $want] $::in_col]
+}
+proc score_str {v} { format %8d $v }
+proc score_ram {} {
+	set v 0
+	for {set k 3} {$k >= 0} {incr k -1} { set v [expr {$v*100 + [scan [format %02x [m score $k]] %d]}] }
+	return $v
+}
+proc score_vram_bad {} { text_bad $::sym(SCORE_ROW) $::sym(SCORE_COL) [score_str $::score_model] $::sym(SCORE_LEN) }
+proc en_sts {} { set l {} ; for {set i 0} {$i < 8} {incr i} { lappend l [m enemies [expr {$i*$::sym(EN) + $::sym(EN.ST)}]] } ; return $l }
+proc score_frame {} {
+	set now [en_sts]
+	set breaks 0 ; set frees 0
+	if {[llength $::sc_prev]} {
+		for {set i 0} {$i < 8} {incr i} {
+			set p [lindex $::sc_prev $i] ; set c [lindex $now $i]
+			if {$i % 2 == 0 && $p == 0 && $c != 0} { incr breaks }
+			if {$p < 2 && $c >= 2} { incr frees }
+		}
+	}
+	set nb 0 ; set nf 0 ; set old $::score_model
+	foreach c $::sc_calls {
+		lassign $c kind ships col
+		set pct [lindex $::SHARES $ships]
+		if {$kind eq "break"} { incr nb ; set pts [expr {50*$pct/100}] } elseif {$kind eq "free"} { incr nf ; set pts [expr {100*$pct/100}] } else { sc_bad "score_add with B = $kind" ; continue }
+		dict incr ::sc_hist "$kind/$ships[expr {$col ? "/crash" : ""}]"
+		set ::score_model [expr {$::score_model + $pts > 99999999 ? 99999999 : $::score_model + $pts}]
+	}
+	if {$nb != $breaks || $nf != $frees} { sc_bad "$nb break-up and $nf free scores, want $breaks and $frees (states [lrange $::sc_prev 0 end] -> $now)" }
+	if {[score_ram] != $::score_model} { sc_bad "score [score_ram] in RAM, want $::score_model" }
+	if {[m score_dirty]} { sc_bad "the score changed but wasn't shown" }
+	if {$::score_model != $old || $::sc_shown} {
+		set bad [score_vram_bad]
+		if {[llength $bad]} { sc_bad "the score's cells aren't \"[score_str $::score_model]\" (wrong: [lrange $bad 0 5])" }
+		incr ::sc_vram
+	}
+	set ::sc_shown [expr {$::score_model != $old}]
+	set ::sc_calls {} ; set ::in_col 0
+}
+proc score_end {} {
+	set h {}
+	foreach k [lsort [dict keys $::sc_hist]] { lappend h "$k: [dict get $::sc_hist $k]" }
+	check {$::sc_bad == 0 && [llength [dict filter $::sc_hist key break/*]] && [llength [dict filter $::sc_hist key free/?]] && [llength [dict filter $::sc_hist key */crash]]} "the score: every score_add with the front's living ships before the hit, one a pair broken and one an enemy booming, the score in RAM the spec's sum every frame, its cells on the top status row's right on the $::sc_vram frames it changed and the next (kind/ships, /crash for a crash: $h; [expr {$::sc_bad ? "first wrong: $::sc_first" : "none wrong"}])"
+}
 
 proc frame {} {
 	incr ::n
+	try score_frame     ;# (before the steps and stagings: they may write the enemies)
 	set due {} ; set rest {}
 	foreach s $::steps { if {[lindex $s 0] == $::n} { lappend due $s } else { lappend rest $s } }
 	set ::steps $rest   ;# (before running them: a step may plan more)
@@ -123,6 +193,7 @@ proc frame {} {
 		try enemy_frame
 	}
 	if {$::ephase} { try aim_frame }
+	set ::sc_prev [en_sts]     ;# (after the steps and stagings that write the enemies)
 	set ::nohits_was $::nohits
 	set fr [m frames]
 	if {[info exists ::last_frames] && (($fr - $::last_frames) & 255) != 1} { incr ::dropped ; if {$::ephase} { incr ::edropped ; lappend ::edrops $::n } }
@@ -883,6 +954,7 @@ proc track_frame {} {
 }
 
 proc screenshot_and_finish {} {
+	score_end
 	# a bullet in flight for the picture
 	down 0x01
 	after time 0.1 {
@@ -949,18 +1021,22 @@ proc lw_str {w} { set l [expr {$w/10 + 1}] ; if {$l > 255} { set l 255 } ; retur
 # its end), the rest of the row blank: the addresses wrong
 proc lw_bad {str} {
 	set bad [text_bad $::sym(LW_ROW) $::sym(LW_COL) $str $::sym(LW_LEN)]
-	for {set a [expr {$::sym(LW_LEN)*8}]} {$a < 256} {incr a} {
+	for {set a [expr {$::sym(LW_LEN)*8}]} {$a < $::sym(SCORE_COL)*8} {incr a} {
 		if {[debug read VRAM $a] || [debug read VRAM [expr {0x2000 + $a}]] != 0x11} { lappend bad [format %04X $a] }
 	}
-	return $bad
+	concat $bad [score_vram_bad]
 }
 # The title's tables with text str on the top status row from its left
-# (the last game's level and wave): TITLE_ON's
-proc title_with {str} {
+# (the last game's level and wave) and score sc right-aligned on its right
+# (the last game's; its leading blanks not printed): TITLE_ON's
+proc title_with {str sc} {
 	set t $::TITLE_ON
-	for {set k 0} {$k < [string length $str]} {incr k} {
-		scan [string index $str $k] %c ch
-		set p [expr {$::sym(LW_ROW)*256 + ($::sym(LW_COL) + $k)*8}]
+	set cells {}
+	for {set k 0} {$k < [string length $str]} {incr k} { lappend cells [expr {$::sym(LW_COL) + $k}] [string index $str $k] }
+	for {set k 0} {$k < [string length $sc]} {incr k} { lappend cells [expr {32 - [string length $sc] + $k}] [string index $sc $k] }
+	foreach {col c} $cells {
+		scan $c %c ch
+		set p [expr {$::sym(LW_ROW)*256 + $col*8}]
 		for {set y 0} {$y < 8} {incr y} {
 			set g [expr {$y < 6 ? [lindex $::FONT [expr {($ch - 32)*6 + $y}]] : "00"}]
 			set t [lreplace $t [expr {$p + $y}] [expr {$p + $y}] $g]
@@ -985,15 +1061,15 @@ proc blink_state {} {
 	expr {$on ? 1 : ($off ? 0 : -1)}
 }
 # VRAM's tables against the picture and the text ($shown or hidden)
-proc check_title {shown what {lw ""}} {
+proc check_title {shown what {lw ""} {sc ""}} {
 	set bad {}
-	set want [expr {$lw ne "" ? [title_with $lw] : ($shown ? $::TITLE_ON : $::TITLE_OFF)}]
+	set want [expr {$lw ne "" ? [title_with $lw $sc] : ($shown ? $::TITLE_ON : $::TITLE_OFF)}]
 	for {set i 0} {$i < 12288} {incr i} {
 		set w [expr 0x[lindex $want $i]]
 		set a [expr {$i < 6144 ? $i : 0x2000 + $i - 6144}]
 		if {[debug read VRAM $a] != $w} { lappend bad [format %04X $a] ; if {[llength $bad] > 5} break }
 	}
-	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::PRESS\" in images/font.png, centred on row $::BROW[expr {$lw ne "" ? ", \"$lw\" on the top status row's left" : ""}] (wrong at: $bad)"
+	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::PRESS\" in images/font.png, centred on row $::BROW[expr {$lw ne "" ? ", \"$lw\" on the top status row's left and \"$sc\" on its right" : ""}] (wrong at: $bad)"
 }
 proc entropy {} { expr {[m entropy] + 256*[m entropy 1]} }
 set blinks {}        ;# {state time} each splash frame
@@ -1013,7 +1089,7 @@ proc splash_frame {} {
 		if {$::sn == 1} { up 0x01 ; joyup 1 ; joyup 2 }
 		if {$::sn == 3} {
 			check {[vdp_r1] & 0x40} "back at the title after game over $::games: display on (R1 [format %02X [vdp_r1]])"
-			check_title 1 "after game over $::games (text shown; the last game's level and wave kept)" $::lw_last
+			check_title 1 "after game over $::games (text shown; the last game's level, wave and score kept)" $::lw_last $::score_last
 			check {[sat 0] == 0xD0} "back at the title: no sprites (the SAT's first Y [format %02X [sat 0]])"
 		}
 		if {$::sn == 6} { down 0x01 }
@@ -1071,14 +1147,15 @@ debug set_bp $sym(splash.blink) {} { try splash_frame }
 # the frame's time: its interrupt's (not when the poll loop sees it)
 set isr_time 0
 debug set_bp $sym(isr) {} { if {$::phase == 2 && $::sn < 3*[m fps]} { set ::isr_time [machine_info time] } }
-# after the splash: "L1 W1" on the top status row's left, the rest of it
-# blank, and the bottom one past the reserves
+# after the splash: "L1 W1" on the top status row's left, the score 0 on
+# its right, the rest of it blank, and the bottom one past the reserves
 proc check_cleared {} {
 	set bad [lw_bad "L1 W1"]
+	if {[score_ram] || $::score_model} { lappend bad "score [score_ram] (model $::score_model)" }
 	for {set a [expr {23*256 + $::sym(RESERVE_CELLS)*8}]} {$a < 6144} {incr a} {
 		if {[debug read VRAM $a] || [debug read VRAM [expr {0x2000 + $a}]] != 0x11} { lappend bad [format %04X $a] }
 	}
-	check {[llength $bad] == 0} "after the splash: \"L1 W1\" on the top status row's left, white on black, the rest of the status rows blank (wrong: [lrange $bad 0 5])"
+	check {[llength $bad] == 0} "after the splash: \"L1 W1\" on the top status row's left, white on black, the score \"0\" on its right (its last cell), the rest of the status rows blank (wrong: [lrange $bad 0 5])"
 }
 
 down 0x01            ;# boot 1: space held from power-on
@@ -1707,6 +1784,9 @@ proc stage_collisions {} {
 	}
 	set place [list 0 $a 1 $d 2 [lindex $b 0] 3 [lindex $b end]]
 	say "staged collisions (after the move): $place"
+	# the score 99999890 (written): the three crashes' 3 x 50 reach the cap
+	foreach k {0 1 2 3} v {0x90 0x98 0x99 0x99} { debug write memory [expr {$::sym(score) + $k}] $v }
+	set ::score_model 99999890
 	foreach {i at} $place {
 		lassign $at x y
 		set x [expr {($x - ($vx >> 8)) % $::FWRAP}] ; set y [expr {$y - ($vy >> 8)}]
@@ -1727,6 +1807,8 @@ proc stage_collisions {} {
 	at [expr {$::n + 1}] {
 		set sts {} ; set bs {}
 		for {set i 0} {$i < 4} {incr i} { lappend sts [lindex [en_state $i] 0] ; lappend bs [m boom_stage $i] }
+		set sb [score_vram_bad]
+		check {[score_ram] == 99999999 && $::score_model == 99999999 && ![llength $sb]} "staged collisions: from 99999890 (written), the crashes' points (3 x 50, a four-ship front) stop at 99999999 (RAM [score_ram]; its cells wrong: [lrange $sb 0 5])"
 		check {$sts eq {2 1 2 2} && $bs eq {0 1 1 1} && $::dnew == 6} "staged collisions, the next frame: enemy 0 across ships 1 and 2, enemies 2 and 3 on ship 3, enemy 1 near ship art but not on it: enemies' states $sts (want 2 1 2 2), the ships' booms $bs (want 0 1 1 1), $::dnew death sound starts (want 6: 3 enemies, 3 ships)"
 	}
 	at [expr {$::n + 2}] {
@@ -1822,7 +1904,7 @@ proc wave_step {} {
 		if {[llength $bad]} { wave_bad "wave $w: the top status row isn't \"[lw_str $w]\" (wrong: [lrange $bad 0 5])" }
 		lappend ::wseq "[m form_enemy]/[m form_color]"
 		if {$w < 20} { wave_step } else {
-			check {[llength [lw_bad "L3 W1"]] == 0 && [lw_str 9] eq "L1 W10" && [lw_str 10] eq "L2 W1"} "wave 21: \"L3 W1\" on the top status row's left, the rest blank (\"L2 W10\"'s last cell gone)"
+			check {[llength [lw_bad "L3 W1"]] == 0 && [lw_str 9] eq "L1 W10" && [lw_str 10] eq "L2 W1"} "wave 21: \"L3 W1\" on the top status row's left, the rest blank but the score (\"L2 W10\"'s last cell gone)"
 			check {$::wave_bad == 0} "waves 3..21 (enemy/colour; the level and wave on the top status row: L1 W1 .. L1 W10, L2 W1 ..): $::wseq ([expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 			at [expr {$::n + 3}] plan_eb_levels    ;# (after this wave's wipe of the test's bullets)
 		}
@@ -2380,7 +2462,7 @@ proc over_restart {} {
 	set ::lw_last "L[m level] W[expr {[m form_enemy] + 1}]"
 	set bad [lw_bad $::lw_last]
 	set lwant [expr {$::games > 1 ? "L1 W1" : "L3 W[expr {[m form_enemy] + 1}]"}]
-	check {[llength $bad] == 0 && $::lw_last eq $lwant} "game over $::games: \"$::lw_last\" (want \"$lwant\") on the top status row's left to its end (wrong: [lrange $bad 0 5])"
+	check {[llength $bad] == 0 && $::lw_last eq $lwant} "game over $::games: \"$::lw_last\" (want \"$lwant\") on the top status row's left, the score \"$::score_model\" on its right (wrong: [lrange $bad 0 5])"
 	check {$::otext_bad == 0 && $::otext_frames >= $k - 1} "game over $::games: \"$::OVER\" intact every frame of it ($::otext_frames frames; [expr {$::otext_bad ? "first wrong: $::otext_first" : "none wrong"}])"
 	if {$::ostage} {
 		check {$::os_bad eq "" && $::os_star > 0 && $::os_star_out > 0 && $::os_eb > 0 && $::os_eb_out > 0} "game over: a star and an enemy bullet through the text, not drawn in its cells ($::os_star / $::os_eb frames), shown past them ($::os_star_out / $::os_eb_out frames; wrong: [lrange $::os_bad 0 3])"
@@ -2389,6 +2471,8 @@ proc over_restart {} {
 	check {$::ostate eq "on" && $k == $::owant} "game over $::games: back to the title $k frames after it began (want $::owant: $::owhy)"
 	check {$::dropped == $::odropped} "game over $::games: the game ran every frame of it ([expr {$::dropped - $::odropped}] dropped)"
 	set ::ostate "" ; set ::phase 3 ; set ::sn 0
+	set ::score_last [string trim [score_str $::score_model]]
+	set ::score_model 0 ; set ::sc_calls {} ; set ::sc_shown 0
 	unset -nocomplain ::last_frames
 }
 # A new game after a game over, before its first frame: as at power-on

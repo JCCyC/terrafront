@@ -63,15 +63,32 @@ move, shoot or call up) for 10 s (`GAME_OVER_MS`; 600 / 500 frames), or
 until a press of fire (`IN_FIRE`: space or either joystick's button A)
 seen from 3 s on (`OVER_SKIP_MS`; held from before doesn't count); then
 `restart`: display off, no sprites, the game's RAM (from `game_ram`; the
-rates, `frames`, `entropy`, `polls`, `lw_text` kept) cleared, the splash
-(with the last game's level and wave on its top row's left, from `lw_text`;
+rates, `frames`, `entropy`, `polls`, `lw_text`, `score_digits`,
+`score_shown` kept) cleared, the splash
+(with the last game's level and wave on its top row's left, from `lw_text`,
+and its score on its right, as in the game, from `score_shown`, its leading
+blanks not printed (the picture stays);
 none at power-on), and a new game as at power-on.
 **Levels:** a level is 10 waves (enemies 0..9); `level` (1.., stays at
 255) goes up when `form_enemy` wraps to 0. "L1 W1" .. "L1 W10", "L2 W1",
 ... (`level`, `form_enemy`+1) is on the top status row's left in the font,
 white (`level_text`: into `lw_text`, printed from `LW_COL` 0 on `LW_ROW`
 0, blank cells after it up to `LW_LEN` 8), at a new game and when each
-wave begins (`next_wave`). Behind it all, 15
+wave begins (`next_wave`). **Score:** a pair broken up 50 points
+(`BREAK_PTS`), a free enemy's death, shot or crashing into a ship, 100
+(`FREE_PTS`), with a one-ship front; with 2, 3, 4 living ships 80%, 60%,
+50% (`SHARE_1..4`; none counts as one; the same for future bosses): the
+ships living before the hit (a bullet's: the front then; a crash's: as
+`collide` began, `col_alive`, so one enemy killing one ship of two gives
+80). `score` is 8 BCD digits (cheaper than 32-bit binary: the add is the
+same few `daa`s, the display needs no division), 99999999 at most (it
+stays there); `score_add` (B = `PTS_BREAK`/`PTS_FREE`, A = the living
+ships' mask; the BCD points in `PTS`, built from the tunables). It shows on
+the top status row's right (`SCORE_ROW` 0, `SCORE_COL` 24, `SCORE_LEN` 8),
+right-aligned, no leading zeros ("0" at the start), white, printed by
+`show_score` (after `next_wave`; and at `restart`, for the title) only on a
+frame it changed, only the cells that changed (`score_shown`); a new game
+starts at 0 (`score_shown` cleared after the splash: every cell printed). Behind it all, 15
 one-pixel light grey stars (random columns, random lines, never two on a
 line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 50 Hz), drawn in the bitmap (`move_stars`, after `fire`); one leaving past
@@ -215,7 +232,8 @@ MSX tools and references: `../MSXDEV.md`, `../docs/README.md`. Read
   `font.py --raw`'s glyphs (text shown and hidden; the space glyph blank), the blink every frame (on/off
   frame counts, 0.5 s period between frame interrupts in emulated time, no frame missed), A, C and
   button B changing `entropy` without starting, and space starting; then
-  "L1 W1" on the top status row, the rest of the status rows blank. Then: ship start, speed
+  "L1 W1" on the top status row and the score's "0" at its right, the
+  rest of the status rows blank. Then: ship start, speed
   over 1 s, both arrows, edge clamps for 1, 2 and 4 ships and their sprite
   X / EC, bullet spawn point, speed, removal at the top, the shot sound's
   length, the 2-volley limit, one shot per press, the reserve ships' pixels
@@ -280,11 +298,18 @@ the staged test below. Then the enemies' part, hits on,
   front can't move, shoot or call up, the formation and stars move
   (screenshot `build/shot-<machine>-over.png`), space and joystick 2's
   button A pressed a frame before 3 s and held past it ignored, the title exactly 10 s on; the
-  title's VRAM (with the game's level and wave, L3 W1, on its top row), no sprites, a held space not starting; the new game as at
+  title's VRAM (with the game's level and wave, L3 W1, on its top row's
+  left and its score, 99999999, on its right; "0" after games 2 and 3), no sprites, a held space not starting; the new game as at
   power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
   Then twice no reserves, the front killed: joystick 1's button A, then
   space, seen exactly at 3 s goes to the title at once; a fourth game for
-  the final screenshot. It checks the velocity table (64 directions, the square
+  the final screenshot. The score, every frame of the game: each `score_add` call
+  (a breakpoint) with the front's living ships before the hit (the front
+  then; for a crash, as `collide` began), one call per pair broken and per
+  enemy booming (from the enemies' states), the score in RAM the spec's
+  sum (50 / 100 by the shares), its cells on the top row's right the frames
+  it changed and the next; staged with the collisions, from 99999890
+  (written) the three crashes stop it at 99999999. It checks the velocity table (64 directions, the square
   legs' speed), every enemy's boom (images and frame counts), the break
   sound's starts and length, a death-sound start per enemy boom, bounces at
   both lines (not mirrors), no level break-up direction, the SAT's flip and
