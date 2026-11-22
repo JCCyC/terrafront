@@ -119,6 +119,52 @@ no GAME OVER (`over_text` stays 0: no cells kept from stars and bullets),
 just its 10 s with the enemies flying on (the pseudo-player's fire doesn't
 cut it short). Then
 `restart`: the title (its 20 s from the start again).
+**Easter egg** (Skyfighter's, user's spec; not in a game): a fresh
+Ctrl-V (CTRL row 6 bit 1 + V row 5 bit 3, the press of the pair, either
+key last, `egg_pressed`, per splash poll) on the title shows, over the
+picture in place of its text (`title_rows` unpacks the picture's rows
+`EGG_ROW` (20)..23 again, then the lines are printed white, each centred,
+odd lengths half a cell left), "VERSION 0.9.1" (from `VERSION_BYTES` at
+4010h, `put_dec`) on row 20 and "JCCYC IS" / "JUAN CARLOS CASTRO Y
+CASTRO" / "WELCOME TO THE FRONT!" (`EGG_TEXTS`) on rows 21..23 (no blank
+line after the version: only rows 20..23 are free of the logo; Claude's
+choice), for `EGG_SECS` (5) s (`egg_left`, from the `egg_frames` rate);
+no blink meanwhile; then the title's text again, its blink from the
+start (`show_title_text`); sooner at a press of space or either
+joystick's button A (user's spec), which then starts nothing (it's held
+at the next poll). Another Ctrl-V meanwhile doesn't restart it; the
+title's 20 s count goes on. In attract mode (user's spec: the egg shows only over the title) a
+fresh Ctrl-V (`IN_EGG`, read in attract mode only, `att_real` all held at
+its start) ends it as fire would, and the title opens with the egg up
+(`egg_now`, kept through `restart`'s clear). The texts are stored XORed
+with `EGG_KEY` + `EGG_KEY_STEP`·index (Lua `egg_text`, Skyfighter's and
+U-boat Killer's key) so they don't show in a ROM dump; `decode` into
+`egg_buf`. The splash's frames are now caught up on one at a time
+(`frames_seen` counts up): a redraw takes over a frame, and the egg's and
+the title's counts stay exact.
+**License lines** (an egg in the egg, as Skyfighter's): with the egg up
+and CTRL held all along, `LICENSE_TAPS` (3) more V presses (`egg_tap`,
+`lic_taps`; CTRL up, seen at any poll, starts over; the press that showed
+the egg doesn't count) replace the egg with the two lines of
+`LICENSE_TEXT` (at the fixed address 4014h, BIN 8014h, right after the
+version bytes, asserted; 2 × `LICENSE_LEN` (32) space-padded bytes, each
+line `egg_text`-encoded from index 0) on rows `LICENSE_ROW` (21) and 22,
+each centred without its trailing spaces (all spaces: nothing;
+`print_buf`). No timer (`lic_state` 1), the title's count stopped: once
+all keys of matrix rows 0..8 and both sticks' buttons are released
+(`lic_state` 2, `any_input`), any of them brings the title's text back
+(`hide_license`), its blink from the start, the title's count from 20 s
+again, starting nothing (that press is held at the next poll). Default:
+"MASTER COPY - IF YOU AIN'T JCCYC" / "YOU SHOULDN'T HAVE THIS!". The font
+has no lowercase. `licenserom.py ROM LINE1 LINE2 >OUT`, `licensebin.py`,
+`licensedsk.py` (TERRAFNT.BIN in the image) and `licensezip.py` (the ROM,
+BIN and DSK in a release zip) rewrite the lines: U-boat Killer's scripts
+(ASCII 20h..5Fh, lowercase turned into capitals, ≤ 32 each), renamed;
+they check for "PRESS SPACE OR FIRE TO BEGIN" and "JCCYC" (plain in the
+ROM) and that the lines at 4014h decode to font characters; their
+`EGG_KEY`, `EGG_KEY_STEP` and offset must match main.asm. None ships in
+the zip. `changes.txt` mentions the eggs only generically ("Easter egg
+adjustments.", user's spec, as Skyfighter's).
 **Levels:** a level is 10 waves (enemies 0..9); `level` (1.., stays at
 255) goes up when `form_enemy` wraps to 0. "L1 W1" .. "L1 W10", "L2 W1",
 ... (`level`, `form_enemy`+1) is on the top status row's left in the font,
@@ -461,7 +507,7 @@ the staged test below. Then the enemies' part, hits on,
   one ship as it died): the text shows, GAME OVER takes its place (the
   other cells blank), and 2 s after the text came its 500 points, the
   next frame the next wave (L1 W2 on the title). Then the title
-  left alone: attract mode, three times. Each: exactly 20 s of title
+  left alone: attract mode, four times. Each: exactly 20 s of title
   first; the top row as the title had it (L1 W1 and the score) and the
   bitmap below blank as it begins, a new game's state; every frame silent
   (R7..R10) and the top row unchanged; a call-up roll (a breakpoint)
@@ -472,9 +518,23 @@ the staged test below. Then the enemies' part, hits on,
   both ways over 100+ columns, shoots,
   calls up, dodges: each dodge's target, from the threat tried (a
   breakpoint), against the rule), back to the title (its VRAM as before); the second ends at
-  joystick 1's button A 3 s in, the third at space 2 s in, that frame;
-  then a press of space: a fourth game, as at power-on, for the final
-  screenshot. Every wave's end: the bonus model (ship deaths
+  joystick 1's button A 3 s in (CTRL alone and V alone, 0.5 s each,
+  before it ignored), the third at space 2 s in, the fourth at Ctrl-V
+  2 s in, that frame (`egg_now` set by the fourth only); then the title
+  with the egg up (`egg_frame`): the egg's VRAM against the picture with
+  the spec's lines on rows 20..23 (frames 3, 2 s, 5 s; the version bytes
+  and the license lines read from the game's file, the license logged,
+  so a licensed copy passes; neither's texts in it in plain), gone
+  exactly 5 s on (the title's text, its blink from the start); V alone,
+  CTRL alone: nothing; Ctrl-V: the egg; two taps, CTRL released and
+  pressed, two taps: still the egg, its count not restarted; a third:
+  the license's VRAM; 6 s more with CTRL held: still up, the title's
+  count stopped; CTRL released, space: the title's text back, its count
+  from 20 s, no game; the license again, taken away by joystick 1's
+  button A; Ctrl-V and joystick 1's button A, Ctrl-V and space: each
+  takes the egg away (the title's text back), no game; then a press of
+  space: a fourth game, as at power-on (Ctrl-V in it: nothing), for the
+  final screenshot. Every wave's end: the bonus model (ship deaths
   seen at `ship_dies`, the streak, the reserve that frame in RAM and VRAM,
   `bonus_start` calls). The score, every frame of the game: each `score_add` call
   (a breakpoint) with the front's living ships before the hit (the front

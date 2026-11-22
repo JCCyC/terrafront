@@ -1130,6 +1130,25 @@ proc overlay {str row blinks} {
 overlay $CREDIT $sym(CREDIT_ROW) 0
 overlay $URL $sym(URL_ROW) 0
 overlay $PRESS $BROW 1
+# The easter egg (the spec's texts; the version from the ROM's version
+# bytes) and the license (decoded from the ROM, so a licensed copy passes)
+set EGG_LINES {"JCCYC IS" "JUAN CARLOS CASTRO Y CASTRO" "WELCOME TO THE FRONT!"}
+proc rom_byte {ofs} { scan [string index $::rom $ofs] %c v ; return $v }
+set VERSION "[rom_byte 16].[rom_byte 17].[expr {[rom_byte 18] + 256*[rom_byte 19]}]"
+check {$VERSION eq "$sym(VERSION_MAJOR).$sym(VERSION_MINOR).$sym(VERSION_PATCH)"} "the version bytes at CODE_BASE+10h: $VERSION"
+set LICENSE {}
+for {set l 0} {$l < 2} {incr l} {
+	set t ""
+	for {set i 0} {$i < $sym(LICENSE_LEN)} {incr i} {
+		append t [format %c [expr {[rom_byte [expr {$sym(LICENSE_TEXT) - $sym(CODE_BASE) + $l*$sym(LICENSE_LEN) + $i}]] ^ (($sym(EGG_KEY) + $i*$sym(EGG_KEY_STEP)) & 0xFF)}]]
+	}
+	lappend LICENSE [string trimright $t]
+}
+say "the license lines: \"[lindex $LICENSE 0]\" / \"[lindex $LICENSE 1]\""
+check {$sym(LICENSE_TEXT) == $sym(CODE_BASE) + 0x14} "the license lines at CODE_BASE+14h"
+set plain {}
+foreach t [concat $EGG_LINES $LICENSE] { if {[string length [string trim $t]] > 3 && [string first $t $rom] >= 0} { lappend plain $t } }
+check {![llength $plain]} "the egg's and the license's texts aren't in the game's file in plain (found: $plain)"
 # Text str in font.py's glyphs on character row `row` from column col, over
 # ncells cells (blank cells past its end): the VRAM addresses wrong
 # (patterns: glyph rows on lines 0..5, 6..7 blank; colours TEXT_COLOR on black)
@@ -1161,8 +1180,8 @@ proc lw_bad {str} {
 # The title's tables with text str on the top status row from its left
 # (the last game's level and wave) and score sc right-aligned on its right
 # (the last game's; its leading blanks not printed): TITLE_ON's
-proc title_with {str sc} {
-	set t $::TITLE_ON
+proc title_with {str sc {base ""}} {
+	set t [expr {$base eq "" ? $::TITLE_ON : $base}]
 	set cells {}
 	for {set k 0} {$k < [string length $str]} {incr k} { lappend cells [expr {$::sym(LW_COL) + $k}] [string index $str $k] }
 	for {set k 0} {$k < [string length $sc]} {incr k} { lappend cells [expr {32 - [string length $sc] + $k}] [string index $sc $k] }
@@ -1203,6 +1222,123 @@ proc check_title {shown what {lw ""} {sc ""}} {
 	}
 	check {[llength $bad] == 0} "splash $what: patterns and colours = images/title.png and \"$::CREDIT\", \"$::URL\", \"$::PRESS\" in images/font.png, centred on rows $::sym(CREDIT_ROW), $::sym(URL_ROW), $::BROW[expr {$lw ne "" ? ", \"$lw\" on the top status row's left and \"$sc\" on its right" : ""}] (wrong at: $bad)"
 }
+# The egg and the license. TITLE (the picture alone) with the lines {row
+# str ...} centred on their rows (odd lengths half a cell left), white on
+# black, and the top status row's level, wave and score (title_with)
+proc title_lines {lines lw sc} {
+	set t $::TITLE
+	set w [format %02x [expr {$::sym(TEXT_COLOR)*16 + 1}]]
+	foreach {row str} $lines {
+		set col [expr {(32 - [string length $str]) / 2}]
+		for {set i 0} {$i < [string length $str]} {incr i} {
+			scan [string index $str $i] %c c
+			set p [expr {$row*256 + ($col + $i)*8}]
+			for {set y 0} {$y < 8} {incr y} {
+				set g [expr {$y < 6 ? [lindex $::FONT [expr {($c - 32)*6 + $y}]] : "00"}]
+				set t [lreplace $t [expr {$p + $y}] [expr {$p + $y}] $g]
+				set t [lreplace $t [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] $w]
+			}
+		}
+	}
+	title_with $lw $sc $t
+}
+# VRAM's tables against want: the addresses wrong (6 at most)
+proc vram_bad {want} {
+	set bad {}
+	for {set i 0} {$i < 12288} {incr i} {
+		set a [expr {$i < 6144 ? $i : 0x2000 + $i - 6144}]
+		if {[debug read VRAM $a] != "0x[lindex $want $i]"} { lappend bad [format %04X $a] ; if {[llength $bad] > 5} break }
+	}
+	return $bad
+}
+proc egg_want {} {
+	set r $::sym(EGG_ROW)
+	set l [list $r "VERSION $::VERSION"]
+	foreach t $::EGG_LINES { incr r ; lappend l $r $t }
+	title_lines $l $::lw_last $::score_last
+}
+proc lic_want {} { title_lines [list $::sym(LICENSE_ROW) [lindex $::LICENSE 0] [expr {$::sym(LICENSE_ROW) + 1}] [lindex $::LICENSE 1]] $::lw_last $::score_last }
+proc w16 {name} { expr {[m $name] + 256*[m $name 1]} }
+proc ctrl {d} { if {$d} { keymatrixdown 6 0x02 } else { keymatrixup 6 0x02 } }
+proc vkey {d} { if {$d} { keymatrixdown 5 0x08 } else { keymatrixup 5 0x08 } }
+# The title after attract mode 4, ended by Ctrl-V (still held): the egg
+# up from the start, over the picture in place of the title's text, the
+# top row as it was; for EGG_SECS (no blink), then the title's text, its
+# blink from the start. V alone, CTRL alone: nothing. Ctrl-V: the egg; a
+# Ctrl-V (CTRL released and pressed) while it's up doesn't restart it;
+# with CTRL held all along, 3 more V presses: the license (two taps, CTRL
+# released and pressed, two taps: still the egg; one more: the license).
+# It stays with CTRL held EGG_SECS + 1 s, the title's count stopped;
+# CTRL released, space: the title's text back, its count from the start,
+# no game. Again, taken away by joystick 1's button A. Then Ctrl-V and
+# joystick 1's button A, Ctrl-V and space: each takes the egg away (the
+# title's text back), starting nothing; then space starts the game.
+proc egg_dismissed {what} {
+	set bad [vram_bad [title_with $::lw_last $::score_last]]
+	check {![w16 egg_left] && ![m lic_state] && ![llength $bad]} "$what during the egg: the egg gone, the title's text back, no game (wrong: $bad)"
+}
+proc egg_frame {} {
+	set F [m fps] ; set E [expr {$::sym(EGG_SECS)*$F}] ; set n $::sn
+	if {$n == 1} {
+		check {[w16 egg_left] == $E && ![m lic_state] && ![m egg_now]} "attract mode's Ctrl-V: the title with the egg up for $::sym(EGG_SECS) s ([w16 egg_left] frames; want $E)"
+		ctrl 0 ; vkey 0
+	}
+	if {$n == 3 || $n == 2*$F || $n == $E} {
+		set bad [vram_bad [egg_want]]
+		check {![llength $bad] && ([vdp_r1] & 0x40)} "the egg at title frame $n: \"VERSION $::VERSION\", [join $::EGG_LINES " / "] centred on rows $::sym(EGG_ROW).., over the picture, the top row as it was (\"$::lw_last\", \"$::score_last\"), no blink (wrong: $bad)"
+	}
+	if {$n == $E + 1} {
+		set bad [vram_bad [title_with $::lw_last $::score_last]]
+		check {![llength $bad] && ![w16 egg_left] && [m blink_shown] && [m blink_left] == [m blink_on]} "the egg gone after exactly $::sym(EGG_SECS) s: the title's text back, its blink from the start (wrong: $bad)"
+	}
+	set B [expr {$E + 5}]
+	switch -- [expr {$n - $B}] {
+		0 { vkey 1 } 3 { vkey 0 } 5 { ctrl 1 } 8 { ctrl 0 }
+		10 { check {![w16 egg_left] && ![m lic_state]} "V alone, CTRL alone: no egg" }
+		15 { ctrl 1 } 17 { vkey 1 } 19 { vkey 0 }
+		21 { check {[w16 egg_left] == $E - 3} "Ctrl-V (V last): the egg again ([w16 egg_left] frames left; want [expr {$E - 3}])" }
+		23 { vkey 1 } 25 { vkey 0 } 27 { vkey 1 } 29 { vkey 0 }
+		31 { ctrl 0 } 33 { ctrl 1 } 35 { vkey 1 } 37 { vkey 0 } 39 { vkey 1 } 41 { vkey 0 }
+		43 {
+			check {[w16 egg_left] == $E - 25 && ![m lic_state]} "two taps, CTRL released and pressed, two taps: still the egg, not restarted ([w16 egg_left] frames left; want [expr {$E - 25}])"
+			set bad [vram_bad [egg_want]]
+			check {![llength $bad]} "the egg still shown (wrong: $bad)"
+		}
+		45 { vkey 1 } 47 { vkey 0 }
+		51 {
+			set bad [vram_bad [lic_want]]
+			check {[m lic_state] == 1 && ![w16 egg_left] && ![llength $bad]} "a third tap: the license (\"[join $::LICENSE {" / "}]\") centred on rows $::sym(LICENSE_ROW) and [expr {$::sym(LICENSE_ROW) + 1}] over the picture, the egg gone (wrong: $bad)"
+			set ::tl0 [w16 title_left]
+		}
+	}
+	set L [expr {$B + 51 + ($::sym(EGG_SECS) + 1)*$F}]
+	switch -- [expr {$n - $L}] {
+		0 {
+			set bad [vram_bad [lic_want]]
+			check {[m lic_state] == 1 && [w16 title_left] == $::tl0 && ![llength $bad]} "the license still up after $::sym(EGG_SECS) + 1 s with CTRL held, the title's count stopped ([w16 title_left] frames left; want $::tl0; wrong: $bad)"
+			ctrl 0
+		}
+		3 { check {[m lic_state] == 2} "all released: the license armed" ; down 0x01 }
+		6 {
+			set bad [vram_bad [title_with $::lw_last $::score_last]]
+			check {![m lic_state] && ![llength $bad] && [w16 title_left] == 20*$F - 2} "space: the license gone, the title's text back, its count from the start ([w16 title_left] frames left; want [expr {20*$F - 2}]), no game (wrong: $bad)"
+		}
+		8 { up 0x01 }
+		10 { ctrl 1 } 11 { vkey 1 } 13 { vkey 0 }
+		15 { vkey 1 } 17 { vkey 0 } 19 { vkey 1 } 21 { vkey 0 } 23 { vkey 1 } 25 { vkey 0 }
+		27 { check {[m lic_state] == 1} "Ctrl-V and three taps: the license again" ; ctrl 0 }
+		30 { joydown 1 0x10 }
+		33 { check {![m lic_state] && [m blink_shown]} "joystick 1's button A: the license gone, no game" ; joyup 1 }
+		36 { ctrl 1 ; vkey 1 } 38 { ctrl 0 ; vkey 0 }
+		40 { check {[w16 egg_left] > 0} "Ctrl-V: the egg" ; joydown 1 0x10 }
+		43 { egg_dismissed "joystick 1's button A" ; joyup 1 }
+		46 { ctrl 1 ; vkey 1 } 48 { ctrl 0 ; vkey 0 }
+		50 { check {[w16 egg_left] > 0} "Ctrl-V: the egg" ; down 0x01 }
+		53 { egg_dismissed "space" ; up 0x01 }
+		56 { down 0x01 ; set ::press_sn $n }
+		60 { fail "space after the egg doesn't start the game" ; finish }
+	}
+}
 proc entropy {} { expr {[m entropy] + 256*[m entropy 1]} }
 set blinks {}        ;# {state time} each splash frame
 set frames_bad 0
@@ -1218,6 +1354,7 @@ proc splash_frame {} {
 		return
 	}
 	if {$::phase == 3} {
+		if {$::tnext eq "egg"} { egg_frame ; return }
 		if {$::sn == 1} { up 0x01 ; joyup 1 ; joyup 2 }
 		if {$::sn == 3} {
 			check {[vdp_r1] & 0x40} "back at the title after $::twhy: display on (R1 [format %02X [vdp_r1]])"
@@ -1304,7 +1441,7 @@ cart_bp $sym(main_loop) {} {
 	}
 	if {$::phase == 3} {
 		if {[m attract]} { try attract_begin } else {
-			check {$::sn == 6 && $::tnext eq "press"} "after $::twhy, a new press of space starts a new game (splash frame $::sn; want 6)"
+			check {$::sn == $::press_sn && $::tnext in {press egg}} "after $::twhy, a new press of space starts a new game (splash frame $::sn; want $::press_sn)"
 			up 0x01
 			set ::phase 4
 			try new_game_checks
@@ -2930,7 +3067,13 @@ proc new_game_checks {} {
 		set x [expr {$::sym(SHIP_X_MAX)/2 - $::sym(SHIP_ART_L)}] ; set y [expr {$::sym(SHIP_TOP) - 1}]
 		check {[sat 0] == $y && [sat 1] == $x || [sat 48] == $y && [sat 49] == $x} "new game $::games: the ship's sprite in the middle"
 	}
-	if {$::games < 3} { at [expr {$::n+$::F}] { plan_over [expr {$::games + 1}] } } else { at [expr {$::n+$::F}] { screenshot_and_finish } }
+	if {$::games < 3} { at [expr {$::n+$::F}] { plan_over [expr {$::games + 1}] } } else {
+		# Ctrl-V in a game: nothing (no egg for the next title, the game on)
+		at [expr {$::n+5}] { ctrl 1 ; vkey 1 }
+		at [expr {$::n+10}] { ctrl 0 ; vkey 0 }
+		at [expr {$::n+12}] { check {![m egg_now] && ![m over_on] && [m front_mask] == 1} "Ctrl-V in a game: nothing" }
+		at [expr {$::n+$::F}] { screenshot_and_finish }
+	}
 }
 
 # Attract mode. After game over 3 the title is left alone: 20 s on
@@ -2941,12 +3084,14 @@ proc new_game_checks {} {
 # heads (1 in 2), a call-up starts that frame if one can (none flying, a
 # reserve, a span under 4; as call_up began: a breakpoint's snapshot), and
 # none starts otherwise but by itself (the front empty); C does nothing
-# (held 1 s in the first). Three times: the first plays its
-# 40 s (or till game over's 10 s, if it comes first), then the title (left
-# alone again); the second ends at joystick 1's button A, the third at
-# space, pressed 3 s and 2 s in, that frame; then the title, a press of
-# space, a new game as at power-on.
-set attr 0 ; set attracts 0 ; set tnext press ; set twhy ""
+# (held 1 s in the first; CTRL alone and V alone, 0.5 s each, in the
+# second). Four times: the first plays its 40 s (or till game over's 10 s,
+# if it comes first), then the title (left alone again); the second ends
+# at joystick 1's button A, the third at space, pressed 3 s and 2 s in,
+# that frame, the fourth at Ctrl-V 2 s in; then the title with the egg up
+# (egg_frame), and a press of space, a new game as at power-on (Ctrl-V in
+# it: nothing).
+set attr 0 ; set attracts 0 ; set tnext press ; set twhy "" ; set press_sn 6
 proc top_want {} {
 	set t [title_with $::lw_last $::score_last]
 	set ::topwant {}
@@ -3074,8 +3219,11 @@ proc attract_frame {} {
 		if {$::an == 2*$F} { cdown }
 		if {$::an == 3*$F} { cup }
 	} elseif {$::attracts == 2} {
+		if {$::an == $F} { ctrl 1 } elseif {$::an == $F + $F/2} { ctrl 0 } elseif {$::an == 2*$F} { vkey 1 } elseif {$::an == 2*$F + $F/2} { vkey 0 }
 		if {$::an == 3*$F} { joydown 1 0x10 ; set ::aquit_at $::an }
-	} elseif {$::an == 2*$F} { down 0x01 ; set ::aquit_at $::an }
+	} elseif {$::attracts == 3} {
+		if {$::an == 2*$F} { down 0x01 ; set ::aquit_at $::an }
+	} elseif {$::an == 2*$F} { ctrl 1 ; vkey 1 ; set ::aquit_at $::an }
 	if {$::an > 40*$F + 2} { fail "attract mode $::attracts: still on after 40 s" ; finish }
 }
 # Attract mode's end (restart): ::an frames into it (the last one's work stops here)
@@ -3083,7 +3231,7 @@ proc attract_restart {} {
 	set F $::F
 	set want [expr {40*$F}] ; set why "40 s"
 	if {$::aover >= 0 && $::aover - 1 + 10*$F < $want} { set want [expr {$::aover - 1 + 10*$F}] ; set why "game over's 10 s (it began [expr {$::aover - 1}] frames in)" }
-	if {$::aquit_at >= 0} { set want $::aquit_at ; set why [expr {$::attracts == 2 ? "joystick 1's button A pressed" : "space pressed"}] }
+	if {$::aquit_at >= 0} { set want $::aquit_at ; set why [lindex {"" "" "joystick 1's button A pressed (CTRL alone and V alone before it ignored)" "space pressed" "Ctrl-V pressed"} $::attracts] }
 	check {$::an == $want} "attract mode $::attracts: back to the title [format %.2f [expr {double($::an)/$F}]] s in ($::an frames; want $want: $why)"
 	set nrolls [expr {$::an / (5*$F)}]
 	set rbad {} ; set k 0
@@ -3099,7 +3247,8 @@ proc attract_restart {} {
 		check {$::alefts > 0 && $::arights > 0 && $::axmax - $::axmin >= 100 && $::spawns > 10 && $::aheads > 0 && $::acalls > 0 && $::adodges > 0} "attract mode 1: dodges ($::adodges, each target as the rule), the front moves both ways ($::alefts frames left, $::arights right, columns $::axmin..$::axmax) and shoots ($::spawns volleys); call-ups by the rolls ($::acalls of $::aheads heads in [llength $::arolls] rolls; $::aforce made heads by the test)"
 	}
 	set ::attr 0 ; set ::ebhits 0 ; set ::phase 3 ; set ::sn 0
-	set ::twhy "attract mode $::attracts" ; set ::tnext [expr {$::attracts < 3 ? "wait" : "press"}]
+	check {[m egg_now] == ($::attracts == 4 ? $::sym(IN_EGG) : 0)} "attract mode $::attracts: the title [expr {$::attracts == 4 ? "with" : "without"}] the egg (egg_now [m egg_now])"
+	set ::twhy "attract mode $::attracts" ; set ::tnext [expr {$::attracts < 4 ? "wait" : "egg"}]
 	set ::sc_calls {} ; set ::in_col 0 ; set ::bwant {} ; set ::bonew 0 ; set ::eb_expect ""
 	unset -nocomplain ::last_frames ::asnap
 }

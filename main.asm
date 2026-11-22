@@ -108,7 +108,12 @@
 ; and every ATTRACT_CALL_MS calls up a reserve ship with a chance of 1 in
 ; ATTRACT_CALL_CHANCE, through the game's own controls code (virtual keys).
 ; A press of fire (space or either joystick's button A) ends it at once;
-; then, and at its end, it's back to the title.
+; then, and at its end, it's back to the title. A press of Ctrl-V ends it
+; too, and the title comes with the easter egg up.
+; The easter egg (Skyfighter's): a press of Ctrl-V on the title shows the
+; version and the credit over the picture, in place of the title's text,
+; for EGG_SECS (space or fire takes it away sooner, starting nothing); with CTRL held, LICENSE_TAPS more V presses show the
+; license lines instead, until any key or button. Not in a game.
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Fire and call-up are
 ; edge-triggered: one action per press.
@@ -145,7 +150,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 0
+VERSION_PATCH   equ 1
 
 ; ---- Tunables --------------------------------------------------------------
 
@@ -179,6 +184,63 @@ BLINK_ROW       equ 23          ; its character row (lines 184..191), centred on
 CREDIT_ROW      equ 21          ; the splash's credit line (CREDIT_TEXT), centred, not blinking
 URL_ROW         equ 22          ; ... and the URL (URL_TEXT) under it
 TEXT_COLOR      equ 15          ; white: the game's text
+;
+; The easter egg (Skyfighter's, with its own message): a fresh Ctrl-V (the
+; press of the pair, either key last) on the title shows "VERSION X.Y.Z"
+; (from the version bytes) and EGG_TEXTS' lines over the picture, in
+; place of the title's text, from EGG_ROW down, each centred, for EGG_SECS;
+; then the title's text again, blinking from the start (sooner at a
+; press of space or either joystick's button A, which then starts
+; nothing; the title's count to attract mode goes on). In attract mode a
+; fresh Ctrl-V ends it, and the title comes with the egg up (nothing is
+; drawn over the pseudo-game). Not in a game. Its texts are stored with
+; each byte XORed with EGG_KEY + EGG_KEY_STEP * index (egg_text), so they
+; don't show in a ROM dump.
+EGG_SECS        equ 5
+EGG_ROW         equ 20          ; the version's character row; the texts on the rows under it
+EGG_KEY         equ 0A7h
+EGG_KEY_STEP    equ 3Bh
+                lua allpass
+                function egg_text(s)
+                    local k = sj.get_label("EGG_KEY")
+                    local step = sj.get_label("EGG_KEY_STEP")
+                    for i = 1, #s do
+                        sj.add_byte(string.byte(s, i) ~ ((k + (i - 1) * step) & 0xFF))
+                    end
+                end
+                -- a line of the egg: its length, then its text; counts the
+                -- lines (egg_end defines EGG_TEXT_LINES)
+                egg_lines = 0
+                function egg_line(s)
+                    if #s == 0 or #s > 32 then sj.error("egg line empty or too long: " .. s) end
+                    sj.add_byte(#s)
+                    egg_text(s)
+                    egg_lines = egg_lines + 1
+                end
+                function egg_end()
+                    sj.insert_label("EGG_TEXT_LINES", egg_lines)
+                    egg_lines = 0
+                end
+                -- a license line: padded with spaces to LICENSE_LEN
+                function license_line(s)
+                    local n = sj.get_label("LICENSE_LEN")
+                    if #s > n then sj.error("license line too long: " .. s) end
+                    egg_text(s .. string.rep(" ", n - #s))
+                end
+                endlua
+; The license (an egg in the egg, as in Skyfighter and U-boat Killer): with
+; the egg up, LICENSE_TAPS more V presses with CTRL held all along
+; (releasing it starts over; the press that showed the egg doesn't count)
+; show the two lines of LICENSE_TEXT in its place, each centred without
+; its trailing spaces (all spaces: nothing), on LICENSE_ROW and the row
+; under it. No timer (the title's count to attract mode stops, and starts
+; over when it goes): once every key and button has been released, any of
+; them brings the title's text back, blinking from the start, starting
+; nothing. licenserom.py (licensebin.py, licensedsk.py, licensezip.py)
+; rewrites the lines in a built ROM (BIN, disk, zip).
+LICENSE_LEN     equ 32              ; each line, space-padded
+LICENSE_TAPS    equ 3
+LICENSE_ROW     equ 21
 WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins this much later
 GAME_OVER_MS    equ 10000       ; GAME OVER shows this long, the game running on, then the title
 OVER_SKIP_MS    equ 3000        ; ... a press of fire from this much on: the title at once
@@ -361,6 +423,7 @@ IN_RIGHT        equ 08h
 IN_FIRE         equ 10h
 IN_CALL         equ 80h
 IN_BOSS         equ 01h         ; the cheat key 1 (CHEAT_KEYS)
+IN_EGG          equ 40h         ; Ctrl-V, both down (read in attract mode only)
 
 ; ---- Hardware and BIOS -----------------------------------------------------
 
@@ -393,6 +456,12 @@ KEY_ROW_C       equ 3
 KEY_C           equ 01h
 KEY_ROW_1       equ 0
 KEY_1           equ 02h
+KEY_ROW_CTRL    equ 6
+KEY_CTRL        equ 02h
+KEY_ROW_V       equ 5
+KEY_V           equ 08h
+KEY_ANY_ROWS    equ 9           ; the license goes at any key of rows 0..8 (as Skyfighter's)
+JOY_BUTTONS     equ 30h         ; R14: buttons A and B
 KEY_ROWS        equ 11          ; keyboard matrix rows 0..10 (9, 10: the keypad, if any)
 JOY_A           equ 10h         ; R14: button A (0 when pressed)
 
@@ -489,6 +558,7 @@ think_frames:   ds 1            ; frames between the pseudo-player's thinks
 boss_whole:     ds 1            ; BOSS_SPEED / fps
 boss_frac:      ds 1
 bonus_frames:   ds 1            ; frames the bonus text shows
+egg_frames:     ds 2            ; frames the egg shows
 RATES_SIZE      equ $-rates
 frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
@@ -501,6 +571,7 @@ vp_n2:          ds 1            ; ... its lines in the next cell row
 lw_cell:        ds 2            ; level_text: one character to print (0-terminated)
 score_digits:   ds SCORE_LEN    ; show_score: the score's cells, ASCII ...
 score_shown:    ds SCORE_LEN+1  ; ... and as they show (0-terminated; the title shows the last game's; 0: none)
+egg_now:        ds 1            ; nonzero: the title opens with the egg up (attract mode's Ctrl-V)
 
         ifdef BIN
 hook_frames:    ds 2            ; isr: frames left of calling H.TIMI (disk_timer)
@@ -608,7 +679,11 @@ psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
 key_state:      ds KEY_ROWS+2   ; the splash's last poll: keyboard rows 0.., joysticks 1 and 2 (R14)
 key_prev:       ds KEY_ROWS+2   ; ... and the one before
-frames_seen:    ds 1            ; frames when the splash last blinked
+frames_seen:    ds 1            ; frames the splash has seen (one at a time)
+egg_left:       ds 2            ; the title: frames left of the egg, 0 = not up
+lic_state:      ds 1            ; ... the license: 0 not up, 1 up (keys held), 2 up, all released since
+lic_taps:       ds 1            ; ... Ctrl-V presses with the egg up, CTRL held all along
+egg_buf:        ds 33           ; ... a line of the egg or the license (0-terminated)
 blink_left:     ds 1            ; frames until the text shows or hides
 blink_shown:    ds 1            ; nonzero: the text shows
 ; The formation: its left column when this cycle started (0..FORM_WRAP-1),
@@ -662,8 +737,17 @@ GAME_RAM_SIZE   equ $-game_ram
         dw init
         ds 12,0
         assert $ == CODE_BASE+10h
-        db VERSION_MAJOR, VERSION_MINOR
-        dw VERSION_PATCH
+VERSION_BYTES:  db VERSION_MAJOR, VERSION_MINOR
+                dw VERSION_PATCH
+; Two license lines, egg_text-encoded, at a fixed spot: licenserom.py
+; rewrites them in a built ROM (licensebin.py in a BIN, at 8014h)
+        assert $ == CODE_BASE+14h
+LICENSE_TEXT:
+                lua allpass
+                license_line("MASTER COPY - IF YOU AIN'T JCCYC")
+                license_line("YOU SHOULDN'T HAVE THIS!")
+                endlua
+        assert $ == LICENSE_TEXT+2*LICENSE_LEN
 
 ; ---- Init ------------------------------------------------------------------
 
@@ -943,33 +1027,43 @@ splash:
         ld e,a
         jr .lead
 .score: call print_text
-        ld hl,CREDIT_TEXT       ; the credit and URL, centred, staying
-        ld de,CREDIT_ROW*256+(32-CREDIT_LEN)/2*8
-        call print_text
-        ld hl,URL_TEXT
-        ld de,URL_ROW*256+(32-URL_LEN)/2*8
-        call print_text
-        call print_press
-        call display_on
+        ld a,(egg_now)          ; attract mode's Ctrl-V: the egg up from the start
+        or a
+        jr z,.text
+        xor a
+        ld (egg_now),a
+        call show_egg
+        jr .shown
+.text:  call title_text         ; the credit, the URL and the blinking line
+.shown: call display_on
         ld hl,(title_wait)
         ld (title_left),hl
-        ld a,(blink_on)
-        ld (blink_left),a
-        ld a,1
-        ld (blink_shown),a
         ld a,(frames)
         ld (frames_seen),a
-        call poll_inputs        ; what's held now isn't a press
+        call poll_inputs        ; what's held now isn't a press (Ctrl-V neither)
 .poll:  ld hl,(polls)
         inc hl
         ld (polls),hl
         call poll_inputs
+        ld a,(lic_state)
+        or a
+        jr nz,.lic
+        ld a,(key_state+KEY_ROW_CTRL)
+        and KEY_CTRL
+        jr z,.ctrl
+        xor a
+        ld (lic_taps),a         ; CTRL up: the license's taps start over
+.ctrl:  call egg_pressed
+        call nz,show_egg        ; (or a tap towards the license)
+        ld a,(lic_state)
+        or a
+        jr nz,.frame            ; the license just came
         ld hl,key_prev+KEY_ROW  ; space: down now, up before
         ld a,(key_state+KEY_ROW)
         cpl
         and (hl)
         and KEY_SPACE
-        jr nz,.go
+        jr nz,.start
         ld hl,key_prev+KEY_ROWS ; either joystick's button A: the same
         ld a,(key_state+KEY_ROWS)
         cpl
@@ -981,19 +1075,52 @@ splash:
         and (hl)
         or b
         and JOY_A               ; either joystick's button A
-        jr nz,.go
-        ld a,(frames)
+        jr z,.frame
+.start: ld hl,(egg_left)        ; the egg up: it goes, the title's text back, no game
+        ld a,h                  ; (the press is held at the next poll)
+        or l
+        jp z,.go
+        ld hl,0
+        ld (egg_left),hl
+        call show_title_text
+.frame: ld a,(frames)
         ld hl,frames_seen
         cp (hl)
         jr z,.poll
-        ld (hl),a               ; a new frame (the loop keeps up: one at a time)
-.blink: call blink
-        ld hl,(title_left)
+        inc (hl)                ; a new frame (one at a time: a slow poll's are caught up on)
+.blink: ld a,(lic_state)
+        or a
+        jr nz,.poll             ; the license up: no blink, no count
+        ld hl,(egg_left)
+        ld a,h
+        or l
+        jr z,.blnk
+        dec hl                  ; the egg up: no blink, the title's text back at its end
+        ld (egg_left),hl
+        ld a,h
+        or l
+        call z,show_title_text
+        jr .count
+.blnk:  call blink
+.count: ld hl,(title_left)
         dec hl
         ld (title_left),hl
         ld a,h
         or l
-        jr nz,.poll
+        jp nz,.poll
+        jr .attract
+; the license up: once all keys and buttons were released, a press of any
+; takes it away (and starts nothing: it's held at the next poll)
+.lic:   call any_input
+        ld hl,lic_state
+        jr z,.armed
+        ld a,(hl)
+        cp 2
+        call z,hide_license
+        jr .frame
+.armed: ld (hl),2
+        jr .frame
+.attract:
         inc a                   ; left alone: attract mode
         ld (attract),a
         call display_off
@@ -1017,6 +1144,258 @@ splash:
         ld bc,24*256
         ld a,BG_COLOR*16+BG_COLOR
         jp FILVRM
+
+; ---- The title's texts: its own, the egg, the license ----------------------
+
+; The title's text over the picture (just unpacked): the credit and URL,
+; centred, staying, and the blinking line, shown, its blink from the start
+title_text:
+        ld c,TEXT_COLOR*16+BG_COLOR
+        ld hl,CREDIT_TEXT
+        ld de,CREDIT_ROW*256+(32-CREDIT_LEN)/2*8
+        call print_text
+        ld hl,URL_TEXT
+        ld de,URL_ROW*256+(32-URL_LEN)/2*8
+        call print_text
+        call print_press
+        ld a,(blink_on)
+        ld (blink_left),a
+        ld a,1
+        ld (blink_shown),a
+        ret
+
+; The license's end: the title's text back, its count to attract mode from
+; the start
+hide_license:
+        xor a
+        ld (lic_state),a
+        ld hl,(title_wait)
+        ld (title_left),hl
+        ; fall through
+; The egg's (or the license's) end: the title's text back
+show_title_text:
+        call title_rows
+        jr title_text
+
+; The picture's rows EGG_ROW..23 again (title.inc's rows are packed one by
+; one), whatever text was over them gone. A frame's time or so.
+title_rows:
+        ld hl,TITLE_PAT_ROWS+EGG_ROW*2
+        ld de,(GRPCGP)
+        call .rows
+        ld hl,TITLE_COL_ROWS+EGG_ROW*2
+        ld de,(GRPCOL)
+.rows:  ld a,d
+        add a,EGG_ROW
+        ld d,a
+        ld b,24-EGG_ROW
+        jp unpack_rows.n
+
+; Has Ctrl-V just gone down in the splash's last poll (V pressed with CTRL
+; held, or the other way round)? NZ if so.
+egg_pressed:
+        ld hl,key_state
+        call .both
+        jr nz,.no
+        ld hl,key_prev
+        call .both
+        ret nz
+.no:    xor a
+        ret
+; Z: CTRL and V both down in the rows at HL
+.both:  push hl
+        ld de,KEY_ROW_CTRL
+        add hl,de
+        ld a,(hl)
+        pop hl
+        and KEY_CTRL
+        ret nz
+        ld de,KEY_ROW_V
+        add hl,de
+        ld a,(hl)
+        and KEY_V
+        ret
+
+; NZ: any key of matrix rows 0..KEY_ANY_ROWS-1 or either joystick's button
+; down in the splash's last poll (not the sticks' directions)
+any_input:
+        ld hl,key_state
+        ld b,KEY_ANY_ROWS
+.row:   ld a,(hl)
+        inc hl
+        inc a                   ; (FFh: none down)
+        ret nz
+        djnz .row
+        ld a,(key_state+KEY_ROWS)
+        ld hl,key_state+KEY_ROWS+1
+        and (hl)
+        cpl
+        and JOY_BUTTONS
+        ret
+
+; The title: the egg over the picture for EGG_SECS, in place of its text
+; (if it's up already, a tap towards the license): "VERSION X.Y.Z" on
+; EGG_ROW, EGG_TEXTS' lines under it, each centred
+show_egg:
+        ld hl,(egg_left)
+        ld a,h
+        or l
+        jr nz,egg_tap
+        ld (lic_taps),a
+        ld hl,(egg_frames)
+        ld (egg_left),hl
+        call title_rows         ; the title's text gone
+        ld hl,EGG_LABEL
+        ld de,egg_buf
+        ld bc,EGG_LABEL_LEN
+        ldir
+        ld a,(VERSION_BYTES)
+        call .byte
+        ld a,(VERSION_BYTES+1)
+        call .byte
+        ld hl,(VERSION_BYTES+2)
+        call put_dec
+        xor a
+        ld (de),a
+        ld b,EGG_ROW
+        call print_buf
+        ld hl,EGG_TEXTS
+        ld b,EGG_ROW+1
+.text:  ld a,(hl)
+        or a
+        ret z
+        inc hl
+        push bc
+        ld b,a
+        call decode
+        pop bc
+        push hl
+        push bc
+        call print_buf
+        pop bc
+        pop hl
+        inc b
+        jr .text
+; A = a number: its digits at DE, then a '.'
+.byte:  ld l,a
+        ld h,0
+        call put_dec
+        ld a,'.'
+        ld (de),a
+        inc de
+        ret
+
+; Ctrl-V with the egg up and CTRL held since the last: on the last tap,
+; the license in its place, with no timer
+egg_tap:
+        ld hl,lic_taps
+        inc (hl)
+        ld a,(hl)
+        cp LICENSE_TAPS
+        ret c
+        ld hl,0
+        ld (egg_left),hl
+        inc l
+        ld (lic_state),hl       ; up, keys held (lic_taps 0)
+        assert lic_taps == lic_state+1
+        call title_rows         ; the egg gone
+        ld hl,LICENSE_TEXT
+        ld b,LICENSE_LEN
+        call decode
+        push hl
+        ld b,LICENSE_ROW
+        call print_buf
+        pop hl
+        ld b,LICENSE_LEN
+        call decode
+        ld b,LICENSE_ROW+1
+        ; fall through
+
+; egg_buf's text without its trailing spaces (all spaces: nothing),
+; centred on character row B (odd lengths a half cell left), white
+print_buf:
+        ld hl,egg_buf
+        ld c,0                  ; its length up to its last non-space
+        ld e,c
+.len:   ld a,(hl)
+        or a
+        jr z,.end
+        inc hl
+        inc e
+        cp ' '
+        jr z,.len
+        ld c,e
+        jr .len
+.end:   ld a,c
+        or a
+        ret z
+        ld e,c
+        ld d,0
+        ld hl,egg_buf
+        add hl,de
+        ld (hl),d               ; the end
+        ld a,32
+        sub c
+        srl a
+        add a,a
+        add a,a
+        add a,a
+        ld e,a
+        ld d,b
+        ld hl,egg_buf
+        ld c,TEXT_COLOR*16+BG_COLOR
+        jp print_text
+
+; B bytes at HL, egg_text-encoded, decoded into egg_buf (0-terminated); HL
+; past them
+decode: ld de,egg_buf
+        ld c,EGG_KEY
+.loop:  ld a,(hl)
+        xor c
+        ld (de),a
+        inc hl
+        inc de
+        ld a,c
+        add a,EGG_KEY_STEP
+        ld c,a
+        djnz .loop
+        xor a
+        ld (de),a
+        ret
+
+; HL = a number: its decimal digits (no leading zeros) at DE, DE past them
+put_dec:
+        ld ix,DEC_POWERS
+        ld bc,5*256             ; B: digits to go; C: nonzero once one was written
+.pow:   push bc
+        push de
+        ld e,(ix+0)
+        ld d,(ix+1)
+        inc ix
+        inc ix
+        ld a,'0'-1
+.sub:   inc a
+        or a
+        sbc hl,de
+        jr nc,.sub
+        add hl,de
+        pop de
+        pop bc
+        cp '0'
+        jr nz,.put
+        inc c
+        dec c
+        jr nz,.put
+        dec b
+        jr z,.last              ; the last digit: always
+        inc b
+        jr .next
+.last:  inc b
+.put:   ld (de),a
+        inc de
+        ld c,1
+.next:  djnz .pow
+        ret
 
 ; One frame of the splash's blinking text: after blink_on frames shown,
 ; its cells' colours go all black for blink_off frames, then white again
@@ -1177,6 +1556,8 @@ mix:    push hl
 ; from the RLE streams HL points to (24 words: title.py)
 unpack_rows:
         ld b,24
+; (B rows)
+.n:
 .r:     push bc
         push hl
         ld a,(hl)
@@ -1296,17 +1677,38 @@ read_input:
         ld a,c
         ld (input),a
         ret
-.cpu:   ld hl,att_real          ; attract mode: the real input only quits it (a
-        ld a,(hl)               ; press of fire), the pseudo-player's plays
+.cpu:   in a,(PPI_C)            ; attract mode: Ctrl-V too (IN_EGG)
+        and 0F0h
+        or KEY_ROW_CTRL
+        out (PPI_C),a
+        in a,(PPI_B)
+        ld b,a
+        in a,(PPI_C)
+        and 0F0h
+        or KEY_ROW_V
+        out (PPI_C),a
+        in a,(PPI_B)
+        and KEY_V
+        jr nz,.noegg
+        ld a,b
+        and KEY_CTRL
+        jr nz,.noegg
+        set 6,c                 ; IN_EGG
+.noegg: ld hl,att_real          ; the real input only quits it (a press of
+        ld a,(hl)               ; fire or Ctrl-V), the pseudo-player's plays
         ld (hl),c
         cpl
         and c
-        and IN_FIRE
+        ld b,a
+        and IN_EGG              ; Ctrl-V: the title, with the egg up
+        ld (egg_now),a
+        ld a,b
+        and IN_FIRE|IN_EGG
         ld (att_quit),a
         call attract_cpu
         ld (input),a
         ret
-        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h && IN_BOSS == 01h
+        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h && IN_BOSS == 01h && IN_EGG == 40h
 
 ; C |= the joystick's left, right, button A (fire) and B (call-up) as IN_*;
 ; the port is selected in R15 by (R15 and E) or B
@@ -5422,6 +5824,7 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 db ATTRACT_THINK_MS*60/1000
                 db BOSS_SPEED/60, BOSS_SPEED%60
                 db BONUS_TEXT_MS*60/1000
+                dw EGG_SECS*60
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
@@ -5437,6 +5840,7 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
                 db ATTRACT_THINK_MS*50/1000
                 db BOSS_SPEED/50, BOSS_SPEED%50
                 db BONUS_TEXT_MS*50/1000
+                dw EGG_SECS*50
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
         assert BONUS_TEXT_MS*60%1000 == 0 && BONUS_TEXT_MS*50%1000 == 0 && BONUS_TEXT_MS*60/1000 < 256 && BONUS_TEXT_MS > 0
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
@@ -5476,6 +5880,23 @@ CREDIT_LEN      equ $-CREDIT_TEXT-1
 URL_TEXT:       db "HTTPS://RETROPOLIS.COM.BR",0
 URL_LEN         equ $-URL_TEXT-1
         assert URL_LEN <= 32
+; The egg's version label, then its texts (egg_line: a length, then the
+; text, egg_text-encoded), ending with a 0
+EGG_LABEL:      db "VERSION "
+EGG_LABEL_LEN   equ $-EGG_LABEL
+EGG_TEXTS:
+                lua allpass
+                egg_line("JCCYC IS")
+                egg_line("JUAN CARLOS CASTRO Y CASTRO")
+                egg_line("WELCOME TO THE FRONT!")
+                egg_end()
+                endlua
+                db 0
+        assert EGG_LABEL_LEN+3+1+3+1+5 <= 32    ; "VERSION 255.255.65535"
+        assert EGG_ROW+1+EGG_TEXT_LINES <= 24
+        assert CREDIT_ROW >= EGG_ROW && URL_ROW >= EGG_ROW && BLINK_ROW >= EGG_ROW   ; (title_rows wipes them)
+        assert LICENSE_ROW >= EGG_ROW && LICENSE_ROW+1 <= 23 && LICENSE_LEN <= 32
+DEC_POWERS:     dw 10000, 1000, 100, 10, 1
 OVER_TEXT:      db "GAME OVER",0
 OVER_LEN        equ $-OVER_TEXT-1
 SPACE_TEXT:     db " ",0
