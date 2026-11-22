@@ -6,3 +6,7 @@
 /videos/
 # Python
 __pycache__/
+# the disk build, and the release zips (make zip)
+/terrafnt.bin
+/terrafnt.dsk
+/terrafnt_*_*_*.zip

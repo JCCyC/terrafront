@@ -5,6 +5,12 @@ The game's name is **Terra Front** (two words); `terrafront` (directory) and
 
 An MSX1 shoot-'em-up in Z80 assembly (sjasmplus), built as a 16 KB plain
 cartridge ROM at 4000h..7FFFh (`terrafnt.rom`, an 8.3 name). RAM at E000h.
+Also a disk version, as Skyfighter's: `terrafnt.bin` (`sjasmplus -DBIN`:
+the same code at 8000h, BLOADed from Disk BASIC, RAM at C000h laid out
+as the ROM's, `CODE_BASE` / `RAM_BASE`; its `isr` also calls H.TIMI,
+`disk_timer`, for the first `DISK_HOOK_SECS` (10), so the disk ROM turns
+the drive motor off) on `terrafnt.dsk` (`blank720k.dsk`, copied from
+Skyfighter, plus `autoexec.bas`, which BLOADs it).
 
 **Current state:** it starts with a splash screen, `images/title.png`
 (256×192, the user may retouch it: MSX1 colours, at most two per 8×1
@@ -332,10 +338,18 @@ there, and remove an entry when it's fixed.
   tables from `images/title.png`, 24 rows each RLE-packed alone, so the
   blinking row unpacks by itself; `title.py --raw` prints them unpacked,
   for the test), then `sjasmplus main.asm` (→ `terrafnt.rom`, symbols
-  `build/terrafnt.sym`). `build/` is generated; don't edit it.
+  `build/terrafnt.sym`), and `sjasmplus -DBIN main.asm` (→ `terrafnt.bin`,
+  symbols `build/terrafnt-bin.sym`), and with mtools `terrafnt.dsk`.
+  `build/` is generated; don't edit it.
+- `make zip` → `terrafnt_<major>_<minor>_<patch>.zip` (the version from
+  `main.asm`): the ROM, BIN, DSK, `terrafnt.txt` (the manual) and
+  `changes.txt`; it refuses unless `terrafnt.txt`'s first line is
+  `TERRA FRONT v. <version>` and `changes.txt`'s latest entry
+  `Version <version>`.
 - `make run` runs the Gradiente Expert 1.1 (primary target, 60 Hz),
   `make run-cbios` C-BIOS MSX1 (50 Hz), `make run-nms8250` the Philips
-  NMS 8250 (MSX2, 50 Hz). `FS=1` starts fullscreen, `VIDEO=1` records to
+  NMS 8250 (MSX2, 50 Hz); `make rundisk` the disk on the Expert with a
+  Panasonic FS-FD1A drive, `make rundisk-nms8250` on the NMS 8250. `FS=1` starts fullscreen, `VIDEO=1` records to
   `videos/<target>-<date>-<time>.avi`, `CMDONLY=1` only prints the openMSX
   command (each on when a nonzero number; see `../MSXDEV.md`).
 - `make test` runs `test.tcl` headless on all three machines (log in
@@ -500,8 +514,17 @@ the staged test below. Then the enemies' part, hits on,
   dying, the others unchanged; a new volley's bullets from the front as
   `fire` had it, a breakpoint's snapshot). The break checks count the
   first wave's (a bullet in flight may break a second wave's pair).
+- `make test-disk` runs the same `test.tcl` on the disk version, booted
+  from a copy of `terrafnt.dsk` (`build/test-disk.dsk`) on the Expert
+  (with an FS-FD1A) and the NMS 8250 (C-BIOS has no Disk BASIC): env
+  `SYMFILE` `build/terrafnt-bin.sym`, `IMAGE` `terrafnt.bin` (the texts
+  are read from it, past its 7-byte BLOAD header); logs
+  `build/test-disk-<machine>.log`, screenshots `build/shot-disk-<machine>*.png`.
+  Run it and `make test` one after the other, not at once
+  (`../HARD-EARNED-EXPERIENCE.md`).
 - `test.tcl`'s breakpoints are set with `cart_bp`: their body runs only
-  while page 1 holds the cartridge ("AB" at 4000h). While the BIOS boots,
+  while the game is there ("AB" at `CODE_BASE`: 4000h in page 1, the
+  cartridge; 8000h for the BIN). While the BIOS boots,
   MSX BASIC's ROM is there, and its code passing one of the game's
   addresses fired them (one that returns early broke the boot on the
   Expert and the NMS 8250 once the code moved).

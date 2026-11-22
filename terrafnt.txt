@@ -1,0 +1,115 @@
+TERRA FRONT v. 0.9.0
+Hold the Front!
+
+(C) JCCyC 2026
+A game for MSX computers
+https://retropolis.com.br
+
+This is an early version: the game is still being made.
+
+
+1. WHAT IS THIS GAME?
+
+Terra Front is a shoot-'em-up for one player. At the bottom of the
+screen stands the front: up to four fighter ships side by side, moving
+left and right as one. Waves of enemies loop and swoop overhead; break
+up their pairs, shoot them down, dodge their bullets, and call up
+reserve ships to fill the gaps in the front.
+
+
+2. WHAT YOU NEED
+
+- Any MSX computer: MSX1, MSX2, MSX2+ or turbo R. The game was tested
+  on a Gradiente Expert 1.1 (a Brazilian MSX1), a 60 Hz machine, and on
+  a Philips NMS 8250 (a European MSX2), a 50 Hz machine. It plays at
+  the same speed on both.
+- The file TERRAFNT.ROM, a 16 KB cartridge image. Or, on an MSX with a
+  disk drive, the disk image TERRAFNT.DSK or the file TERRAFNT.BIN (see
+  below).
+- The keyboard, or a joystick in either port.
+
+
+3. HOW TO RUN IT
+
+On a real MSX with a disk drive, from a floppy disk:
+  TERRAFNT.DSK is the image of a 720K (double-sided) disk that starts
+  the game by itself. Write it to a floppy with a disk image tool, put
+  the disk in drive A and switch on.
+
+On a real MSX with a disk drive, from Disk BASIC:
+  TERRAFNT.BIN is the game as a BASIC binary file. Copy it to any disk
+  (or SD card or hard disk, with Nextor) and type
+        BLOAD"TERRAFNT.BIN",R
+  The disk version needs 32 KB of RAM.
+
+On a real MSX, with a ROM launcher:
+  SofaRun, EXECROM, ODO, LOADROM or the ROM loaders of flash cartridges
+  (Carnivore2, MegaFlashROM SCC+ and others) load TERRAFNT.ROM and start
+  it as if it were a cartridge.
+
+On a real MSX, as a real cartridge:
+  The game is a plain 16 KB ROM at address 4000h, with no mapper: burn
+  it into a 27C128 EPROM (or a 27C256 with the image written twice) on
+  a blank MSX cartridge board.
+
+On a PC, Mac or phone, with an emulator:
+  Any MSX emulator can run it: openMSX, blueMSX, fMSX, WebMSX and
+  others. With openMSX, for example:
+        openmsx -carta terrafnt.rom
+  or, on an emulated MSX with a disk drive:
+        openmsx -machine Philips_NMS_8250 -diska terrafnt.dsk
+
+
+4. CONTROLS
+
+                    KEYBOARD     JOYSTICK (either port)
+  Move ............ Left/Right   Stick left/right
+  Fire ............ Space        Button 1 (A)
+  Call up a ship .. C            Button 2 (B)
+
+Each press of fire shoots one volley; holding it down doesn't keep
+firing. At most two volleys fly at a time.
+
+On the title screen, press the space bar or a joystick's button 1 to
+start a game. Left alone for 20 seconds, the title shows the game
+playing itself for a while; press fire to come back to the title.
+
+
+5. HOW TO PLAY
+
+The front: every ship in it fires at once, one bullet from each nose.
+When a ship is hit by an enemy bullet, or an enemy crashes into it, it
+blows up and leaves a hole in the front.
+
+Reserve ships: they wait in the bottom left corner (four at the start).
+Press C to call one up: it flies in from the side of the screen away
+from the front and joins it on that side. Meanwhile the front can shoot
+but can't move. A front can hold four ships, holes included. When the
+front is wiped out, the next reserve ship comes in by itself. With no
+reserve left, the game is over.
+
+Enemies: they come in waves, flying a loop in pairs. Hit a pair and it
+breaks up: its two enemies fly off alone, bouncing off the top and the
+bottom of the playfield. Shoot them down, or the front will have to
+dodge them. They shoot back, more and faster as the waves go by.
+
+Levels: a level is 10 waves. After waves 5 and 10 of each level comes a
+boss, which takes many hits and rains bullets on the front.
+
+Bonus ship: finish two waves in a row without losing a ship, and a
+reserve ship is added (five at most).
+
+
+6. SCORING
+
+  Breaking up a pair ............ 50
+  Shooting down a lone enemy .... 100
+  An enemy crashing into a ship . 100
+  Destroying a boss ............. 500 bonus
+
+These are for a front of one ship. A bigger front scores less: 80% with
+two ships, 60% with three, 50% with four. The score is at the top right;
+the level and wave at the top left.
+
+Key 1, during a game, skips to the level's next boss. It is there for
+playtesting.

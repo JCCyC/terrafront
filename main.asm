@@ -1,5 +1,5 @@
 ; ---------------------------------------------------------------------------
-; Terra Front - the front (MSX1, 16 KB ROM at 4000h)
+; Terra Front - the front (MSX1, 16 KB ROM at 4000h; or a BIN at 8000h for Disk BASIC)
 ;
 ; SCREEN 2, all black. The top and bottom STATUS_LINES pixel lines are kept
 ; out of the playfield (for the score and the reserve ships). The front, up
@@ -116,12 +116,35 @@
 ; per frame rate), so they're the same in px/s at 50 and 60 Hz.
 ; ---------------------------------------------------------------------------
 
+; ---- Memory map ------------------------------------------------------------
+
+; The ROM sits in page 1 (4000h..7FFFh) with its RAM at E000h. The BIN
+; (sjasmplus -DBIN, BLOADed from Disk BASIC by the disk's AUTOEXEC.BAS) is
+; the same code at 8000h (page 1 holds BASIC there), its RAM at C000h laid
+; out as the ROM's, clear of BASIC's stack (about DB80h, which the game
+; keeps: BIN_STACK_ROOM below it) and the disk ROM's work area (from
+; HIMEM, about DE00h), whose interrupt hook the BIN keeps calling for a
+; while (it turns the drive motor off).
+                ifdef BIN
+CODE_BASE       equ 8000h
+RAM_BASE        equ 0C000h
+BIN_STACK_ROOM  equ 0DB00h-200h     ; the BIN's RAM must end below it
+; The disk ROM's frame interrupt hook turns the drive motor off a few
+; seconds after the BLOAD (Skyfighter measured 4 s on the Expert with an
+; FS-FD1A, 3 s on the NMS 8250), but it costs 1.8k to 3.1k T-states a
+; frame. So the BIN calls it only for the first DISK_HOOK_SECS.
+DISK_HOOK_SECS  equ 10
+                else
+CODE_BASE       equ 4000h
+RAM_BASE        equ 0E000h
+                endif
+
 ; ---- Version ---------------------------------------------------------------
 
-; Stored at 4010h, right after the cartridge header: major, minor (bytes),
-; patch (word, little-endian)
+; Stored at 4010h (BIN: 8010h), right after the cartridge header: major,
+; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
-VERSION_MINOR   equ 1
+VERSION_MINOR   equ 9
 VERSION_PATCH   equ 0
 
 ; ---- Tunables --------------------------------------------------------------
@@ -379,6 +402,7 @@ FILVRM          equ 0056h
 LDIRVM          equ 005Ch
 INIGRP          equ 0072h
 RDPSG           equ 0096h
+H_TIMI          equ 0FD9Fh      ; the frame interrupt's hook (the disk ROM's motor-off count)
 
 RG1SAV          equ 0F3E0h
 CLIKSW          equ 0F3DBh
@@ -394,17 +418,17 @@ GRPPAT          equ 0F3CFh      ; ... and sprite pattern table
 
 ; IM 2: a 257-byte table of IM2_HI at IM2_TABLE, so any data bus value
 ; gives the vector IM2_HI*257, where a jp to isr goes
-IM2_TABLE       equ 0E800h
-IM2_HI          equ 0E9h
+IM2_TABLE       equ RAM_BASE+800h
+IM2_HI          equ IM2_TABLE/256+1
 IM2_JUMP        equ IM2_HI*257
 ; A page of flags, one byte a line: bit 0 a bullet (a volley's or an
 ; enemy's) on it now, bit 1 the middle text's row (move_stars sets them,
 ; from ln_list; bullet_at reads bit 0)
-LN_FLAGS        equ 0E400h
+LN_FLAGS        equ RAM_BASE+400h
 LN_BULLET       equ 1
 LN_MID          equ 2
 LN_MAX          equ (MAX_VOLLEYS+EB_N)*BULLET_H+8
-RES_PICS        equ 0E500h      ; draw_reserves' patterns for 0..RESERVE_MAX ships (make_reserves)
+RES_PICS        equ RAM_BASE+500h   ; draw_reserves' patterns for 0..RESERVE_MAX ships (make_reserves)
 
         struct VOLLEY
 Y               byte            ; the bullets' top line, 0 = not in flight
@@ -432,7 +456,7 @@ Y               byte            ; line
 ON              byte            ; nonzero: drawn in the bitmap at (X, Y)
         ends
 
-        org 0E000h
+        org RAM_BASE
 ram_start:
 rates:                          ; copied from RATES_60 or RATES_50
 fps:            ds 1
@@ -478,8 +502,12 @@ lw_cell:        ds 2            ; level_text: one character to print (0-terminat
 score_digits:   ds SCORE_LEN    ; show_score: the score's cells, ASCII ...
 score_shown:    ds SCORE_LEN+1  ; ... and as they show (0-terminated; the title shows the last game's; 0: none)
 
+        ifdef BIN
+hook_frames:    ds 2            ; isr: frames left of calling H.TIMI (disk_timer)
+        endif
+
 ; From here on, cleared for every new game
-ln_n:           ds 1            ; move_stars: the lines it flagged in LN_FLAGS (unflagged next frame) ...
+ln_n:          ds 1            ; move_stars: the lines it flagged in LN_FLAGS (unflagged next frame) ...
 ln_list:        ds LN_MAX       ; ... (a line may be there twice)
 game_ram:
 lw_shown:       ds LW_LEN       ; level_text: its cells as they show (0: not printed yet)
@@ -614,15 +642,26 @@ reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1
 RAM_SIZE        equ $-ram_start
 GAME_RAM_SIZE   equ $-game_ram
         assert $ <= LN_FLAGS && LN_FLAGS+256 <= RES_PICS && RES_PICS+(RESERVE_MAX+1)*RES_PIC <= IM2_TABLE && (LN_FLAGS & 0FFh) == 0
+        assert (IM2_TABLE & 0FFh) == 0 && IM2_TABLE+257 <= IM2_JUMP
+        ifdef BIN
+        assert IM2_JUMP+3 <= BIN_STACK_ROOM
+        endif
 
 ; ---- Cartridge header -------------------------------------------------------
 
+        ifdef BIN
+        output "terrafnt.bin"
+        org CODE_BASE-7         ; BLOAD header: FEh, start, end, run
+        db 0FEh
+        dw CODE_BASE, code_end-1, init
+        else
         output "terrafnt.rom"
-        org 4000h
-        db "AB"
+        endif
+        org CODE_BASE
+        db "AB"                 ; the BIN keeps the header, for the layout (and test.tcl's cart)
         dw init
         ds 12,0
-        assert $ == 4010h
+        assert $ == CODE_BASE+10h
         db VERSION_MAJOR, VERSION_MINOR
         dw VERSION_PATCH
 
@@ -664,6 +703,14 @@ init:
 .hz60:  ld de,rates
         ld bc,RATES_SIZE
         ldir
+        ifdef BIN
+        ld hl,DISK_HOOK_SECS*60
+        ld a,(fps)
+        cp 60
+        jr z,.hook
+        ld hl,DISK_HOOK_SECS*50
+.hook:  ld (hook_frames),hl
+        endif
 
         di
         ld hl,IM2_TABLE
@@ -816,12 +863,54 @@ main_loop:
 ; The frame interrupt: reading the VDP's status acknowledges it
 isr:    push af
         in a,(VDP_ADDR)
+        ifdef BIN
+        call disk_timer
+        endif
         ld a,(frames)
         inc a
         ld (frames),a
         pop af
         ei
         reti
+
+        ifdef BIN
+; The BIN's frame interrupt also calls H.TIMI (A = the VDP status), as the
+; BIOS's handler would, for the first DISK_HOOK_SECS (hook_frames): the
+; disk ROM hooks it to turn the drive motor off after the BLOAD. Every
+; register is kept, as the BIOS keeps them.
+disk_timer:
+        push hl
+        ld hl,(hook_frames)
+        dec hl
+        bit 7,h
+        jr nz,.done             ; (it stays 0)
+        ld (hook_frames),hl
+        push de
+        push bc
+        push ix
+        push iy
+        exx
+        ex af,af'
+        push hl
+        push de
+        push bc
+        push af
+        ex af,af'
+        call H_TIMI
+        ex af,af'
+        pop af
+        pop bc
+        pop de
+        pop hl
+        ex af,af'
+        exx
+        pop iy
+        pop ix
+        pop bc
+        pop de
+.done:  pop hl
+        ret
+        endif
 
 ; ---- Splash ----------------------------------------------------------------
 
@@ -5427,5 +5516,10 @@ ROW_MASKS:      db 1, 3, 7, 6, 4    ; eb_masks: another bullet's top E-2..E+2: t
         include "build/title.inc"
         include "build/font.inc"
 
+code_end:
+        ifdef BIN
+        assert $ <= RAM_BASE
+        else
         assert $ <= 8000h
         ds 8000h-$,0FFh         ; a 16 KB ROM
+        endif

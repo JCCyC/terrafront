@@ -1,5 +1,7 @@
 # Headless check of the front. Env: LOGFILE, SYMFILE, SHOT (and SHOT with
-# -call before .png: a call-up in flight).
+# -call before .png: a call-up in flight), IMAGE (the game's file, under
+# SYMFILE's project dir: terrafnt.rom, the default, or the disk's
+# terrafnt.bin, with SYMFILE build/terrafnt-bin.sym).
 # Driven by a breakpoint at main_loop (once a frame, before its halt: the
 # frame's work is done, VRAM holds the previous frame's SAT).
 after time 600 { fail "timeout" ; finish }
@@ -28,8 +30,9 @@ close $f
 proc m {name {ofs 0}} { debug read memory [expr {$::sym($name) + $ofs}] }
 # Breakpoints go by address, not slot: while the BIOS boots, page 1 holds
 # MSX BASIC's ROM, whose code can pass the game's addresses. cart_bp's
-# body runs only when page 1 holds this cartridge ("AB" at 4000h).
-proc cart {} { expr {[debug read memory 0x4000] == 0x41 && [debug read memory 0x4001] == 0x42} }
+# body runs only when the game is there ("AB" at CODE_BASE: 4000h, the
+# cartridge in page 1; the BIN: 8000h, BLOADed into page 2's RAM).
+proc cart {} { expr {[debug read memory $::sym(CODE_BASE)] == 0x41 && [debug read memory [expr {$::sym(CODE_BASE) + 1}]] == 0x42} }
 proc cart_bp {addr cond body} { debug set_bp $addr $cond [list if {[cart]} $body] }
 proc rem {} { expr {[m call_rem] + 256*[m call_rem 1]} }
 proc sat {i} { debug read VRAM [expr {0x1B00 + $i}] }
@@ -1089,14 +1092,17 @@ set BROW $sym(BLINK_ROW)
 # the text, from the ROM, centred on BLINK_ROW in font.py's glyphs (rows
 # on the cell's lines 0..5, 6..7 blank), white on black: TITLE_ON; its
 # cells' colours black instead: TITLE_OFF
-set f [open $ROOT/terrafnt.rom rb] ; set rom [read $f] ; close $f
-set a [expr {$sym(PRESS_TEXT) - 0x4000}]
+# the game's file, as the machine runs it from CODE_BASE on (the BIN after
+# its BLOAD header)
+set f [open $ROOT/[expr {[info exists ::env(IMAGE)] ? $::env(IMAGE) : "terrafnt.rom"}] rb] ; set rom [read $f] ; close $f
+if {[string index $rom 0] eq "\xFE"} { set rom [string range $rom 7 end] }
+set a [expr {$sym(PRESS_TEXT) - $sym(CODE_BASE)}]
 set PRESS [string range $rom $a [expr {[string first "\0" $rom $a] - 1}]]
 check {$PRESS eq "PRESS SPACE OR FIRE TO BEGIN"} "splash: the text is \"$PRESS\""
 check {[lrange $FONT 0 5] eq {00 00 00 00 00 00} && [lsearch -not $FONT 00] >= 0} "font: the space glyph is blank (ink is the PNG's black), others aren't"
 # the credit and the URL above it, centred on their rows, never blinking
 proc rom_text {name} {
-	set a [expr {$::sym($name) - 0x4000}]
+	set a [expr {$::sym($name) - $::sym(CODE_BASE)}]
 	string range $::rom $a [expr {[string first "\0" $::rom $a] - 1}]
 }
 set CREDIT [rom_text CREDIT_TEXT]
@@ -2711,7 +2717,7 @@ proc eb_end {} {
 # reserves, the front killed: GAME OVER; a press of joystick 1's button A
 # (2) or space (3) seen exactly at 3 s: the title at once. Then a fourth
 # game, for the screenshot.
-set a [expr {$sym(OVER_TEXT) - 0x4000}]
+set a [expr {$sym(OVER_TEXT) - $sym(CODE_BASE)}]
 set OVER [string range $rom $a [expr {[string first "\0" $rom $a] - 1}]]
 check {$OVER eq "GAME OVER"} "game over: the text is \"$OVER\""
 # The screen's middle row (OVER_ROW, in the playfield): the text centred in
