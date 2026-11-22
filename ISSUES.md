@@ -35,3 +35,19 @@ Expert runs of commit dd69824). The crashes seen were near the test's
 screenshots, and with extra breakpoints in the wave-begin code.
 
 **Decision:** pending. Rerun the machine for now.
+
+## Code space: the ROM and the BIN are nearly full
+
+Found 2026-11-22 (high scores, 0.9.2). The 16 KB ROM has 715 bytes free
+(`code_end` 7D35h); the BIN, the same code plus the disk code
+(`hsc_*`, `bdos`, `disk_timer`), ends at BF00h, 256 bytes under its RAM
+at C000h (`assert $ <= RAM_BASE`). So the BIN runs out first.
+
+Plan, when a step doesn't fit: first the BIN's RAM up (`RAM_BASE` CF00h:
+its IM 2 jump at D8D8h stays under `BIN_STACK_ROOM`, D900h; the BIN's
+code may then reach CF00h, 19.75 KB); then, for the ROM, a plain 32 KB
+cartridge (4000h..BFFFh, page 2 enabled at `init` with ENASLT, as
+HARD-EARNED-EXPERIENCE.md says; its RAM at E000h stays). Past about
+19.75 KB the BIN needs another layout (part of it in page 1's RAM).
+
+**Decision:** pending (the user's): act when a step needs it.

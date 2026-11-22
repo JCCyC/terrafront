@@ -150,7 +150,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 1
+VERSION_PATCH   equ 2
 
 ; ---- Tunables --------------------------------------------------------------
 
@@ -241,7 +241,23 @@ EGG_KEY_STEP    equ 3Bh
 LICENSE_LEN     equ 32              ; each line, space-padded
 LICENSE_TAPS    equ 3
 LICENSE_ROW     equ 21
-WAVE_DELAY_MS   equ 700         ; a wave's last enemy gone: the next one begins this much later
+;
+; High scores (U-boat Killer's): HI_COUNT records, best first (HI_DEFAULTS
+; at power-on; the disk version keeps them in TERRAFNT.HSC). A game's score
+; enters if it beats one (a tie goes under the older score): at game over's
+; end the initials are entered (enter_initials) on the list. The title
+; shows the best on HISC_ROW and the row under it, right-justified (in the
+; blank space at the logo's lower right); TITLE_WAIT_MS on, the list
+; shows for HI_LIST_MS, then attract mode.
+HI_COUNT        equ 10
+HI_LIST_MS      equ 7000        ; the list on the title's turn
+HI_ROW          equ 6           ; the list's heading: its character row, centred ...
+HI_LIST_ROW     equ 8           ; ... and the records' first row, from column HI_COL
+HI_REPEAT_DELAY_MS equ 400      ; initials: a direction held picks the next letter this much later ...
+HI_REPEAT_MS    equ 100         ; ... then one every this much
+HI_DONE_MS      equ 1000        ; ... the entry done: the list stays this long
+HISC_ROW        equ 17          ; the title's "HI SCORE"; the best score on the row under it
+WAVE_DELAY_MS   equ 700        ; a wave's last enemy gone: the next one begins this much later
 GAME_OVER_MS    equ 10000       ; GAME OVER shows this long, the game running on, then the title
 OVER_SKIP_MS    equ 3000        ; ... a press of fire from this much on: the title at once
 TITLE_WAIT_MS   equ 20000       ; the title this long with no start: attract mode ...
@@ -424,6 +440,9 @@ IN_FIRE         equ 10h
 IN_CALL         equ 80h
 IN_BOSS         equ 01h         ; the cheat key 1 (CHEAT_KEYS)
 IN_EGG          equ 40h         ; Ctrl-V, both down (read in attract mode only)
+ENT_UP          equ 01h         ; the initials' entry (ent_dirs): up, straight ...
+ENT_DOWN        equ 02h         ; ... down, straight (and IN_LEFT, IN_RIGHT) ...
+ENT_TRIG        equ 10h         ; ... space or a joystick's button
 
 ; ---- Hardware and BIOS -----------------------------------------------------
 
@@ -499,6 +518,39 @@ LN_MID          equ 2
 LN_MAX          equ (MAX_VOLLEYS+EB_N)*BULLET_H+8
 RES_PICS        equ RAM_BASE+500h   ; draw_reserves' patterns for 0..RESERVE_MAX ships (make_reserves)
 
+; A high score record: the score (4 BCD bytes, the lowest two digits
+; first, as score), then three letters (A..Z or spaces)
+HI_SIZE         equ 7
+HI_NAME         equ 4
+HI_ROW_LEN      equ 16              ; a line of the list: " 1. LTR     5000"
+HI_COL          equ (32-HI_ROW_LEN)/2
+        ifdef BIN
+; TERRAFNT.HSC on the default drive: hi_table, then a check byte (HSC_KEY
+; plus the table's bytes), all XORed with HSC_XOR + HSC_XOR_STEP * index so
+; the scores don't show in a dump. Through Disk BASIC's BDOS entry, FCB
+; functions (U-boat Killer's UBKILLER.HSC)
+HSC_SIZE        equ HI_COUNT*HI_SIZE+1
+HSC_KEY         equ 6Bh
+HSC_XOR         equ 0C5h
+HSC_XOR_STEP    equ 2Fh
+BDOS            equ 0F37Dh      ; C = function
+DISKVE          equ 0F323h      ; -> a word with the disk error handler's address
+BREAKV          equ 0F325h      ; -> a word with the abort routine's address (DOS 2's abort)
+DOS1_ABORT      equ 0F1E6h      ; DOS 1 aborts a disk error with "jp (DOS1_ABORT)"
+H_PHYD          equ 0FFA7h      ; RET (C9h) when there's no disk ROM
+F_OPEN          equ 0Fh
+F_CLOSE         equ 10h
+F_CREATE        equ 16h         ; an existing file is emptied
+F_SETDTA        equ 1Ah
+F_WRBLK         equ 26h         ; random block write, HL records
+F_RDBLK         equ 27h         ; random block read, HL records
+F_DOSVER        equ 6Fh         ; -> B = 2 or more under DOS 2 (DOS 1 leaves B)
+FCB_RECSIZE     equ 14          ; word
+FCB_FILESIZE    equ 16          ; 32 bits
+FCB_RANDOM      equ 33          ; 32 bits
+FCB_LEN         equ 37
+        endif
+
         struct VOLLEY
 Y               byte            ; the bullets' top line, 0 = not in flight
 X               block FRONT_MAX ; each front slot's bullet's column, 0 = none
@@ -559,6 +611,10 @@ boss_whole:     ds 1            ; BOSS_SPEED / fps
 boss_frac:      ds 1
 bonus_frames:   ds 1            ; frames the bonus text shows
 egg_frames:     ds 2            ; frames the egg shows
+list_frames:    ds 2            ; frames the high score list shows on the title's turn
+rep_delay:      ds 1            ; initials: frames a direction is held before it repeats ...
+rep_frames:     ds 1            ; ... and between repeats
+done_frames:    ds 1            ; ... the entry done: frames the list stays
 RATES_SIZE      equ $-rates
 frames:         ds 1            ; +1 every frame interrupt
 entropy:        ds 2            ; the splash's key press and release times, mixed; never 0 once a key moved
@@ -571,7 +627,15 @@ vp_n2:          ds 1            ; ... its lines in the next cell row
 lw_cell:        ds 2            ; level_text: one character to print (0-terminated)
 score_digits:   ds SCORE_LEN    ; show_score: the score's cells, ASCII ...
 score_shown:    ds SCORE_LEN+1  ; ... and as they show (0-terminated; the title shows the last game's; 0: none)
-egg_now:        ds 1            ; nonzero: the title opens with the egg up (attract mode's Ctrl-V)
+egg_now:        ds 1            ; nonzero: the title opens with the egg up (attract mode's or the list's Ctrl-V)
+hi_table:       ds HI_COUNT*HI_SIZE ; the high scores, best first (ties: the older above)
+        ifdef BIN
+has_disk:       ds 1            ; nonzero: a disk ROM (the scores are saved)
+disk_sp:        ds 2            ; SP inside bdos, for disk_abort
+disk_err_stub:  ds 3            ; "ld c,2 / ret": a disk error picks Abort ...
+disk_err_vec:   ds 2            ; ... -> disk_err_stub; DISKVE points here
+disk_abort_vec: ds 2            ; -> disk_abort; BREAKV points here
+        endif
 
         ifdef BIN
 hook_frames:    ds 2            ; isr: frames left of calling H.TIMI (disk_timer)
@@ -679,6 +743,14 @@ psg_io:         ds 1            ; mixer bits 6..7 as the BIOS set them
 sat_w:          ds 2            ; GRPATR with the VDP's write bit
 key_state:      ds KEY_ROWS+2   ; the splash's last poll: keyboard rows 0.., joysticks 1 and 2 (R14)
 key_prev:       ds KEY_ROWS+2   ; ... and the one before
+list_left:      ds 2            ; the title: frames left of the high score list, 0 = not up
+ent_rec:        ds 2            ; initials: the new record ...
+ent_row:        ds 1            ; ... its rank (0..HI_COUNT-1)
+ent_pos:        ds 1            ; ... the slot being entered (3: all three in)
+ent_letter:     ds 1            ; ... the letter picked for it (0: none)
+ent_held:       ds 1            ; ... ent_dirs last frame
+ent_lr:         ds 1            ; ... left and right held (ent_dirs' bits) last frame
+ent_count:      ds 1            ; ... frames to the next repeat (0: none)
 frames_seen:    ds 1            ; frames the splash has seen (one at a time)
 egg_left:       ds 2            ; the title: frames left of the egg, 0 = not up
 lic_state:      ds 1            ; ... the license: 0 not up, 1 up (keys held), 2 up, all released since
@@ -720,7 +792,13 @@ GAME_RAM_SIZE   equ $-game_ram
         assert (IM2_TABLE & 0FFh) == 0 && IM2_TABLE+257 <= IM2_JUMP
         ifdef BIN
         assert IM2_JUMP+3 <= BIN_STACK_ROOM
+; The file's FCB and bytes, while no game runs (at power-on, and when its
+; initials are in): in rot_rows
+hsc_fcb         equ rot_rows
+hsc_buf         equ rot_rows+FCB_LEN
+        assert FCB_LEN+HSC_SIZE <= 8*16
         endif
+        assert key_prev == key_state+KEY_ROWS+2   ; (ent_key)
 
 ; ---- Cartridge header -------------------------------------------------------
 
@@ -788,13 +866,12 @@ init:
         ld bc,RATES_SIZE
         ldir
         ifdef BIN
-        ld hl,DISK_HOOK_SECS*60
-        ld a,(fps)
-        cp 60
-        jr z,.hook
-        ld hl,DISK_HOOK_SECS*50
-.hook:  ld (hook_frames),hl
+        call hook_arm
         endif
+        ld hl,HI_DEFAULTS
+        ld de,hi_table
+        ld bc,HI_COUNT*HI_SIZE
+        ldir
 
         di
         ld hl,IM2_TABLE
@@ -810,9 +887,13 @@ init:
         ld i,a
         im 2
         ei
+        ifdef BIN
+        call hsc_load           ; (with IM 2 set up: bdos goes back to it)
+        endif
         jr new_game
 
-; Game over's end: back to the title, the game's RAM as at power-on
+; Game over's end: back to the title, the game's RAM as at power-on; first,
+; if the score made the high score table, the initials (not attract mode's)
 restart:
         call show_score         ; (score_shown: the game's last score, for the title; not attract mode's)
         call display_off
@@ -820,6 +901,9 @@ restart:
         call vdp_write
         ld a,SPR_END
         out (VDP_DATA),a
+        ld a,(attract)
+        or a
+        call z,hi_enter
         ld hl,game_ram
         ld de,game_ram+1
         ld bc,GAME_RAM_SIZE-1
@@ -994,6 +1078,17 @@ disk_timer:
         pop de
 .done:  pop hl
         ret
+
+; disk_timer calls H.TIMI for DISK_HOOK_SECS from now (after the BLOAD,
+; and after the high score file's every use: the drive motor goes off)
+hook_arm:
+        ld hl,DISK_HOOK_SECS*60
+        ld a,(fps)
+        cp 60
+        jr z,.hook
+        ld hl,DISK_HOOK_SECS*50
+.hook:  ld (hook_frames),hl
+        ret
         endif
 
 ; ---- Splash ----------------------------------------------------------------
@@ -1018,16 +1113,9 @@ splash:
         call print_text
         ld hl,score_shown       ; ... and score, right-aligned (none at power-on)
         ld de,SCORE_ROW*256+SCORE_COL*8
-.lead:  ld a,(hl)
-        cp ' '                  ; (the leading blanks not printed: the picture stays)
-        jr nz,.score
-        inc hl
-        ld a,e
-        add a,8
-        ld e,a
-        jr .lead
-.score: call print_text
-        ld a,(egg_now)          ; attract mode's Ctrl-V: the egg up from the start
+        call print_lead
+        call show_hi
+        ld a,(egg_now)          ; attract mode's (or the list's) Ctrl-V: the egg up from the start
         or a
         jr z,.text
         xor a
@@ -1047,15 +1135,20 @@ splash:
         call poll_inputs
         ld a,(lic_state)
         or a
-        jr nz,.lic
+        jp nz,.lic
         ld a,(key_state+KEY_ROW_CTRL)
         and KEY_CTRL
         jr z,.ctrl
         xor a
         ld (lic_taps),a         ; CTRL up: the license's taps start over
 .ctrl:  call egg_pressed
-        call nz,show_egg        ; (or a tap towards the license)
-        ld a,(lic_state)
+        jr z,.noegg
+        ld hl,(list_left)
+        ld a,h
+        or l
+        jp nz,.legg             ; the high score list up: the title, with the egg
+        call show_egg           ; (or a tap towards the license)
+.noegg: ld a,(lic_state)
         or a
         jr nz,.frame            ; the license just came
         ld hl,key_prev+KEY_ROW  ; space: down now, up before
@@ -1091,6 +1184,10 @@ splash:
 .blink: ld a,(lic_state)
         or a
         jr nz,.poll             ; the license up: no blink, no count
+        ld hl,(list_left)
+        ld a,h
+        or l
+        jr nz,.list
         ld hl,(egg_left)
         ld a,h
         or l
@@ -1108,7 +1205,19 @@ splash:
         ld a,h
         or l
         jp nz,.poll
+        call show_list          ; the title's time over: the high score list
+        jp .poll
+.list:  dec hl                  ; its time over: attract mode
+        ld (list_left),hl
+        ld a,h
+        or l
+        jp nz,.poll
         jr .attract
+.legg:  ld (egg_now),a          ; (nonzero)
+        ld hl,0
+        ld (list_left),hl
+        call display_off
+        jp splash
 ; the license up: once all keys and buttons were released, a press of any
 ; takes it away (and starts nothing: it's held at the next poll)
 .lic:   call any_input
@@ -1124,24 +1233,31 @@ splash:
         inc a                   ; left alone: attract mode
         ld (attract),a
         call display_off
-        ld hl,(GRPCGP)          ; the tables cleared from row 1 on (the top row stays)
-        inc h
-        ld bc,23*256
-        xor a
-        call FILVRM
-        ld hl,(GRPCOL)
-        inc h
-        ld bc,23*256
-        ld a,BG_COLOR*16+BG_COLOR
-        jp FILVRM
-        assert LW_ROW == 0 && SCORE_ROW == 0
+        jp clear_below
 .go:    call display_off
-        ld hl,(GRPCGP)
+        ; fall through
+
+; SCREEN 2's tables cleared, all black: all of them (clear_all), or from
+; character row 1 on (clear_below: the top status row stays)
+clear_all:
+        ld hl,0
         ld bc,24*256
+        jr clear_rows
+clear_below:
+        ld hl,256
+        ld bc,23*256
+        assert LW_ROW == 0 && SCORE_ROW == 0
+clear_rows:
+        push hl
+        push bc
+        ld de,(GRPCGP)
+        add hl,de
         xor a
         call FILVRM
-        ld hl,(GRPCOL)
-        ld bc,24*256
+        pop bc
+        pop hl
+        ld de,(GRPCOL)
+        add hl,de
         ld a,BG_COLOR*16+BG_COLOR
         jp FILVRM
 
@@ -1400,18 +1516,8 @@ put_dec:
 ; One frame of the splash's blinking text: after blink_on frames shown,
 ; its cells' colours go all black for blink_off frames, then white again
 blink:
-        ld hl,blink_left
-        dec (hl)
+        call blink_tick
         ret nz
-        ld a,(blink_shown)
-        xor 1
-        ld (blink_shown),a
-        ld c,TEXT_COLOR*16+BG_COLOR
-        ld a,(blink_on)
-        jr nz,.set
-        ld c,BG_COLOR*16+BG_COLOR
-        ld a,(blink_off)
-.set:   ld (hl),a
 ; "PRESS SPACE OR FIRE TO BEGIN", centred on BLINK_ROW, in colour C
 print_press:
         ld hl,PRESS_TEXT
@@ -4842,24 +4948,8 @@ show_score:
         ld (score_dirty),a
         ld hl,score+3
         ld de,score_digits
-        ld bc,4*256+0           ; C nonzero: a digit written
-.byte:  ld a,(hl)
-        rrca
-        rrca
-        rrca
-        rrca
-        call .dig
-        ld a,(hl)
-        call .dig
-        dec hl
-        djnz .byte
-        dec de
-        ld a,(de)
-        cp ' '
-        jr nz,.cmp
-        ld a,'0'                ; 0: one digit
-        ld (de),a
-.cmp:   ld hl,score_digits
+        call bcd8
+        ld hl,score_digits
         ld de,SCORE_ROW*256+SCORE_COL*8
         ld b,SCORE_LEN
 .c:     ld a,(hl)
@@ -4883,6 +4973,29 @@ show_score:
         pop hl
         inc hl
         djnz .c
+        ret
+
+; An 8-digit BCD number (4 bytes, HL = its highest) as 8 characters at
+; DE, right-aligned, no leading zeros (0: "0"); DE past them
+bcd8:
+        ld bc,4*256+0           ; C nonzero: a digit written
+.byte:  ld a,(hl)
+        rrca
+        rrca
+        rrca
+        rrca
+        call .dig
+        ld a,(hl)
+        call .dig
+        dec hl
+        djnz .byte
+        dec de
+        ld a,(de)
+        cp ' '
+        jr nz,.end
+        ld a,'0'                ; 0: one digit
+        ld (de),a
+.end:   inc de
         ret
 ; digit A (low nibble) at DE, a space if a leading zero
 .dig:   and 0Fh
@@ -5807,6 +5920,741 @@ boom_sfx:
         assert death_mix == death_ptr+2 && brk_mix == brk_ptr+2
         assert PSG_TONE_B == 2 && PSG_VOL_B == PSG_VOL_A+1 && PSG_VOL_C == PSG_VOL_A+2
 
+; ---- High scores -----------------------------------------------------------
+
+; One frame of a blink (blink_on frames shown, then blink_off hidden): NZ,
+; no change; Z, it turned: blink_shown nonzero if shown now, C = the
+; text's colour byte then (white, or all black)
+blink_tick:
+        ld hl,blink_left
+        dec (hl)
+        ret nz
+        ld a,(blink_shown)
+        xor 1
+        ld (blink_shown),a
+        ld c,TEXT_COLOR*16+BG_COLOR
+        ld a,(blink_on)
+        jr nz,.set
+        ld c,BG_COLOR*16+BG_COLOR
+        ld a,(blink_off)
+.set:   ld (hl),a
+        xor a
+        ret
+
+; Text HL from cell DE on, in colour C, its leading blanks not printed
+; (the picture under them stays)
+print_lead:
+        ld a,(hl)
+        cp ' '
+        jp nz,print_text
+        inc hl
+        ld a,e
+        add a,8
+        ld e,a
+        jr print_lead
+
+; The title's best score: "HI SCORE" on HISC_ROW and the table's first
+; score on the row under it, both right-justified, white
+show_hi:
+        ld hl,HISC_TEXT
+        ld de,HISC_ROW*256+(32-HISC_LEN)*8
+        ld c,TEXT_COLOR*16+BG_COLOR
+        call print_text
+        ld hl,hi_table+3
+        ld de,egg_buf
+        call bcd8
+        xor a
+        ld (de),a
+        ld hl,egg_buf
+        ld de,(HISC_ROW+1)*256+(32-8)*8
+        ld c,TEXT_COLOR*16+BG_COLOR
+        jr print_lead
+
+; The title's time over: the high score list for list_frames in place of
+; the picture (the top status row stays); the egg, if up, gone
+show_list:
+        ld hl,(list_frames)
+        ld (list_left),hl
+        ld hl,0
+        ld (egg_left),hl
+        call display_off
+        call clear_below
+        ld hl,HI_HEAD
+        ld de,HI_ROW*256+(32-HI_HEAD_LEN)/2*8
+        call draw_list
+        jp display_on
+
+; Heading HL on cell DE, then the table's lines under it
+draw_list:
+        ld c,TEXT_COLOR*16+BG_COLOR
+        call print_text
+        xor a
+.row:   push af
+        call hi_row
+        pop af
+        inc a
+        cp HI_COUNT
+        jr c,.row
+        ret
+
+; A = a rank: its line of the list, " 1. LTR     5000" (the rank, the
+; initials, the score right-aligned), on row HI_LIST_ROW + A from column
+; HI_COL, white
+hi_row:
+        call hi_line
+; ... egg_buf at cell DE
+hi_print:
+        ld hl,egg_buf
+        ld c,TEXT_COLOR*16+BG_COLOR
+        jp print_text
+; ... the line in egg_buf (0-terminated); DE = its first cell
+hi_line:
+        push af
+        call hi_rec
+        push hl
+        inc hl
+        inc hl
+        inc hl
+        ld de,egg_buf+HI_ROW_LEN-8
+        call bcd8
+        xor a
+        ld (de),a
+        pop hl
+        ld de,HI_NAME
+        add hl,de
+        ld de,egg_buf+4
+        ld bc,3
+        ldir
+        ld hl,'.'+' '*256
+        ld (egg_buf+2),hl
+        ld a,' '
+        ld (egg_buf+7),a
+        pop af
+        push af
+        inc a                   ; 1..HI_COUNT
+        ld c,' '
+        cp 10
+        jr c,.one
+        ld c,'1'
+        sub 10
+.one:   add a,'0'
+        ld b,a
+        ld (egg_buf),bc         ; (C, then B)
+        pop af
+        add a,HI_LIST_ROW
+        ld d,a
+        ld e,HI_COL*8
+        ret
+        assert HI_COUNT < 20 && HI_ROW_LEN == 16 && HI_NAME == 4 && HI_LIST_ROW+HI_COUNT <= 24
+
+; HL = hi_table's record A. Keeps A.
+hi_rec:
+        ld l,a
+        add a,a
+        add a,a
+        add a,a
+        sub l                   ; 7 * A
+        ld e,a
+        ld d,0
+        ld a,l
+        ld hl,hi_table
+        add hl,de
+        ret
+        assert HI_SIZE == 7 && HI_COUNT*HI_SIZE < 256
+
+; A = the score's rank in the table (0 the best; HI_COUNT: it beats none),
+; HL = that record: the first whose score is under it (a tie: under the
+; older score)
+hi_rank:
+        ld hl,hi_table
+        ld b,0
+.rec:   push hl
+        inc hl
+        inc hl
+        inc hl
+        ld de,score+3
+        ld c,4
+.cmp:   ld a,(de)
+        cp (hl)
+        jr nz,.diff
+        dec hl
+        dec de
+        dec c
+        jr nz,.cmp
+        jr .next                ; a tie: under it
+.diff:  jr nc,.found            ; above it
+.next:  pop hl
+        ld de,HI_SIZE
+        add hl,de
+        inc b
+        ld a,b
+        cp HI_COUNT
+        jr c,.rec
+        ret
+.found: pop hl
+        ld a,b
+        ret
+
+; Game over's end (display off, no sprites): if the score beats a record,
+; it goes in the table there (the ones under it a place down, the last
+; gone), and its initials are entered
+hi_enter:
+        call hi_rank
+        cp HI_COUNT
+        ret nc
+        ld (ent_rec),hl
+        ld (ent_row),a
+        ld b,a
+        ld a,HI_COUNT-1
+        sub b                   ; records to move down
+        jr z,.put
+        ld c,a
+        add a,a
+        add a,a
+        add a,a
+        sub c                   ; their bytes
+        ld c,a
+        ld b,0
+        ld hl,hi_table+(HI_COUNT-1)*HI_SIZE-1
+        ld de,hi_table+HI_COUNT*HI_SIZE-1
+        lddr
+.put:   ld de,(ent_rec)
+        ld hl,score
+        ld bc,4
+        ldir
+        ld a,'_'
+        ld b,3
+.name:  ld (de),a
+        inc de
+        djnz .name
+        ; fall through
+
+; The new record's initials (ent_rec, rank ent_row), on the list under
+; "ENTER YOUR INITIALS" (the top status row stays): a letter typed (A..Z)
+; goes in its slot, BS (or down) takes the last one back; or left / right
+; (the arrows or either joystick; held, it repeats) picks a letter, and
+; space or either joystick's button takes it. The letter picked blinks in
+; its slot; after a third typed, a blinking cursor in a fourth place.
+; RETURN (or up) ends it once there's a letter (the slots left empty
+; become spaces); the third taken by space or a button ends it too. Up
+; and down count straight only. What's held as it begins counts once
+; released. Then the list stays for done_frames (the disk version saves
+; the table meanwhile), and the display goes off.
+enter_initials:
+        call clear_below
+        ld hl,ENTRY_HEAD
+        ld de,HI_ROW*256+(32-ENTRY_HEAD_LEN)/2*8
+        call draw_list
+        call display_on
+        call poll_inputs        ; (what's held now: not a press)
+        call ent_dirs
+        ld (ent_held),a
+        and IN_LEFT|IN_RIGHT
+        ld (ent_lr),a
+        xor a
+        ld (ent_count),a        ; (held from the start: no repeat)
+        ld (ent_pos),a
+        ld (ent_letter),a       ; none picked yet
+        call new_letter
+.frame: halt
+        call blink_tick
+        call z,show_entry
+        call poll_inputs
+        call ent_key
+        or a
+        jr z,.trig
+        cp 8
+        jr z,.bs
+        cp 13
+        jr z,.enter
+        ld c,a
+        ld a,(ent_pos)
+        cp 3
+        jr nc,.frame            ; all three in: only BS or RETURN
+        ld a,c
+        call put_letter
+        jr .frame
+.bs:    ld a,(ent_pos)
+        or a
+        jr z,.frame
+        cp 3
+        jr nc,.bs3
+        call ent_slot
+        ld (hl),'_'
+.bs3:   dec a
+        ld (ent_pos),a
+        call ent_slot
+        ld a,(hl)               ; the letter taken back: picked
+        ld (ent_letter),a
+        call new_letter         ; (the cursor gone too)
+        jr .frame
+.enter: ld a,(ent_pos)
+        or a
+        jr z,.frame             ; no letter yet
+.blank: cp 3
+        jr nc,.shown
+        call ent_slot
+        ld (hl),' '
+        inc a
+        ld (ent_pos),a
+        jr .blank
+.shown: ld a,(ent_row)
+        call hi_row
+        jp .done
+.trig:  call ent_dirs
+        ld hl,ent_held
+        ld b,(hl)
+        ld (hl),a
+        ld c,a                  ; held now
+        ld a,b
+        cpl
+        and c
+        ld e,a                  ; just pressed
+        and ENT_TRIG
+        jr z,.updown
+        ld a,(ent_pos)
+        cp 3
+        jr nc,.updown
+        ld a,(ent_letter)
+        or a
+        jr z,.updown            ; none picked yet
+        call put_letter
+        ld a,(ent_pos)
+        cp 3
+        jr z,.enter             ; the third taken by a button: done
+        jp .frame
+.updown:
+        bit 0,e                 ; ENT_UP
+        jr nz,.enter
+        bit 1,e                 ; ENT_DOWN
+        jr nz,.bs
+        ld a,c
+        and IN_LEFT|IN_RIGHT
+        ld hl,ent_lr
+        cp (hl)
+        ld (hl),a
+        jr nz,.turn
+        ld hl,ent_count
+        ld a,(hl)
+        or a
+        jp z,.frame             ; held from the start: no repeat
+        dec (hl)
+        jp nz,.frame
+        ld a,(rep_frames)
+        ld (hl),a
+        jr .step
+.turn:  ld a,(rep_delay)
+        ld (ent_count),a
+.step:  ld a,(ent_pos)
+        cp 3
+        jp nc,.frame            ; no letter to pick
+        ld a,(ent_lr)
+        ld hl,ent_letter
+        cp IN_RIGHT
+        jr z,.right
+        cp IN_LEFT
+        jp nz,.frame            ; neither, or both
+        ld a,(hl)
+        cp 'A'+1                ; A or none: to Z
+        jr nc,.left
+        ld a,'Z'+1
+.left:  dec a
+        jr .set
+.right: ld a,(hl)
+        inc a
+        cp 'Z'+1
+        jr nc,.wrap             ; past Z: to A
+        cp 'A'
+        jr nc,.set
+.wrap:  ld a,'A'                ; none: A
+.set:   ld (hl),a
+        call new_letter
+        jp .frame
+.done:
+        ifdef BIN
+        call hsc_save           ; (the list shows meanwhile)
+        endif
+        ld a,(done_frames)
+        ld b,a
+.hold:  halt
+        djnz .hold
+        jp display_off
+        assert ENT_UP == 1 && ENT_DOWN == 2
+
+; Letter A taken into slot ent_pos; the next slot, with none picked (after
+; the third: the cursor)
+put_letter:
+        call ent_slot
+        ld (hl),a
+        ld hl,ent_pos
+        inc (hl)
+        xor a
+        ld (ent_letter),a
+        ; fall through
+; A new letter picked (or a new slot): shown at once, then blinking
+new_letter:
+        ld a,(blink_on)
+        ld (blink_left),a
+        ld a,1
+        ld (blink_shown),a
+        ; fall through
+; Slot ent_pos shows ent_letter ("_" if none is picked), or nothing in the
+; blink's hidden phase; after the third letter, the cursor "_" in a fourth
+; place, blinking
+show_entry:
+        ld a,(ent_pos)
+        cp 3
+        jr nc,.cursor
+        ld a,(ent_letter)
+        or a
+        jr nz,.letter
+        ld a,'_'
+.letter:
+        ld c,a
+        ld a,(blink_shown)
+        or a
+        ld a,' '
+        jr z,.put
+        ld a,c
+.put:   call ent_slot
+        ld (hl),a
+        ld a,(ent_row)
+        jp hi_row
+.cursor:
+        ld a,(ent_row)
+        call hi_line
+        ld a,(blink_shown)
+        or a
+        ld a,' '
+        jr z,.c
+        ld a,'_'
+.c:     ld (egg_buf+HI_NAME+3),a
+        jp hi_print
+
+; HL = slot ent_pos of the new record's initials. Keeps AF.
+ent_slot:
+        push af
+        ld hl,(ent_rec)
+        ld a,(ent_pos)
+        add a,HI_NAME
+        add a,l
+        ld l,a
+        adc a,h
+        sub l
+        ld h,a
+        pop af
+        ret
+
+; A = a key just pressed (down at the last poll, up at the one before):
+; 'A'..'Z', 8 (BS) or 13 (RETURN), else 0; the first found
+ent_key:
+        ld ix,key_state+2
+        ld c,'A'-6              ; row 2 bit 0's letter (row 2: only A and B, bits 6 and 7)
+        ld b,4                  ; rows 2..5
+        ld a,0C0h
+.row:   ld e,a                  ; the row's letter bits
+        ld a,(ix+0)
+        cpl
+        and (ix+KEY_ROWS+2)
+        and e
+        jr nz,.bit
+        inc ix
+        ld a,c
+        add a,8
+        ld c,a
+        ld a,0FFh
+        djnz .row
+        ld a,(key_state+7)      ; row 7: BS bit 5, RETURN bit 7
+        cpl
+        ld hl,key_prev+7
+        and (hl)
+        ld c,8
+        bit 5,a
+        jr nz,.ret
+        ld c,13
+        rla
+        jr c,.ret
+        xor a
+        ret
+.bit:   rra
+        jr c,.ret
+        inc c
+        jr .bit
+.ret:   ld a,c
+        ret
+
+; A = held at the last poll: ENT_UP, ENT_DOWN (straight: neither left nor
+; right held), IN_LEFT, IN_RIGHT (the arrows, either joystick), ENT_TRIG
+; (space, either joystick's button A or B)
+ent_dirs:
+        ld hl,key_state+KEY_ROWS
+        ld a,(hl)
+        inc hl
+        and (hl)                ; (0: held, on either)
+        cpl
+        ld c,a                  ; bits 0..3 up, down, left, right; 4, 5 buttons A, B
+        and 20h
+        jr z,.nb
+        set 4,c
+.nb:    ld a,(key_state+KEY_ROW)
+        cpl
+        ld b,a                  ; bit 0 space, 4 left, 5 up, 6 down, 7 right
+        rra
+        jr nc,.ns
+        set 4,c
+.ns:    bit 4,b
+        jr z,$+4
+        set 2,c
+        bit 5,b
+        jr z,$+4
+        set 0,c
+        bit 6,b
+        jr z,$+4
+        set 1,c
+        bit 7,b
+        jr z,$+4
+        set 3,c
+        ld a,c
+        and 0Ch
+        ld a,c
+        jr nz,.side
+        and 1Fh
+        ret
+.side:  and 1Ch                 ; left or right held: no up, no down
+        ret
+        assert IN_LEFT == 04h && IN_RIGHT == 08h && ENT_TRIG == 10h
+        assert KEY_ROW == 8 && KEY_SPACE == 01h && KEY_LEFT == 10h && KEY_RIGHT == 80h
+
+        ifdef BIN
+; The disk version: hi_table lives in TERRAFNT.HSC (U-boat Killer's way).
+; Disk errors are silently ignored: the disk ROM's error handler (DISKVE)
+; picks Abort, and the abort lands in disk_abort, which fails the call:
+; through BREAKV under DOS 2, through DOS1_ABORT under DOS 1. The pointers
+; and the handler sit in page 3, as the disk ROM holds page 1 meanwhile.
+
+; At power-on, after HI_DEFAULTS: the file's table, if there's a disk ROM
+; and the file is sound (its size, its check byte, hsc_check)
+hsc_load:
+        xor a
+        ld (has_disk),a
+        ld a,(H_PHYD)
+        cp 0C9h
+        ret z                   ; no disk ROM
+        ld (has_disk),a
+        ld hl,020Eh             ; ld c,2 / ret
+        ld (disk_err_stub),hl
+        ld a,0C9h
+        ld (disk_err_stub+2),a
+        ld hl,disk_err_stub
+        ld (disk_err_vec),hl
+        ld hl,disk_abort
+        ld (disk_abort_vec),hl
+        ld hl,disk_err_vec      ; the game never returns to BASIC,
+        ld (DISKVE),hl          ; so these stay
+        ld hl,disk_abort_vec
+        ld (BREAKV),hl
+        ld b,0
+        ld c,F_DOSVER
+        call bdos
+        ld a,b
+        cp 2
+        jr nc,.dos2
+        ld hl,disk_abort
+        ld (DOS1_ABORT),hl
+.dos2:  ld c,F_OPEN
+        call hsc_open
+        or a
+        ret nz                  ; none (or a disk error)
+        ld hl,(hsc_fcb+FCB_FILESIZE+2)
+        ld a,h
+        or l
+        ret nz
+        ld hl,(hsc_fcb+FCB_FILESIZE)
+        ld de,HSC_SIZE
+        sbc hl,de               ; (carry clear: or l)
+        ret nz
+        ld c,F_RDBLK
+        call hsc_block
+        or a
+        ret nz
+        call hsc_xor
+        call hsc_sum
+        ld hl,hsc_buf+HSC_SIZE-1
+        cp (hl)
+        ret nz
+        call hsc_check
+        ret nz
+        ld hl,hsc_buf
+        ld de,hi_table
+        ld bc,HI_COUNT*HI_SIZE
+        ldir
+        ret
+
+; Z: hsc_buf's table is sound: BCD digits, initials A..Z or spaces, each
+; score at most the one above it
+hsc_check:
+        ld hl,hsc_buf
+        ld c,HI_COUNT
+.rec:   ld b,4
+.dig:   ld a,(hl)
+        and 0Fh
+        cp 10
+        jr nc,.bad
+        ld a,(hl)
+        cp 0A0h
+        jr nc,.bad
+        inc hl
+        djnz .dig
+        ld b,3
+.let:   ld a,(hl)
+        inc hl
+        cp ' '
+        jr z,.sp
+        sub 'A'
+        cp 'Z'-'A'+1
+        jr nc,.bad
+.sp:    djnz .let
+        dec c
+        jr nz,.rec
+        ld hl,hsc_buf+HI_SIZE+3 ; record 1's highest byte
+        ld c,HI_COUNT-1
+.ord:   push hl
+        ld a,l                  ; DE = the one above's
+        sub HI_SIZE
+        ld e,a
+        ld a,h
+        sbc a,0
+        ld d,a
+        ld b,4
+.cmp:   ld a,(de)
+        cp (hl)
+        jr nz,.ne
+        dec hl
+        dec de
+        djnz .cmp
+.ne:    pop hl
+        jr c,.bad               ; the one above is lower
+        ld de,HI_SIZE
+        add hl,de
+        dec c
+        jr nz,.ord
+        xor a
+        ret
+.bad:   or 1
+        ret
+
+; hi_table to the file, if there's a disk ROM
+hsc_save:
+        ld a,(has_disk)
+        or a
+        ret z
+        ld hl,hi_table
+        ld de,hsc_buf
+        ld bc,HI_COUNT*HI_SIZE
+        ldir
+        call hsc_sum
+        ld (hsc_buf+HSC_SIZE-1),a
+        call hsc_xor
+        ld c,F_CREATE
+        call hsc_open
+        or a
+        ret nz
+        ld c,F_WRBLK
+        call hsc_block
+        ld c,F_CLOSE            ; even if the write failed
+        ld de,hsc_fcb
+        jr bdos
+
+; C = F_OPEN or F_CREATE: on a fresh FCB for the file, default drive; if
+; it works (A = 0), 1-byte records from the start of the file
+hsc_open:
+        ld hl,hsc_fcb
+        ld de,hsc_fcb+1
+        push bc
+        ld bc,FCB_LEN-1
+        ld (hl),0
+        ldir
+        ld hl,HSC_NAME
+        ld de,hsc_fcb+1
+        ld bc,11
+        ldir
+        pop bc
+        ld de,hsc_fcb
+        call bdos
+        or a
+        ret nz
+        ld hl,1
+        ld (hsc_fcb+FCB_RECSIZE),hl
+        dec l
+        ld (hsc_fcb+FCB_RANDOM),hl
+        ld (hsc_fcb+FCB_RANDOM+2),hl
+        ret
+
+; C = F_RDBLK or F_WRBLK: the whole file, to / from hsc_buf -> A = 0 if done
+hsc_block:
+        push bc
+        ld de,hsc_buf
+        ld c,F_SETDTA
+        call bdos
+        pop bc
+        ld de,hsc_fcb
+        ld hl,HSC_SIZE
+        ; fall through
+
+; C = the function, DE, HL: a BDOS call -> A, B, HL (A = FFh if a disk
+; error aborted it). The disk ROM runs with IM 1 (the BIOS's interrupt
+; handler, as under Disk BASIC: its timers, the motor's count), then IM 2
+; again, and disk_timer calls H.TIMI for DISK_HOOK_SECS more (the drive
+; motor goes off). Returns with interrupts enabled.
+bdos:
+        push ix
+        push iy
+        ld (disk_sp),sp
+        im 1
+        call BDOS
+.back:  di
+        im 2
+        push af
+        push hl
+        call hook_arm
+        pop hl
+        pop af
+        ei
+        pop iy
+        pop ix
+        ret
+
+; The abort vector: back to bdos's caller with A = FFh
+disk_abort:
+        ld sp,(disk_sp)
+        ld a,0FFh
+        jr bdos.back
+
+; A = hsc_buf's check byte: HSC_KEY plus the table's bytes
+hsc_sum:
+        ld hl,hsc_buf
+        ld b,HI_COUNT*HI_SIZE
+        ld a,HSC_KEY
+.add:   add a,(hl)
+        inc hl
+        djnz .add
+        ret
+
+; hsc_buf XORed with HSC_XOR + HSC_XOR_STEP * index (both ways)
+hsc_xor:
+        ld hl,hsc_buf
+        ld b,HSC_SIZE
+        ld a,HSC_XOR
+.byte:  ld c,a
+        xor (hl)
+        ld (hl),a
+        inc hl
+        ld a,c
+        add a,HSC_XOR_STEP
+        djnz .byte
+        ret
+        endif
+
 ; ---- Data ------------------------------------------------------------------
 
 RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPEED%60
@@ -5825,6 +6673,8 @@ RATES_60:       db 60, SHIP_SPEED/60, SHIP_SPEED%60, BULLET_SPEED/60, BULLET_SPE
                 db BOSS_SPEED/60, BOSS_SPEED%60
                 db BONUS_TEXT_MS*60/1000
                 dw EGG_SECS*60
+                dw HI_LIST_MS*60/1000
+                db HI_REPEAT_DELAY_MS*60/1000, HI_REPEAT_MS*60/1000, HI_DONE_MS*60/1000
 RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPEED%50
                 db CALL_SPEED/50, CALL_SPEED%50, STAR_SPEED/50, STAR_SPEED%50
                 db FORM_TICK_RATE/50, FORM_TICK_RATE%50
@@ -5841,7 +6691,13 @@ RATES_50:       db 50, SHIP_SPEED/50, SHIP_SPEED%50, BULLET_SPEED/50, BULLET_SPE
                 db BOSS_SPEED/50, BOSS_SPEED%50
                 db BONUS_TEXT_MS*50/1000
                 dw EGG_SECS*50
+                dw HI_LIST_MS*50/1000
+                db HI_REPEAT_DELAY_MS*50/1000, HI_REPEAT_MS*50/1000, HI_DONE_MS*50/1000
         assert RATES_50-RATES_60 == RATES_SIZE && BOOM_STAGES == 3
+        assert HI_LIST_MS*60%1000 == 0 && HI_LIST_MS*50%1000 == 0 && HI_LIST_MS*50/1000 > 0
+        assert HI_REPEAT_DELAY_MS*60%1000 == 0 && HI_REPEAT_DELAY_MS*50%1000 == 0 && HI_REPEAT_DELAY_MS*60/1000 < 256 && HI_REPEAT_DELAY_MS*50/1000 > 0
+        assert HI_REPEAT_MS*60%1000 == 0 && HI_REPEAT_MS*50%1000 == 0 && HI_REPEAT_MS*60/1000 < 256 && HI_REPEAT_MS*50/1000 > 0
+        assert HI_DONE_MS*60%1000 == 0 && HI_DONE_MS*50%1000 == 0 && HI_DONE_MS*60/1000 < 256 && HI_DONE_MS*50/1000 > 0
         assert BONUS_TEXT_MS*60%1000 == 0 && BONUS_TEXT_MS*50%1000 == 0 && BONUS_TEXT_MS*60/1000 < 256 && BONUS_TEXT_MS > 0
         assert BLINK_ON_MS*60%1000 == 0 && BLINK_OFF_MS*60%1000 == 0
         assert BLINK_ON_MS*50%1000 == 0 && BLINK_OFF_MS*50%1000 == 0
@@ -5880,6 +6736,34 @@ CREDIT_LEN      equ $-CREDIT_TEXT-1
 URL_TEXT:       db "HTTPS://RETROPOLIS.COM.BR",0
 URL_LEN         equ $-URL_TEXT-1
         assert URL_LEN <= 32
+; The high score table at power-on (the user's): score, initials
+        macro HI_REC val, name
+        assert (val) > 0 && (val) < 100000000
+        db ((val)/10%10)*16+(val)%10, ((val)/1000%10)*16+(val)/100%10
+        db ((val)/100000%10)*16+(val)/10000%10, ((val)/10000000%10)*16+(val)/1000000%10
+        db name
+        endm
+HI_DEFAULTS:    HI_REC 5000, "LTR"
+                HI_REC 4800, "EHE"
+                HI_REC 4500, "TEN"
+                HI_REC 4000, "SAA"
+                HI_REC 3500, "ALZ"
+                HI_REC 3000, "SII"
+                HI_REC 2500, "SES"
+                HI_REC 2000, "UNT"
+                HI_REC 1500, "MSO"
+                HI_REC 1000, "EAO"
+        assert $-HI_DEFAULTS == HI_COUNT*HI_SIZE
+HI_HEAD:        db "HIGH SCORES",0
+HI_HEAD_LEN     equ $-HI_HEAD-1
+ENTRY_HEAD:     db "ENTER YOUR INITIALS",0
+ENTRY_HEAD_LEN  equ $-ENTRY_HEAD-1
+HISC_TEXT:      db "HI SCORE",0
+HISC_LEN        equ $-HISC_TEXT-1
+        assert HISC_LEN >= 8    ; (the score right-justified under it)
+        ifdef BIN
+HSC_NAME:       db "TERRAFNTHSC"
+        endif
 ; The egg's version label, then its texts (egg_line: a length, then the
 ; text, egg_text-encoded), ending with a 0
 EGG_LABEL:      db "VERSION "

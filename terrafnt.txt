@@ -1,4 +1,4 @@
-TERRA FRONT v. 0.9.1
+TERRA FRONT v. 0.9.2
 Hold the Front!
 
 (C) JCCyC 2026
@@ -71,8 +71,9 @@ Each press of fire shoots one volley; holding it down doesn't keep
 firing. At most two volleys fly at a time.
 
 On the title screen, press the space bar or a joystick's button 1 to
-start a game. Left alone for 20 seconds, the title shows the game
-playing itself for a while; press fire to come back to the title.
+start a game. Left alone for 20 seconds, the title gives way to the
+high score list for 7 seconds, then shows the game playing itself for a
+while; press fire to come back to the title.
 
 
 5. HOW TO PLAY
@@ -113,3 +114,28 @@ the level and wave at the top left.
 
 Key 1, during a game, skips to the level's next boss. It is there for
 playtesting.
+
+
+7. HIGH SCORES
+
+The high score list holds the ten best scores, each with three
+initials. At power-on it reads LTR 5000, EHE 4800, TEN 4500, SAA 4000,
+ALZ 3500, SII 3000, SES 2500, UNT 2000, MSO 1500, EAO 1000. The title
+shows the best score at the right, under "HI SCORE".
+
+A score makes the list if it beats one of them (on a tie, the older
+score stays above). At the end of that game the list comes up under
+"ENTER YOUR INITIALS", with a blinking cursor where yours go:
+
+- On the keyboard, type the letters A to Z. Backspace takes the last
+  one back. RETURN (ENTER) ends the entry.
+- With a joystick or the arrow keys, left and right pick a letter (held,
+  they keep going; right starts at A, left at Z), and either button or
+  the space bar takes it. Taking the third letter ends the entry. Up
+  ends it too, and down takes the last letter back (straight up and
+  down only, not diagonally).
+
+One or two letters are fine: RETURN or up ends the entry once there is
+at least one. The disk version keeps the list in the file TERRAFNT.HSC
+on the default drive (normally the one it was started from), saving it
+after each new entry; with no such file, the list starts as above.

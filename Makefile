@@ -104,7 +104,7 @@ test-disk: $(DSK) test.tcl
 	@for m in Gradiente_Expert_GPC-1:Panasonic_FS-FD1A Philips_NMS_8250:; do \
 		mach=$${m%%:*}; ext=$${m#*:}; \
 		cp $(DSK) build/test-disk.dsk; \
-		LOGFILE=$(CURDIR)/build/test-disk-$$mach.log SYMFILE=$(CURDIR)/build/terrafnt-bin.sym IMAGE=$(BIN) \
+		LOGFILE=$(CURDIR)/build/test-disk-$$mach.log SYMFILE=$(CURDIR)/build/terrafnt-bin.sym IMAGE=$(BIN) DISK=$(CURDIR)/build/test-disk.dsk \
 		SHOT=$(CURDIR)/build/shot-disk-$$mach.png \
 		xvfb-run -a -s "-screen 0 1024x768x24" openmsx -machine $$mach $${ext:+-ext $$ext} -diska build/test-disk.dsk -script test.tcl >/dev/null 2>&1; \
 		echo "== $$mach (disk)"; cat build/test-disk-$$mach.log; \

@@ -5,7 +5,8 @@ The game's name is **Terra Front** (two words); `terrafront` (directory) and
 
 An MSX1 shoot-'em-up in Z80 assembly (sjasmplus), built as a 16 KB plain
 cartridge ROM at 4000h..7FFFh (`terrafnt.rom`, an 8.3 name). RAM at E000h.
-Also a disk version, as Skyfighter's: `terrafnt.bin` (`sjasmplus -DBIN`:
+Nearly full: see ISSUES.md ("Code space"). Also a disk version, as
+Skyfighter's: `terrafnt.bin` (`sjasmplus -DBIN`:
 the same code at 8000h, BLOADed from Disk BASIC, RAM at C000h laid out
 as the ROM's, `CODE_BASE` / `RAM_BASE`; its `isr` also calls H.TIMI,
 `disk_timer`, for the first `DISK_HOOK_SECS` (10), so the disk ROM turns
@@ -84,7 +85,8 @@ and its score on its right, as in the game, from `score_shown`, its leading
 blanks not printed (the picture stays);
 none at power-on), and a new game as at power-on.
 **Attract mode:** the title left alone 20 s (`TITLE_WAIT_MS`, counted per
-frame `splash` sees; `title_left`) plays a pseudo-game (`attract`, set by
+frame `splash` sees; `title_left`), then the high score list 7 s (below),
+plays a pseudo-game (`attract`, set by
 `splash`) for 40 s (`ATTRACT_MS`, `att_left`; or till game over's 10 s,
 if that comes first): a new game's start (`attract_init`), but the top
 status row stays as the title had it (the last game's level, wave and
@@ -165,6 +167,67 @@ ROM) and that the lines at 4014h decode to font characters; their
 `EGG_KEY`, `EGG_KEY_STEP` and offset must match main.asm. None ships in
 the zip. `changes.txt` mentions the eggs only generically ("Easter egg
 adjustments.", user's spec, as Skyfighter's).
+**High scores** (U-boat Killer's, user's spec): `hi_table`, `HI_COUNT`
+(10) records of `HI_SIZE` (7) bytes: the score (4 BCD bytes, the lowest
+two digits first, as `score`) and 3 letters (`HI_NAME`), best first,
+kept across games (before `game_ram`); `HI_DEFAULTS` at power-on (the
+user's list: LTR 5000, EHE 4800, TEN 4500, SAA 4000, ALZ 3500, SII 3000,
+SES 2500, UNT 2000, MSO 1500, EAO 1000). The title shows "HI SCORE"
+(`HISC_TEXT`) on row 17 (`HISC_ROW`) and the best score on row 18, both
+right-justified to column 31, white (user's spec: the blank space at the
+logo's lower right; `show_hi`, from `splash`, after the top row; the
+score's leading blanks not printed, `print_lead`; the egg's rows 20..23
+don't touch them). The title left alone 20 s: the list (`show_list`,
+display off meanwhile: the rows under the top status row cleared,
+`clear_below`; the egg, if up, gone) for 7 s (`HI_LIST_MS`,
+`list_frames`, `list_left`; user's choice: title, list, attract mode),
+then attract mode: "HIGH SCORES" (`HI_HEAD`) centred on row 6
+(`HI_ROW`), the records on rows 8..17 (`HI_LIST_ROW`) from column 8
+(`HI_COL`), " 1. LTR     5000" (16 cells, `hi_row`, the score
+right-aligned in 8; Claude's layout); no blink. On it, a press of space
+or either joystick's button A starts a game, as on the title; a fresh
+Ctrl-V brings the title back with the egg up (`.legg`: `egg_now`, `jp
+splash`; its 20 s from the start; Claude's choice, as attract mode's).
+A game's score (not attract mode's) enters the table if it beats a
+record (`hi_rank`: strict >, a tie under the older one): at game over's
+end (`restart`, display off, no sprites, before the game's RAM is
+cleared) `hi_enter` moves the records under it down a place (the last
+gone), puts the score there with "___", and `enter_initials` shows the
+list under "ENTER YOUR INITIALS" (`ENTRY_HEAD`), the top status row as
+the game had it. U-boat Killer's entry: a letter typed (A..Z, matrix
+rows 2..5, `ent_key`) goes in its slot, BS takes the last one back;
+left / right (the arrows or either joystick, `ent_dirs`) pick a letter
+(none at first, shown as a blinking "_"; right from none or Z: A, left
+from none or A: Z; held: the next after 0.4 s, `HI_REPEAT_DELAY_MS`,
+then every 0.1 s, `HI_REPEAT_MS`; held from the entry's start: no
+repeat) and space or either joystick's button (A or B) takes it (none
+picked: nothing); taken by space or a button, the third ends the entry.
+The letter picked blinks in its slot (the title's blink, 0.3 s on, 0.2 s
+off: `blink_tick`); after a third typed, a blinking "_" in a fourth
+place (the gap before the score). RETURN, or up, ends it once there's a
+letter (empty slots become spaces); down takes the last letter back. Up
+and down count straight only (neither left nor right held); what's
+held as it begins counts once released. Then the list stays 1 s
+(`HI_DONE_MS`, `done_frames`), display off, and the title (the best
+score updated). **High score file** (disk version only, U-boat
+Killer's): `TERRAFNT.HSC` on the default drive, `HSC_SIZE` (71) bytes:
+`hi_table`, then a check byte (`HSC_KEY` + the table's bytes), all XORed
+with `HSC_XOR` + `HSC_XOR_STEP`·index (`hsc_xor`; keep the scramble out
+of changes.txt and the manual, as U-boat Killer's). `hsc_load` (in
+`init`, after IM 2 is set up) takes it only with a disk ROM (`H_PHYD` ≠
+C9h, else `has_disk` 0: nothing saved either), the exact size, the
+check byte, and a sound table (`hsc_check`: BCD digits, initials A..Z or
+spaces, each score at most the one above); else the defaults stay.
+`hsc_save` (at the entry's end, the list showing) creates or empties
+the file and writes it. Disk errors are silently ignored, as U-boat
+Killer's (`DISKVE` → `disk_err_vec` → `disk_err_stub`, Abort;
+`disk_abort` through `BREAKV` under DOS 2, `DOS1_ABORT` under DOS 1;
+all in page 3, RAM before `game_ram`). The FCB and the file's bytes
+(`hsc_fcb`, `hsc_buf`) are in `rot_rows` (no game runs then). `bdos`
+runs the disk ROM with IM 1 (the BIOS's interrupt handler, as under
+Disk BASIC; Claude's choice), then IM 2 again and `hook_arm`:
+`disk_timer` calls H.TIMI for 10 s more, so the drive motor goes off.
+No HSC file ships (the disk is built fresh).
 **Levels:** a level is 10 waves (enemies 0..9); `level` (1.., stays at
 255) goes up when `form_enemy` wraps to 0. "L1 W1" .. "L1 W10", "L2 W1",
 ... (`level`, `form_enemy`+1) is on the top status row's left in the font,
@@ -499,7 +562,7 @@ the staged test below. Then the enemies' part, hits on,
   button A pressed a frame before 3 s and held past it ignored, the title exactly 10 s on; the
   title's VRAM (with the game's level and wave, L3 W1, on its top row's
   left and its score, 1450 (the bosses' bonuses from 0), on its right;
-  "0" after game 2, "500" after game 3), no sprites, a held space not starting; the new game as at
+  game 2's as written (the table's last), "500" after game 3), no sprites, a held space not starting; the new game as at
   power-on (RAM, first wave, patterns, silent, status rows, 4 reserves).
   Then twice no reserves, the front killed: joystick 1's button A, then
   space, seen exactly at 3 s goes to the title at once; the second time
@@ -574,6 +637,30 @@ the staged test below. Then the enemies' part, hits on,
   dying, the others unchanged; a new volley's bullets from the front as
   `fire` had it, a breakpoint's snapshot). The break checks count the
   first wave's (a bullet in flight may break a second wave's pair).
+- The high score part of `make test` (`test.tcl`'s last section): the
+  table at both boots (the user's), the title's "HI SCORE" lines in
+  every title check (`build_titles` from the test's model, `::hi`), the
+  list's VRAM every time the title is left alone (`list_check`, 20 s on;
+  attract mode at 27 s), game 1's 1450 entering it (tenth: G typed,
+  RETURN), games 2 and 3 falling short (game 2's score written as the
+  table's last, a tie; game 3's 500: no initials, the table unchanged), `hi_enter` never in
+  attract mode; then, after the fourth game's start (the egg's part),
+  games 4 and 5 (`hi_game`: the score written, no reserve, the front
+  killed, space at 3 s): game 4, 3500 (a tie with ALZ: sixth), A held
+  from game over (not typed), the entry's screen, the slot's blink,
+  RETURN with no letter, J C BS X typed, RETURN: "JX "; the list's 1 s;
+  the title left alone: the list, Ctrl-V on it: the title with the egg,
+  its count from the start; 20 s on the list again, space: game 5,
+  12345678 (the best), joystick only: right held from game over (nothing),
+  right held (A, B after 0.4 s, C 0.1 s later), button A takes, joystick
+  2's left (Z, Y), B takes, down takes back, up-right (no end, Z), space
+  takes, right (A), button A takes the third: "CZA"; the title's
+  12345678. The disk test also puts `TERRAFNT.HSC` on the disk
+  (`diskmanipulator import`): boot 1 a wrong check byte (the defaults
+  kept), boot 2 a sound one (taken: its last two records unlike the
+  defaults); at the end it exports the file and decodes it against the
+  table, and checks the drive's LED (`::led_FDD`) is off 8 s after the
+  last save.
 - `make test-disk` runs the same `test.tcl` on the disk version, booted
   from a copy of `terrafnt.dsk` (`build/test-disk.dsk`) on the Expert
   (with an FS-FD1A) and the NMS 8250 (C-BIOS has no Disk BASIC): env

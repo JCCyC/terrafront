@@ -1,5 +1,12 @@
 TERRA FRONT - CHANGES
 
+Version 0.9.2
+
+- High score list: the ten best scores, with initials entered at the
+  end of the game (keyboard, or joystick alone). The title shows the
+  best score, and the list between the title and the game playing
+  itself. The disk version keeps the list in TERRAFNT.HSC.
+
 Version 0.9.1
 
 - Easter egg adjustments.

@@ -1108,8 +1108,7 @@ proc rom_text {name} {
 set CREDIT [rom_text CREDIT_TEXT]
 set URL [rom_text URL_TEXT]
 check {$CREDIT eq "(C) 2026 JCCYC" && $URL eq "HTTPS://RETROPOLIS.COM.BR"} "splash: the credit is \"$CREDIT\", the URL \"$URL\""
-set TITLE_ON $TITLE
-set TITLE_OFF $TITLE
+set TITLE_RAW $TITLE
 # text str centred on character row `row` in TITLE_ON (and in TITLE_OFF,
 # with its colours black if blinks)
 proc overlay {str row blinks} {
@@ -1127,9 +1126,40 @@ proc overlay {str row blinks} {
 		}
 	}
 }
-overlay $CREDIT $sym(CREDIT_ROW) 0
-overlay $URL $sym(URL_ROW) 0
-overlay $PRESS $BROW 1
+# The high score table as the test expects it: {score initials} each, best
+# first (the user's, at power-on; the disk version's, the file the test
+# puts on the disk)
+set HI_DEFAULTS {{5000 LTR} {4800 EHE} {4500 TEN} {4000 SAA} {3500 ALZ} {3000 SII} {2500 SES} {2000 UNT} {1500 MSO} {1000 EAO}}
+set hi $HI_DEFAULTS
+# Table t (a VRAM list: 6144 pattern bytes, then 6144 colour bytes) with
+# str in font.py's glyphs from character row `row`, column col, white on black
+proc paint {t str row col} {
+	set w [format %02x [expr {$::sym(TEXT_COLOR)*16 + 1}]]
+	for {set i 0} {$i < [string length $str]} {incr i} {
+		scan [string index $str $i] %c c
+		set p [expr {$row*256 + ($col + $i)*8}]
+		for {set y 0} {$y < 8} {incr y} {
+			set g [expr {$y < 6 ? [lindex $::FONT [expr {($c - 32)*6 + $y}]] : "00"}]
+			set t [lreplace $t [expr {$p + $y}] [expr {$p + $y}] $g]
+			set t [lreplace $t [expr {6144 + $p + $y}] [expr {6144 + $p + $y}] $w]
+		}
+	}
+	return $t
+}
+# TITLE: the picture with "HI SCORE" on HISC_ROW and the table's best score
+# on the row under it, right-justified; TITLE_ON / TITLE_OFF: with the
+# title's text (shown / the blinking line hidden)
+proc build_titles {} {
+	set top [lindex $::hi 0 0]
+	set r $::sym(HISC_ROW)
+	set ::TITLE [paint [paint $::TITLE_RAW "HI SCORE" $r 24] $top [expr {$r + 1}] [expr {32 - [string length $top]}]]
+	set ::TITLE_ON $::TITLE
+	set ::TITLE_OFF $::TITLE
+	overlay $::CREDIT $::sym(CREDIT_ROW) 0
+	overlay $::URL $::sym(URL_ROW) 0
+	overlay $::PRESS $::BROW 1
+}
+build_titles
 # The easter egg (the spec's texts; the version from the ROM's version
 # bytes) and the license (decoded from the ROM, so a licensed copy passes)
 set EGG_LINES {"JCCYC IS" "JUAN CARLOS CASTRO Y CASTRO" "WELCOME TO THE FRONT!"}
@@ -1361,10 +1391,12 @@ proc splash_frame {} {
 			check_title 1 "after $::twhy (text shown; the last game's level, wave and score kept)" $::lw_last $::score_last
 			check {[sat 0] == 0xD0} "back at the title: no sprites (the SAT's first Y [format %02X [sat 0]])"
 		}
+		if {$::sn == 1} { try hi_title_start }
+		if {$::sn == 20*[m fps] + 1} { list_check "after $::twhy" }
 		if {$::tnext eq "press"} {
 			if {$::sn == 6} { down 0x01 }
 			if {$::sn == 9} { fail "space doesn't start a new game after $::twhy" ; finish }
-		} elseif {$::sn > 20*[m fps]} { fail "the title left alone 20 s after $::twhy: no attract mode" ; finish }
+		} elseif {$::tnext eq "list"} { try list_frame } elseif {$::sn > 27*[m fps]} { fail "the title left alone 20 s, the list 7 s after $::twhy: no attract mode" ; finish }
 		return
 	}
 	set F [m fps]
@@ -1434,6 +1466,7 @@ set started 0
 cart_bp $sym(main_loop) {} {
 	if {$::phase == 1} {
 		check {$::sn >= 8} "joystick 1's button A starts the game; space held from power-on, then let go, didn't (splash frame $::sn)"
+		try hi_boot1
 		joyup 1
 		set ::phase 2 ; set ::sn 0
 		reset
@@ -1441,7 +1474,7 @@ cart_bp $sym(main_loop) {} {
 	}
 	if {$::phase == 3} {
 		if {[m attract]} { try attract_begin } else {
-			check {$::sn == $::press_sn && $::tnext in {press egg}} "after $::twhy, a new press of space starts a new game (splash frame $::sn; want $::press_sn)"
+			check {$::sn == $::press_sn && $::tnext in {press egg list}} "after $::twhy, a new press of space starts a new game (splash frame $::sn; want $::press_sn)"
 			up 0x01
 			set ::phase 4
 			try new_game_checks
@@ -1449,6 +1482,7 @@ cart_bp $sym(main_loop) {} {
 	}
 	if {!$::started} {
 		check {$::sn == 3*[m fps]} "space starts the game (splash frame $::sn)"
+		try hi_boot2
 		up 0x01
 		set ::started 1 ; try plan
 	}
@@ -2925,6 +2959,7 @@ proc plan_over {g} {
 	if {[m call_on]} { at [expr {$::n+1}] [list plan_over $g] ; return }
 	set ::games $g
 	debug write memory $::sym(reserves) [expr {$g == 1 ? 1 : 0}]
+	if {$g == 2} { score_write [lindex $::hi end 0] }   ;# (a tie with the table's last: short of it)
 	if {$g == 3} { stage_bonus_over ; return }
 	set ::ostate [expr {$g == 1 ? "kill" : "wait"}]
 	kill_all
@@ -3032,7 +3067,7 @@ proc over_restart {} {
 	set k [expr {$::n - $::N0 + 1}]
 	set ::lw_last "L[m level] W[expr {[m form_enemy] + 1}]"
 	set bad [lw_bad $::lw_last]
-	set lwant [expr {$::games == 2 ? "L1 W1" : ($::games == 3 ? "L1 W2" : "L3 W[expr {[m form_enemy] + 1}]")}]
+	set lwant [expr {$::games == 2 || $::games >= 4 ? "L1 W1" : ($::games == 3 ? "L1 W2" : "L3 W[expr {[m form_enemy] + 1}]")}]
 	if {$::obonus} {
 		check {$::obonus_end eq [list $::sym(BS_NEXT) 0 500 0 1]} "game over 3: the boss's bonus over 2 s after its text came, under GAME OVER: its 500 points, the next frame the next wave, L1 W2 (boss_st, enemy, points; boss_st, enemy the next frame: $::obonus_end)"
 		set ::obonus 0
@@ -3046,7 +3081,7 @@ proc over_restart {} {
 	check {$::ostate eq "on" && $k == $::owant} "game over $::games: back to the title $k frames after it began (want $::owant: $::owhy)"
 	check {$::dropped == $::odropped} "game over $::games: the game ran every frame of it ([expr {$::dropped - $::odropped}] dropped)"
 	set ::ostate "" ; set ::phase 3 ; set ::sn 0
-	set ::twhy "game over $::games" ; set ::tnext [expr {$::games < 3 ? "press" : "wait"}]
+	set ::twhy "game over $::games" ; set ::tnext [lindex {"" press press wait list press} $::games] ; set ::press_sn 6
 	set ::score_last [string trim [score_str $::score_model]]
 	set ::score_model 0 ; set ::sc_calls {} ; set ::sc_shown 0
 	unset -nocomplain ::last_frames
@@ -3072,7 +3107,9 @@ proc new_game_checks {} {
 		at [expr {$::n+5}] { ctrl 1 ; vkey 1 }
 		at [expr {$::n+10}] { ctrl 0 ; vkey 0 }
 		at [expr {$::n+12}] { check {![m egg_now] && ![m over_on] && [m front_mask] == 1} "Ctrl-V in a game: nothing" }
-		at [expr {$::n+$::F}] { screenshot_and_finish }
+		if {$::games == 3} { at [expr {$::n+$::F}] { hi_game 4 } } elseif {$::games == 4} { at [expr {$::n+$::F}] { hi_game 5 } } else {
+			at [expr {$::n+8*$::F}] { hi_end ; screenshot_and_finish }
+		}
 	}
 }
 
@@ -3149,7 +3186,7 @@ proc dodge_check {} {
 proc attract_begin {} {
 	incr ::attracts
 	set F [m fps]
-	check {$::sn == 20*$F} "the title left alone after $::twhy: attract mode $::attracts after $::sn frames (want [expr {20*$F}]: 20 s)"
+	check {$::sn == 27*$F} "the title left alone after $::twhy: attract mode $::attracts after $::sn frames (want [expr {27*$F}]: the title 20 s, the high score list 7 s)"
 	check {[vdp_r1] & 0x40} "attract mode $::attracts: display on (R1 [format %02X [vdp_r1]])"
 	top_want
 	set bad [top_bad]
@@ -3251,4 +3288,327 @@ proc attract_restart {} {
 	set ::twhy "attract mode $::attracts" ; set ::tnext [expr {$::attracts < 4 ? "wait" : "egg"}]
 	set ::sc_calls {} ; set ::in_col 0 ; set ::bwant {} ; set ::bonew 0 ; set ::eb_expect ""
 	unset -nocomplain ::last_frames ::asnap
+}
+
+# ---- High scores ------------------------------------------------------------
+#
+# The table (::hi, the test's model): the user's at power-on; in the disk
+# version, TERRAFNT.HSC on the disk: boot 1 with a file whose check byte is
+# wrong (not loaded: the defaults), boot 2 with a sound one (loaded: its
+# table, one record unlike the defaults). The title shows "HI SCORE" and the
+# best score right-justified on rows 17 and 18 (build_titles); 20 s on, the
+# list for 7 s (list_check, every time the title is left alone), then
+# attract mode. Game 1's 1450 enters it (tenth; G typed, RETURN); games 2 and 3
+# fall short: game 2's score written as the table's last (a tie), game
+# 3's 500; hi_enter is never called in attract mode. Game 4:
+# 3500 written, a tie with ALZ: sixth, under it; space skips its game over at 3 s, A held from game over
+# (not typed); the entry: the list under "ENTER YOUR INITIALS" with "___",
+# the slot's blink (blink_on / blink_off frames), RETURN with no letter:
+# nothing; J, C, BS, X typed, RETURN: "JX "; the list stays done_frames
+# (1 s); the title (the best still 5000), left alone: the list; Ctrl-V on
+# it: the title with the egg up, its 20 s from the start; 20 s on the
+# list again, space 3 s in starts game 5. Game 5: 12345678 written, the
+# best: joystick 1's right held from game over (nothing picked), then held:
+# A at once, B after rep_delay (0.4 s), C rep_frames (0.1 s) later;
+# joystick 1's A takes it; joystick 2's left: Z, again: Y, its B takes it;
+# down takes Y back; up-right (diagonal): no end, right picks Z; space takes
+# it; joystick 2's right: A (none: A); joystick 1's A takes the third: the
+# entry ends: "CZA". The title: "12345678" under HI SCORE. The disk version:
+# the file on the disk decoded (as the game wrote it) = the table, and the
+# drive's LED off some seconds after the save.
+set BIN [string match *.bin [expr {[info exists ::env(IMAGE)] ? $::env(IMAGE) : ""}]]
+proc hi_ram {} {
+	set l {}
+	for {set k 0} {$k < $::sym(HI_COUNT)} {incr k} {
+		set a [expr {$k*$::sym(HI_SIZE)}]
+		set d ""
+		for {set i 3} {$i >= 0} {incr i -1} { append d [format %02x [m hi_table [expr {$a + $i}]]] }
+		set nm ""
+		for {set i 0} {$i < 3} {incr i} { append nm [format %c [m hi_table [expr {$a + $::sym(HI_NAME) + $i}]]] }
+		lappend l [list [scan $d %d] $nm]
+	}
+	return $l
+}
+# a line of the list: " 1. LTR     5000"
+proc hi_line {k tbl} {
+	lassign [lindex $tbl $k] sc nm
+	format "%2d. %-3s %8s" [expr {$k + 1}] $nm $sc
+}
+# The list's screen: the top status row as the title had it (or, game: as
+# the game had it: the level and wave over LW_LEN cells, the score over
+# SCORE_LEN, both white, blanks too), heading head centred on HI_ROW, table
+# tbl's lines from HI_LIST_ROW, the rest black
+proc list_want {head {tbl ""} {game 0}} {
+	if {$tbl eq ""} { set tbl $::hi }
+	if {$game} {
+		set t [concat [lrepeat 6144 00] [lrepeat 6144 11]]
+		set t [paint $t [format %-$::sym(LW_LEN)s $::lw_last] $::sym(LW_ROW) $::sym(LW_COL)]
+		set t [paint $t [score_str $::score_last] $::sym(SCORE_ROW) $::sym(SCORE_COL)]
+	} else {
+		set t [title_with $::lw_last $::score_last]
+		set t [concat [lrange $t 0 255] [lrepeat 5888 00] [lrange $t 6144 6399] [lrepeat 5888 11]]
+	}
+	set t [paint $t $head $::sym(HI_ROW) [expr {(32 - [string length $head])/2}]]
+	for {set k 0} {$k < [llength $tbl]} {incr k} { set t [paint $t [hi_line $k $tbl] [expr {$::sym(HI_LIST_ROW) + $k}] $::sym(HI_COL)] }
+	return $t
+}
+proc list_check {what} {
+	set F [m fps]
+	set bad [vram_bad [list_want "HIGH SCORES"]]
+	check {![llength $bad] && [w16 list_left] == 7*$F && ([vdp_r1] & 0x40) && ![w16 egg_left]} "$what, the title left alone 20 s: the high score list (\"HIGH SCORES\"; [join [lmap e $::hi {join $e " "}] ", "]) in place of the picture, the top status row kept, display on, for 7 s ([w16 list_left] frames; wrong: $bad)"
+}
+# The disk version's file: tbl's records (4 BCD bytes, the lowest first;
+# three letters), a check byte (HSC_KEY + their bytes; + bad), all XORed
+# with HSC_XOR + HSC_XOR_STEP * index
+proc hsc_bytes {tbl {bad 0}} {
+	set b {}
+	foreach e $tbl {
+		lassign $e sc nm
+		set d [format %08d $sc]
+		for {set k 0} {$k < 4} {incr k} { lappend b [expr 0x[string range $d [expr {6 - 2*$k}] [expr {7 - 2*$k}]]] }
+		foreach c [split $nm ""] { scan $c %c v ; lappend b $v }
+	}
+	set s $::sym(HSC_KEY) ; foreach v $b { set s [expr {($s + $v) & 255}] }
+	lappend b [expr {($s + $bad) & 255}]
+	set out "" ; set i 0
+	foreach v $b { append out [binary format c [expr {$v ^ (($::sym(HSC_XOR) + $i*$::sym(HSC_XOR_STEP)) & 255)}]] ; incr i }
+	return $out
+}
+# ... its table (or "bad: why")
+proc hsc_table {data} {
+	set n [expr {$::sym(HI_COUNT)*$::sym(HI_SIZE) + 1}]
+	if {[string length $data] != $n} { return "bad: [string length $data] bytes" }
+	binary scan $data cu* v
+	set b {}
+	for {set i 0} {$i < $n} {incr i} { lappend b [expr {[lindex $v $i] ^ (($::sym(HSC_XOR) + $i*$::sym(HSC_XOR_STEP)) & 255)}] }
+	set s $::sym(HSC_KEY) ; foreach x [lrange $b 0 end-1] { set s [expr {($s + $x) & 255}] }
+	if {$s != [lindex $b end]} { return "bad: check byte" }
+	set l {}
+	for {set k 0} {$k < $::sym(HI_COUNT)} {incr k} {
+		set a [expr {$k*$::sym(HI_SIZE)}]
+		set d "" ; for {set i 3} {$i >= 0} {incr i -1} { append d [format %02x [lindex $b [expr {$a + $i}]]] }
+		set nm "" ; for {set i 4} {$i < 7} {incr i} { append nm [format %c [lindex $b [expr {$a + $i}]]] }
+		lappend l [list [scan $d %d] $nm]
+	}
+	return $l
+}
+set HSC_DIR [file join $ROOT build hsc-[pid]]
+proc hsc_put {data} {
+	file mkdir $::HSC_DIR
+	set f [open [file join $::HSC_DIR TERRAFNT.HSC] wb] ; puts -nonewline $f $data ; close $f
+	diskmanipulator import diska [file join $::HSC_DIR TERRAFNT.HSC]
+}
+set HI_DISK [lreplace $HI_DEFAULTS 8 9 {1500 DSK} {1100 HSC}]
+# (import doesn't replace a file: boot 2 gets a fresh copy of the disk)
+if {$BIN} {
+	file mkdir $HSC_DIR
+	file copy -force $::env(DISK) [file join $HSC_DIR boot2.dsk]
+	hsc_put [hsc_bytes $HI_DISK 1]
+}
+proc hi_boot1 {} {
+	check {[hi_ram] eq $::HI_DEFAULTS} "boot 1: the high score table at power-on: the user's ([join [lmap e [hi_ram] {join $e " "}] ", "])[expr {$::BIN ? "; TERRAFNT.HSC with a wrong check byte not taken" : ""}]"
+	if {$::BIN} {
+		diska [file join $::HSC_DIR boot2.dsk]
+		file delete [file join $::HSC_DIR TERRAFNT.HSC]
+		hsc_put [hsc_bytes $::HI_DISK]
+	}
+}
+proc hi_boot2 {} {
+	if {$::BIN} {
+		check {[hi_ram] eq $::HI_DISK} "boot 2: TERRAFNT.HSC's table taken (its last two records: [join [lmap e [lrange [hi_ram] 8 9] {join $e " "}] ", "])"
+		set ::hi $::HI_DISK
+	} else {
+		check {[hi_ram] eq $::HI_DEFAULTS} "boot 2: the user's table"
+	}
+	build_titles
+	set F [m fps]
+	check {[w16 list_frames] == 7*$F && [m rep_delay] == $F*2/5 && [m rep_frames] == $F/10 && [m done_frames] == $F} "high scores: the list 7 s ([w16 list_frames] frames), a letter's repeat after 0.4 s ([m rep_delay]), then every 0.1 s ([m rep_frames]), the entry's end shown 1 s ([m done_frames])"
+}
+# the boot's splash checked the title (TITLE_ON) with the HI SCORE lines
+set hi_calls 0 ; set entries 0 ; set en 0 ; set holds 0 ; set eblinks {}
+cart_bp $sym(hi_enter) {} {
+	if {[m attract]} { fail "hi_enter called in attract mode" }
+	incr ::hi_calls
+}
+cart_bp $sym(enter_initials) {} { incr ::entries ; set ::en 0 ; set ::holds 0 ; set ::eblinks {} ; set ::entry_game $::games }
+set entry_game 0
+cart_bp $sym(enter_initials.frame) {} { try entry_frame }
+cart_bp $sym(enter_initials.hold) {} { incr ::holds ; if {$::holds == 1} { try entry_done } }
+proc score_write {v} {
+	set d [format %08d $v]
+	for {set k 0} {$k < 4} {incr k} { debug write memory [expr {$::sym(score) + $k}] [expr 0x[string range $d [expr {6 - 2*$k}] [expr {7 - 2*$k}]]] }
+	debug write memory $::sym(score_dirty) 1
+	set ::score_model $v ; set ::sc_shown 1
+}
+# Games 4 and 5: the score written, no reserve, the front killed
+proc hi_game {g} {
+	set ::ebon 0
+	if {[m call_on]} { at [expr {$::n+1}] [list hi_game $g] ; return }
+	set ::games $g
+	score_write [expr {$g == 4 ? 3500 : 12345678}]
+	debug write memory $::sym(reserves) 0
+	set ::ostate wait
+	kill_all
+	if {$g == 4} { at [expr {$::n + 2*$::F}] { keymatrixdown 2 0x40 } } else { at [expr {$::n + 2*$::F}] { joydown 1 0x08 } }
+}
+# the table with the new record (rank r, initials nm) in, the last gone
+proc hi_with {sc nm} {
+	set r 0
+	foreach e $::hi { if {$sc > [lindex $e 0]} break ; incr r }
+	return [list $r [lrange [linsert $::hi $r [list $sc $nm]] 0 end-1]]
+}
+proc ent_name {} {
+	set a [expr {[m ent_rec] + 256*[m ent_rec 1] + $::sym(HI_NAME)}]
+	set nm "" ; for {set i 0} {$i < 3} {incr i} { append nm [format %c [debug read memory [expr {$a + $i}]]] }
+	return $nm
+}
+proc ent_is {pos name letter what} {
+	set l [m ent_letter]
+	set got [list [m ent_pos] [ent_name] [expr {$l ? [format %c $l] : "none"}]]
+	check {$got eq [list $pos $name $letter]} "initials: $what (slot, initials, letter picked: $got; want [list $pos $name $letter])"
+}
+# One entry frame (before its halt: the last one's work done; ::en 1..)
+proc entry_frame {} {
+	incr ::en
+	set e $::en ; set F $::F
+	if {$::games == 1} {
+		if {$e == 1} {
+			lassign [hi_with 1450 "___"] r t
+			set bad [vram_bad [list_want "ENTER YOUR INITIALS" $t 1]]
+			check {$r == 9 && [m ent_row] == 9 && ![llength $bad]} "game 1: 1450, tenth: the initials, the last gone (wrong: $bad)"
+		}
+		switch $e {
+			3 { keymatrixdown 3 0x10 } 5 { keymatrixup 3 0x10 }
+			7 { keymatrixdown 7 0x80 }
+			9 { fail "game 1: RETURN didn't end the initials" ; finish }
+		}
+		return
+	}
+	if {$::games == 4} {
+		lassign [hi_with 3500 "___"] r t
+		if {$e == 1} {
+			set ::ent_r $r ; set ::ent_t $t
+			check {$r == 5 && [m ent_row] == 5} "game 4: 3500, a tie with ALZ's: sixth, under it (rank [m ent_row])"
+			set bad [vram_bad [list_want "ENTER YOUR INITIALS" $t 1]]
+			check {![llength $bad] && ([vdp_r1] & 0x40) && [sat 0] == 0xD0} "game 4: the initials: \"ENTER YOUR INITIALS\" and the list with \" 6. ___     3500\", the rest a place down, the last gone; the top status row kept, display on, no sprites (wrong: $bad)"
+		}
+		# the first slot's "_": blinking from the start
+		if {$e <= 60} {
+			set a [expr {($::sym(HI_LIST_ROW) + $r)*256 + ($::sym(HI_COL) + 4)*8}]
+			set g {} ; for {set y 0} {$y < 6} {incr y} { lappend g [format %02x [debug read VRAM [expr {$a + $y}]]] }
+			lappend ::eblinks [expr {$g eq [lrange $::FONT [expr {(95 - 32)*6}] [expr {(95 - 32)*6 + 5}]] ? 1 : ($g eq {00 00 00 00 00 00} ? 0 : -1)}]
+		}
+		if {$e == 61} {
+			set runs {} ; set prev "" ; set len 0
+			foreach b $::eblinks { if {$b != $prev && $prev ne ""} { lappend runs [list $prev $len] ; set len 0 } ; set prev $b ; incr len }
+			set on [m blink_on] ; set off [m blink_off] ; set bad 0
+			foreach rn $runs { lassign $rn st len ; if {$st < 0 || $len != ($st ? $on : $off)} { incr bad } }
+			check {[llength $runs] >= 3 && !$bad && [lindex $runs 0 0] == 1} "game 4: the first slot's \"_\" blinks, shown $on frames, hidden $off, from the start ($runs); A held from game over: not typed"
+			ent_is 0 "___" none "A held from before, released: nothing typed"
+		}
+		switch $e {
+			10 { keymatrixup 2 0x40 }
+			62 { keymatrixdown 7 0x80 } 64 { keymatrixup 7 0x80 }
+			66 { ent_is 0 "[expr {[m blink_shown] ? "_" : " "}]__" none "RETURN with no letter: nothing" }
+			70 { keymatrixdown 3 0x80 } 72 { keymatrixup 3 0x80 }
+			73 { ent_is 1 "J__" none "J typed" }
+			74 { keymatrixdown 3 0x01 } 76 { keymatrixup 3 0x01 }
+			77 { ent_is 2 "JC_" none "C typed" }
+			78 { keymatrixdown 7 0x20 } 80 { keymatrixup 7 0x20 }
+			81 { ent_is 1 "J[expr {[m blink_shown] ? "C" : " "}]_" C "BS: C taken back, picked" }
+			82 { keymatrixdown 5 0x20 } 84 { keymatrixup 5 0x20 }
+			85 { ent_is 2 "JX_" none "X typed in its place" }
+			86 { keymatrixdown 7 0x80 }
+			90 { fail "game 4: RETURN didn't end the initials" ; finish }
+		}
+		return
+	}
+	set D [m rep_delay] ; set R [m rep_frames]
+	set T [expr {5 + $D + $R + 5}]
+	if {$e == 1} {
+		lassign [hi_with 12345678 "___"] r t
+		up 0x01
+		set bad [vram_bad [list_want "ENTER YOUR INITIALS" $t 1]]
+		check {$r == 0 && [m ent_row] == 0 && ![llength $bad]} "game 5: 12345678, the best: the initials on the list's first line, the rest a place down (wrong: $bad)"
+	}
+	switch -- $e {
+		3 { ent_is 0 "___" none "joystick 1's right held from game over: nothing picked" ; joyup 1 }
+		5 { joydown 1 0x08 }
+		6 { ent_is 0 "A__" A "right: A at once" }
+	}
+	if {$e == 5 + $D} { ent_is 0 "[expr {[m blink_shown] ? "A" : " "}]__" A "right held 0.4 s less a frame: still A" }
+	if {$e == 6 + $D} { ent_is 0 "[expr {[m blink_shown] ? "B" : " "}]__" B "right held 0.4 s: B" }
+	if {$e == 5 + $D + $R} { ent_is 0 "[expr {[m blink_shown] ? "B" : " "}]__" B "0.1 s less a frame on: still B" }
+	if {$e == 6 + $D + $R} { ent_is 0 "[expr {[m blink_shown] ? "C" : " "}]__" C "0.1 s on: C" ; joyup 1 }
+	switch -- [expr {$e - $T}] {
+		-2 { ent_is 0 "[expr {[m blink_shown] ? "C" : " "}]__" C "right released: still C" }
+		0 { joydown 1 0x10 } 2 { joyup 1 }
+		3 { ent_is 1 "C__" none "joystick 1's A: C taken" }
+		5 { joydown 2 0x04 } 6 { ent_is 1 "C[expr {[m blink_shown] ? "Z" : " "}]_" Z "joystick 2's left, none picked: Z" } 7 { joyup 2 }
+		9 { joydown 2 0x04 } 10 { ent_is 1 "C[expr {[m blink_shown] ? "Y" : " "}]_" Y "left again: Y" } 11 { joyup 2 }
+		13 { joydown 2 0x20 } 15 { joyup 2 }
+		16 { ent_is 2 "CY_" none "joystick 2's B: Y taken" }
+		18 { joydown 1 0x02 } 20 { joyup 1 }
+		21 { ent_is 1 "C[expr {[m blink_shown] ? "Y" : " "}]_" Y "down: Y taken back" }
+		23 { joydown 1 0x09 } 24 { ent_is 1 "C[expr {[m blink_shown] ? "Z" : " "}]_" Z "up-right (a diagonal): no end, right picks Z" } 25 { joyup 1 }
+		27 { down 0x01 } 29 { up 0x01 }
+		30 { ent_is 2 "CZ_" none "space: Z taken" }
+		32 { joydown 2 0x08 } 33 { ent_is 2 "CZ[expr {[m blink_shown] ? "A" : " "}]" A "right, none picked: A" } 34 { joyup 2 }
+		36 { joydown 1 0x10 }
+		38 { fail "game 5: the third letter taken didn't end the initials" ; finish }
+	}
+}
+# The entry's end (the first frame of its hold; RETURN, if it ended it, let go)
+proc entry_done {} {
+	keymatrixup 7 0x80
+	if {$::games == 1} { set sc 1450 ; set nm "G  " ; set want 7 } elseif {$::games == 4} { set sc 3500 ; set nm "JX " ; set want 86 } else { set sc 12345678 ; set nm "CZA" ; set want [expr {5 + [m rep_delay] + [m rep_frames] + 5 + 36}] }
+	lassign [hi_with $sc $nm] r t
+	set bad [vram_bad [list_want "ENTER YOUR INITIALS" $t 1]]
+	check {$::en == $want && [hi_ram] eq $t && ![llength $bad]} "game $::games: the initials \"$nm\" in at entry frame $::en (want $want): the table [join [lmap e [hi_ram] {join $e " "}] ", "], shown (wrong: $bad)"
+	set ::hi $t
+	build_titles
+}
+# The title after a game over (its first frame): the entry's hold over
+set short_checked 0
+proc hi_title_start {} {
+	if {$::entry_game != $::games} {
+		if {$::games in {2 3} && $::short_checked != $::games} {
+			set ::short_checked $::games
+			check {[hi_ram] eq $::hi} "game $::games: $::score_last points, short of the table (its last: [lindex $::hi end 0][expr {$::games == 2 ? ", a tie" : ""}]): no initials, straight to the title, the table unchanged"
+		}
+		return
+	}
+	if {$::holds == -1} return
+	check {$::entries == ($::games == 1 ? 1 : $::games - 2) && $::holds == [m done_frames] && ![m over_on]} "game $::games: the list stayed [m done_frames] frames ($::holds) after the initials; then the title (the best: [lindex $::hi 0 0]; checked on its third frame)"
+	set ::holds -1
+}
+# The title after game 4: left alone, the list (list_check); Ctrl-V 2 s
+# into it: the title with the egg up, its count from the start; 20 s on
+# the list again; space 3 s into it: game 5
+set lv_sn -1
+proc list_frame {} {
+	set F [m fps] ; set n $::sn ; set L [expr {20*$F + 1}]
+	if {$n == $L + 2*$F} { ctrl 1 ; vkey 1 ; set ::lv_sn $n }
+	if {$::lv_sn < 0} return
+	set k [expr {$n - $::lv_sn}] ; set E [expr {$::sym(EGG_SECS)*$F}]
+	if {$k == 2} { ctrl 0 ; vkey 0 }
+	if {$k == 3} {
+		set bad [vram_bad [egg_want]]
+		check {![w16 list_left] && [w16 egg_left] == $E - 2 && [w16 title_left] == 20*$F - 2 && ![llength $bad] && ![m egg_now]} "Ctrl-V on the high score list: the title with the egg up ([w16 egg_left] frames left), its 20 s from the start ([w16 title_left] frames left) (wrong: $bad)"
+	}
+	if {$k == 20*$F + 1} { list_check "after the list's Ctrl-V" }
+	if {$k == 23*$F + 1} { down 0x01 ; set ::press_sn $n }
+	if {$k == 23*$F + 4} { fail "space on the high score list doesn't start a game" ; finish }
+}
+proc hi_end {} {
+	check {$::hi_calls == 5 && $::entries == 3 && [hi_ram] eq $::hi} "high scores: hi_enter at every game's end ($::hi_calls), never in attract mode; the initials only for games 1, 4 and 5 ($::entries); the table as the model"
+	if {!$::BIN} return
+	set out [file join $::HSC_DIR out]
+	file mkdir $out
+	diskmanipulator export diska $out
+	set p [lindex [glob -nocomplain -directory $out terrafnt.hsc TERRAFNT.HSC] 0]
+	if {$p ne ""} { set f [open $p rb] ; set d [read $f] ; close $f ; set got [hsc_table $d] } else { set got "bad: no file" }
+	check {$got eq $::hi} "the disk's TERRAFNT.HSC, as the game wrote it: [expr {[string match bad:* $got] ? $got : [join [lmap e $got {join $e " "}] ", "]}]"
+	check {[info exists ::led_FDD] && !$::led_FDD} "the drive's LED off 8 s into the game after the save ([expr {[info exists ::led_FDD] ? $::led_FDD : "no ::led_FDD"}])"
+	file delete -force $::HSC_DIR
 }
