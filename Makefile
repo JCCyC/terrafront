@@ -73,6 +73,23 @@ $(ZIP): $(ROM) $(BIN) $(DSK) terrafnt.txt changes.txt
 	rm -f $@
 	zip -9 $@ $(ROM) $(BIN) $(DSK) terrafnt.txt changes.txt
 
+# The release zip licensed (licensezip.py: the ROM, BIN and DSK's license lines)
+FREEWARE := $(ZIP:.zip=_freeware.zip)
+PLAYTEST := $(ZIP:.zip=_playtest.zip)
+LICENSE_PY := licensezip.py licenserom.py licensebin.py licensedsk.py
+
+freeware: $(FREEWARE)
+
+playtest: $(PLAYTEST)
+
+$(FREEWARE): $(ZIP) $(LICENSE_PY)
+	python3 licensezip.py $< "THIS GAME IS FREEWARE" "SHARE THE ZIPFILE AT WILL" >$@.tmp
+	mv $@.tmp $@
+
+$(PLAYTEST): $(ZIP) $(LICENSE_PY)
+	python3 licensezip.py $< "PLAYTEST COPY" "DO NOT DISTRIBUTE" >$@.tmp
+	mv $@.tmp $@
+
 run: $(ROM)
 	$(call OPENMSX,-machine Gradiente_Expert_GPC-1 -carta $(ROM))
 
@@ -125,4 +142,4 @@ profile: $(ROM) test.tcl prof.tcl
 clean:
 	rm -rf build $(ROM) $(BIN) $(DSK) terrafnt_*_*_*.zip
 
-.PHONY: all zip run run-cbios run-nms8250 rundisk rundisk-nms8250 test test-disk profile clean
+.PHONY: all zip freeware playtest run run-cbios run-nms8250 rundisk rundisk-nms8250 test test-disk profile clean

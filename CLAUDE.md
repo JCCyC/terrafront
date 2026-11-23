@@ -454,7 +454,7 @@ there, and remove an entry when it's fixed.
   `main.asm`): the ROM, BIN, DSK, `terrafnt.txt` (the manual) and
   `changes.txt`; it refuses unless `terrafnt.txt`'s first line is
   `TERRA FRONT v. <version>` and `changes.txt`'s latest entry
-  `Version <version>`.
+  `Version <version>`. `make freeware` / `make playtest` → that zip with `_freeware` / `_playtest` before `.zip`, its ROM, BIN and DSK licensed by `licensezip.py`: "THIS GAME IS FREEWARE" / "SHARE THE ZIPFILE AT WILL", "PLAYTEST COPY" / "DO NOT DISTRIBUTE" (user's spec; only the license lines change: no version bump).
 - `make run` runs the Gradiente Expert 1.1 (primary target, 60 Hz),
   `make run-cbios` C-BIOS MSX1 (50 Hz), `make run-nms8250` the Philips
   NMS 8250 (MSX2, 50 Hz); `make rundisk` the disk on the Expert with a
