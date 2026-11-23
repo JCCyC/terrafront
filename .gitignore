@@ -10,3 +10,5 @@ __pycache__/
 /terrafnt.bin
 /terrafnt.dsk
 /terrafnt_*_*_*.zip
+# a licensed zip being written (make freeware / playtest), left by an interrupted make
+/terrafnt_*_*_*.zip.tmp

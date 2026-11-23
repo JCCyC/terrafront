@@ -140,6 +140,6 @@ profile: $(ROM) test.tcl prof.tcl
 	grep "^frames\|^MAX" build/profile-$(PROF_MACHINE).txt; grep "^TOP" build/profile-$(PROF_MACHINE).txt | head -5
 
 clean:
-	rm -rf build __pycache__ $(ROM) $(BIN) $(DSK) terrafnt_*_*_*.zip
+	rm -rf build __pycache__ $(ROM) $(BIN) $(DSK) terrafnt_*_*_*.zip terrafnt_*_*_*.zip.tmp
 
 .PHONY: all zip freeware playtest run run-cbios run-nms8250 rundisk rundisk-nms8250 test test-disk profile clean
