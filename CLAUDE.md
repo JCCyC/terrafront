@@ -367,7 +367,8 @@ at the loop's speed, the square legs' (102.3 px/s; `FREE_VEL_60/50` in
 back on that line and turns to a random direction away from it (at line
 8: any of the 31 strictly down ones; at 183: up, at least 30° from level,
 `BOUNCE_MIN_DEG` (user's spec: a near-level bounce could skim the
-front's lines, unwinnable), 30..150°: the 21 directions 38..58,
+front's lines, unwinnable; a shallow one coming down is left on
+purpose: it starts high, so it can be shot first, an urgency), 30..150°: the 21 directions 38..58,
 `BOUNCE_STEPS`, `BOUNCE_DIRS`; not a mirror). x is mod 272 as the
 formation's. A free enemy hit: it shows the ship's three boom images in its
 own colour, where it was (the boom's art box from the enemy's left column),
