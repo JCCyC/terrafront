@@ -215,6 +215,8 @@ proc score_ram {} {
 }
 proc score_vram_bad {} { text_bad $::sym(SCORE_ROW) $::sym(SCORE_COL) [score_str $::score_model] $::sym(SCORE_LEN) }
 proc en_sts {} { set l {} ; for {set i 0} {$i < 8} {incr i} { lappend l [m enemies [expr {$i*$::sym(EN) + $::sym(EN.ST)}]] } ; return $l }
+set cheat_wipe 0
+cart_bp $sym(cheat_boss) {} { set ::cheat_wipe 1 }
 proc score_frame {} {
 	set now [en_sts]
 	set breaks 0 ; set frees 0
@@ -225,6 +227,7 @@ proc score_frame {} {
 			if {$p < 2 && $c >= 2} { incr frees }
 		}
 	}
+	if {$::cheat_wipe} { set breaks 0 ; set frees 0 ; set ::cheat_wipe 0 }   ;# (the cheat key 1: the wave's enemies gone, no points)
 	set nb 0 ; set nf 0 ; set ::sc_boss 0 ; set old $::score_model
 	foreach c $::sc_calls {
 		lassign $c kind ships col
@@ -1152,12 +1155,24 @@ proc paint {t str row col} {
 proc build_titles {} {
 	set top [lindex $::hi 0 0]
 	set r $::sym(HISC_ROW)
-	set ::TITLE [paint [paint $::TITLE_RAW "HI SCORE" $r 24] $top [expr {$r + 1}] [expr {32 - [string length $top]}]]
+	set ::TITLE [paint [paint [expr {$::cheat ? [cheat_colours $::TITLE_RAW] : $::TITLE_RAW}] "HI SCORE" $r 24] $top [expr {$r + 1}] [expr {32 - [string length $top]}]]
 	set ::TITLE_ON $::TITLE
 	set ::TITLE_OFF $::TITLE
 	overlay $::CREDIT $::sym(CREDIT_ROW) 0
 	overlay $::URL $::sym(URL_ROW) 0
 	overlay $::PRESS $::BROW 1
+}
+# Cheat mode's title: the picture's colour bytes on rows 0..EGG_ROW-1 with
+# each nibble LOGO_COLOR made CHEAT_LOGO_COLOR
+set cheat 0
+proc cheat_colours {t} {
+	set from $::sym(LOGO_COLOR) ; set to $::sym(CHEAT_LOGO_COLOR)
+	for {set i 6144} {$i < 6144 + $::sym(EGG_ROW)*256} {incr i} {
+		set v [expr 0x[lindex $t $i]] ; set h [expr {$v >> 4}] ; set l [expr {$v & 15}]
+		if {$h == $from} { set h $to } ; if {$l == $from} { set l $to }
+		set t [lreplace $t $i $i [format %02x [expr {$h*16 + $l}]]]
+	}
+	return $t
 }
 build_titles
 # The easter egg (the spec's texts; the version from the ROM's version
@@ -1396,7 +1411,7 @@ proc splash_frame {} {
 		if {$::tnext eq "press"} {
 			if {$::sn == 6} { down 0x01 }
 			if {$::sn == 9} { fail "space doesn't start a new game after $::twhy" ; finish }
-		} elseif {$::tnext eq "list"} { try list_frame } elseif {$::sn > 27*[m fps]} { fail "the title left alone 20 s, the list 7 s after $::twhy: no attract mode" ; finish }
+		} elseif {$::tnext eq "list"} { try list_frame } elseif {$::tnext eq "cheat"} { try cheat_frame } elseif {$::sn > 27*[m fps]} { fail "the title left alone 20 s, the list 7 s after $::twhy: no attract mode" ; finish }
 		return
 	}
 	set F [m fps]
@@ -1474,7 +1489,7 @@ cart_bp $sym(main_loop) {} {
 	}
 	if {$::phase == 3} {
 		if {[m attract]} { try attract_begin } else {
-			check {$::sn == $::press_sn && $::tnext in {press egg list}} "after $::twhy, a new press of space starts a new game (splash frame $::sn; want $::press_sn)"
+			check {$::sn == $::press_sn && $::tnext in {press egg list cheat}} "after $::twhy, a new press of space starts a new game (splash frame $::sn; want $::press_sn)"
 			up 0x01
 			set ::phase 4
 			try new_game_checks
@@ -3067,7 +3082,7 @@ proc over_restart {} {
 	set k [expr {$::n - $::N0 + 1}]
 	set ::lw_last "L[m level] W[expr {[m form_enemy] + 1}]"
 	set bad [lw_bad $::lw_last]
-	set lwant [expr {$::games == 2 || $::games >= 4 ? "L1 W1" : ($::games == 3 ? "L1 W2" : "L3 W[expr {[m form_enemy] + 1}]")}]
+	set lwant [expr {$::games == 6 ? "L1 W5" : $::games == 2 || $::games >= 4 ? "L1 W1" : ($::games == 3 ? "L1 W2" : "L3 W[expr {[m form_enemy] + 1}]")}]
 	if {$::obonus} {
 		check {$::obonus_end eq [list $::sym(BS_NEXT) 0 500 0 1]} "game over 3: the boss's bonus over 2 s after its text came, under GAME OVER: its 500 points, the next frame the next wave, L1 W2 (boss_st, enemy, points; boss_st, enemy the next frame: $::obonus_end)"
 		set ::obonus 0
@@ -3081,7 +3096,7 @@ proc over_restart {} {
 	check {$::ostate eq "on" && $k == $::owant} "game over $::games: back to the title $k frames after it began (want $::owant: $::owhy)"
 	check {$::dropped == $::odropped} "game over $::games: the game ran every frame of it ([expr {$::dropped - $::odropped}] dropped)"
 	set ::ostate "" ; set ::phase 3 ; set ::sn 0
-	set ::twhy "game over $::games" ; set ::tnext [lindex {"" press press wait list press} $::games] ; set ::press_sn 6
+	set ::twhy "game over $::games" ; set ::tnext [lindex {"" press press wait list cheat press} $::games] ; set ::press_sn 6
 	set ::score_last [string trim [score_str $::score_model]]
 	set ::score_model 0 ; set ::sc_calls {} ; set ::sc_shown 0
 	unset -nocomplain ::last_frames
@@ -3107,7 +3122,13 @@ proc new_game_checks {} {
 		at [expr {$::n+5}] { ctrl 1 ; vkey 1 }
 		at [expr {$::n+10}] { ctrl 0 ; vkey 0 }
 		at [expr {$::n+12}] { check {![m egg_now] && ![m over_on] && [m front_mask] == 1} "Ctrl-V in a game: nothing" }
-		if {$::games == 3} { at [expr {$::n+$::F}] { hi_game 4 } } elseif {$::games == 4} { at [expr {$::n+$::F}] { hi_game 5 } } else {
+		# the cheat keys 1 and 2 before cheat mode: nothing
+		if {$::games < 5} {
+			at [expr {$::n+14}] { keymatrixdown 0 0x06 }
+			at [expr {$::n+17}] { keymatrixup 0 0x06 }
+			at [expr {$::n+19}] { check {![m cheat_on] && ![m boss_st] && [m form_enemy] == 0 && [m reserves] == 4} "new game $::games: the cheat keys 1 and 2 out of cheat mode: nothing (boss_st [m boss_st], enemy [m form_enemy], [m reserves] in reserve)" }
+		}
+		if {$::games == 3} { at [expr {$::n+$::F}] { hi_game 4 } } elseif {$::games == 4} { at [expr {$::n+$::F}] { hi_game 5 } } elseif {$::games == 5} { at [expr {$::n+20}] cheat_game } else {
 			at [expr {$::n+8*$::F}] { hi_end ; screenshot_and_finish }
 		}
 	}
@@ -3571,6 +3592,10 @@ proc entry_done {} {
 # The title after a game over (its first frame): the entry's hold over
 set short_checked 0
 proc hi_title_start {} {
+	if {$::games == 6} {
+		check {$::hi_calls == 5 && $::entries == 3 && [hi_ram] eq $::hi} "game 6, in cheat mode: $::score_last points, the best, but no high score entry (hi_enter calls $::hi_calls), the table unchanged"
+		return
+	}
 	if {$::entry_game != $::games} {
 		if {$::games in {2 3} && $::short_checked != $::games} {
 			set ::short_checked $::games
@@ -3611,4 +3636,75 @@ proc hi_end {} {
 	check {$got eq $::hi} "the disk's TERRAFNT.HSC, as the game wrote it: [expr {[string match bad:* $got] ? $got : [join [lmap e $got {join $e " "}] ", "]}]"
 	check {[info exists ::led_FDD] && !$::led_FDD} "the drive's LED off 8 s into the game after the save ([expr {[info exists ::led_FDD] ? $::led_FDD : "no ::led_FDD"}])"
 	file delete -force $::HSC_DIR
+}
+
+# Cheat mode. The title after game 5: CHEAT typed without CTRL; with CTRL
+# held: C H E A, CTRL released and pressed, T; C H E X A T; neither turns
+# it on; C H C H E A T does (a wrong C counts as the first letter): the
+# logo in CHEAT_LOGO_COLOR. Then space: game 6.
+set CHEAT_KEYS {C {3 0x01} H {3 0x20} E {3 0x04} A {2 0x40} T {5 0x02} X {5 0x20}}
+set cheat_plan {}
+proc cheat_type {word} { foreach c [split $word ""] { lappend ::cheat_plan [list key $c] } }
+cheat_type CHEAT
+lappend cheat_plan {check 0 "CHEAT typed without CTRL"} {ctrl 1}
+cheat_type CHEA
+lappend cheat_plan {ctrl 0} {ctrl 1}
+cheat_type T
+lappend cheat_plan {check 0 "CTRL held: C H E A, CTRL released and pressed, T"}
+cheat_type CHEXAT
+lappend cheat_plan {check 0 "CTRL held: C H E X A T"}
+cheat_type CHCHEAT
+lappend cheat_plan {on} {ctrl 0}
+proc cheat_frame {} {
+	set n $::sn
+	if {$n >= 10 && ($n - 10) % 4 == 2} { foreach {k rb} $::CHEAT_KEYS { keymatrixup {*}$rb } }
+	if {$n < 10 || ($n - 10) % 4} return
+	set i [expr {($n - 10) / 4}]
+	if {$i == 0} { check {![m cheat_on]} "cheat mode off at power-on" }
+	if {$i >= [llength $::cheat_plan]} {
+		if {$i == [llength $::cheat_plan]} { down 0x01 ; set ::press_sn $n }
+		return
+	}
+	set st [lindex $::cheat_plan $i]
+	switch [lindex $st 0] {
+		key {
+			lassign [dict get $::CHEAT_KEYS [lindex $st 1]] row bit
+			keymatrixdown $row $bit
+		}
+		ctrl { ctrl [lindex $st 1] }
+		check { check {![m cheat_on] && ![m cheat_step]} "cheat mode: [lindex $st 2]: still off" }
+		on {
+			set ::cheat 1 ; build_titles
+			set want [title_with $::lw_last $::score_last]
+			set bad {}
+			foreach base {0 6144} {
+				for {set i [expr {$base + 256}]} {$i < $base + $::sym(EGG_ROW)*256} {incr i} {
+					set a [expr {$base ? 0x2000 + $i - 6144 : $i}]
+					if {[debug read VRAM $a] != "0x[lindex $want $i]"} { lappend bad [format %04X $a] ; if {[llength $bad] > 5} break }
+				}
+			}
+			check {[m cheat_on] == $::sym(CHEAT_MASK) && ![llength $bad]} "cheat mode: CTRL held, C H C H E A T: on (cheat_on [m cheat_on]); the logo in colour $::sym(CHEAT_LOGO_COLOR) (rows 1..[expr {$::sym(EGG_ROW) - 1}] wrong: $bad)"
+		}
+	}
+}
+# Game 6, in cheat mode: key 1 goes to the level's next boss (L1 W5's),
+# key 2 gives a reserve ship; then game over with the best score: no entry
+proc cheat_game {} {
+	set ::nocheck 1 ; set ::ebon 0   ;# (the boss's cheat: the per-frame models don't follow it)
+	check {[m cheat_on] == $::sym(CHEAT_MASK)} "cheat mode still on in a new game"
+	keymatrixdown 0 0x02
+	at [expr {$::n+2}] { keymatrixup 0 0x02 }
+	at [expr {$::n+5}] {
+		check {[m boss_st] && [m form_enemy] == 4 && [lw_bad "L1 W5"] eq ""} "cheat mode: key 1 in a game: the boss after wave 5 (boss_st [m boss_st], enemy [m form_enemy]), \"L1 W5\" shown"
+		keymatrixdown 0 0x04
+	}
+	at [expr {$::n+7}] { keymatrixup 0 0x04 }
+	at [expr {$::n+10}] {
+		check {[m reserves] == 5} "cheat mode: key 2 in a game: a reserve ship ([m reserves] in reserve)"
+		set ::games 6
+		score_write 99999998
+		debug write memory $::sym(reserves) 0
+		set ::ostate wait
+		kill_all
+	}
 }

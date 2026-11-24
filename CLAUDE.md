@@ -41,9 +41,20 @@ every ship's nose at 230 px/s, drawn in the SCREEN 2 bitmap (the ships fill
 the 4 sprites a line), at most 2 volleys in flight (a press with both in
 flight is ignored), one volley per press. Each volley plays a 0.25 s laser
 "cheeoom" on PSG channel A. Controls: arrows + space (fire) + C (call-up), or
-either joystick (button A fires, B calls up). **Cheat (playtesting):** key 1
-(`CHEAT_KEYS`, 0 to build without it; `IN_BOSS`, `cheat_boss` from
-`next_wave`), a press in a game (not in game over, nor during a boss), goes
+either joystick (button A fires, B calls up). **Cheat mode** (user's
+spec; `cheat_on`, kept until a reset, before `game_ram`): off at power-on;
+on the title (not the high score list), CTRL held, C H E A T typed in
+turn (`CHEAT_WORD`, stored XORed with `CHEAT_XOR`, `CHEAT_TEXT`;
+`cheat_word` per splash poll, `ent_key`'s letters, `cheat_step`; a wrong
+letter starts over, a C counting as the first; CTRL up starts over)
+turns it on: `cheat_on` = `CHEAT_MASK` (the cheat keys' `IN_*` bits,
+`read_input` masks them with it), the logo turns colour 2
+(`cheat_logo`: the colour table's rows 0..19, each nibble `LOGO_COLOR`
+(7) made `CHEAT_LOGO_COLOR` (2), read and written back in VRAM, about
+0.3 s; again at every `splash`), and no score enters the high score
+table (`restart` skips `hi_enter`). **Cheat keys (playtesting, cheat
+mode only):** key 1 (`CHEAT_KEYS`, 0 to build without them and cheat
+mode; `IN_BOSS`, `cheat_boss` from `next_wave`), a press in a game (not in game over, nor during a boss), goes
 to the level's next boss: that frame the wave's enemies are gone (no bonus
 counted), `form_enemy`, `form_cidx` and `wave_n` move on to the wave
 before the boss (its level text shown), and the boss begins (wave 1..5:
@@ -602,7 +613,15 @@ the staged test below. Then the enemies' part, hits on,
   button A; Ctrl-V and joystick 1's button A, Ctrl-V and space: each
   takes the egg away (the title's text back), no game; then a press of
   space: a fourth game, as at power-on (Ctrl-V in it: nothing), for the
-  final screenshot. Every wave's end: the bonus model (ship deaths
+  final screenshot (before that, games 3 and 4: keys 1 and 2 do
+  nothing out of cheat mode). Cheat mode (`cheat_frame`, `cheat_game`):
+  the title after game 5: CHEAT without CTRL, CTRL C H E A (CTRL
+  released and pressed) T, CTRL C H E X A T: still off; CTRL C H C H E
+  A T: on, the logo's colour bytes (rows 1..19) 7 made 2 (`cheat_colours`,
+  `::cheat`: every later title check too); game 6: key 1, the boss after
+  wave 5 (L1 W5), key 2, a fifth reserve, the per-frame models off; its
+  99999998 makes no entry (`hi_enter` not called); game 7 for the
+  screenshot. Every wave's end: the bonus model (ship deaths
   seen at `ship_dies`, the streak, the reserve that frame in RAM and VRAM,
   `bonus_start` calls). The score, every frame of the game: each `score_add` call
   (a breakpoint) with the front's living ships before the hit (the front

@@ -327,7 +327,15 @@ BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OV
 ; between were played), and the boss begins the next frame. Key 2 (a press,
 ; in a game, not in game over; a boss on or not) gives a reserve ship, if
 ; under RESERVE_MAX, with the happy beep (as a bonus ship). 0: no cheats
+; (nor cheat mode). They work only in cheat mode: on the title (not the
+; high score list), CTRL held, CHEAT_WORD's letters typed in turn (a wrong
+; letter or CTRL up starts over); it stays on until a reset, and no score
+; enters the high score table meanwhile. The title's logo then shows in
+; CHEAT_LOGO_COLOR (its LOGO_COLOR bytes changed).
 CHEAT_KEYS      equ 1
+        define CHEAT_WORD "CHEAT"
+LOGO_COLOR      equ 7           ; cyan: the logo's colour in images/title.png ...
+CHEAT_LOGO_COLOR equ 2          ; ... and in cheat mode (green)
 ; The formation's loop (its boxes and cycle: path.py): at its highest, its
 ; top (the top pair's sprites' first line) this many lines under the
 ; playfield's first
@@ -444,6 +452,7 @@ IN_FIRE         equ 10h
 IN_CALL         equ 80h
 IN_BOSS         equ 01h         ; the cheat key 1 (CHEAT_KEYS)
 IN_SHIP         equ 02h         ; the cheat key 2 (CHEAT_KEYS)
+CHEAT_MASK      equ IN_BOSS|IN_SHIP ; the cheat keys (cheat_on)
 IN_EGG          equ 40h         ; Ctrl-V, both down (read in attract mode only)
 ENT_UP          equ 01h         ; the initials' entry (ent_dirs): up, straight ...
 ENT_DOWN        equ 02h         ; ... down, straight (and IN_LEFT, IN_RIGHT) ...
@@ -634,6 +643,8 @@ lw_cell:        ds 2            ; level_text: one character to print (0-terminat
 score_digits:   ds SCORE_LEN    ; show_score: the score's cells, ASCII ...
 score_shown:    ds SCORE_LEN+1  ; ... and as they show (0-terminated; the title shows the last game's; 0: none)
 egg_now:        ds 1            ; nonzero: the title opens with the egg up (attract mode's or the list's Ctrl-V)
+cheat_on:       ds 1            ; cheat mode: CHEAT_MASK (the cheat keys' IN_* bits) if on, else 0 (until a reset)
+cheat_step:     ds 1            ; ... the title: CHEAT_WORD's letters typed so far, CTRL held
 hi_table:       ds HI_COUNT*HI_SIZE ; the high scores, best first (ties: the older above)
         ifdef BIN
 has_disk:       ds 1            ; nonzero: a disk ROM (the scores are saved)
@@ -907,8 +918,9 @@ restart:
         call vdp_write
         ld a,SPR_END
         out (VDP_DATA),a
-        ld a,(attract)
-        or a
+        ld a,(attract)          ; (nor in cheat mode)
+        ld hl,cheat_on
+        or (hl)
         call z,hi_enter
         ld hl,game_ram
         ld de,game_ram+1
@@ -1113,6 +1125,13 @@ splash:
         ld hl,TITLE_COL_ROWS
         ld de,(GRPCOL)
         call unpack_rows
+        if CHEAT_KEYS
+        ld a,(cheat_on)
+        or a
+        call nz,cheat_logo
+        xor a
+        ld (cheat_step),a
+        endif
         ld hl,lw_text           ; the last game's level and wave (at power-on: none)
         ld de,LW_ROW*256+LW_COL*8
         ld c,TEXT_COLOR*16+BG_COLOR
@@ -1154,7 +1173,11 @@ splash:
         or l
         jp nz,.legg             ; the high score list up: the title, with the egg
         call show_egg           ; (or a tap towards the license)
-.noegg: ld a,(lic_state)
+.noegg:
+        if CHEAT_KEYS
+        call cheat_word
+        endif
+        ld a,(lic_state)
         or a
         jr nz,.frame            ; the license just came
         ld hl,key_prev+KEY_ROW  ; space: down now, up before
@@ -1337,6 +1360,116 @@ egg_pressed:
         ld a,(hl)
         and KEY_V
         ret
+
+        if CHEAT_KEYS
+; The splash's last poll: CTRL up, CHEAT_WORD starts over; else a letter
+; just pressed on the title (not the list) is its next (on its last:
+; cheat mode on, the logo recoloured), or a wrong one (it starts over: a
+; first letter counts as the first)
+cheat_word:
+        ld hl,cheat_step
+        ld a,(key_state+KEY_ROW_CTRL)
+        and KEY_CTRL
+        jr nz,.over
+        ld de,(list_left)
+        ld a,d
+        or e
+        ret nz
+        push hl
+        call ent_key            ; A: the letter (or BS, RETURN, 0)
+        pop hl
+        or a
+        ret z
+        ld b,a
+        ld e,(hl)
+        ld d,0
+        push hl
+        ld hl,CHEAT_TEXT
+        add hl,de
+        ld a,(hl)
+        pop hl
+        xor CHEAT_XOR
+        cp b
+        jr z,.next
+        ld a,(CHEAT_TEXT)
+        xor CHEAT_XOR
+        cp b
+        ld a,1
+        jr z,.set
+.over:  xor a
+.set:   ld (hl),a
+        ret
+.next:  inc (hl)
+        ld a,(hl)
+        cp CHEAT_LEN
+        ret c
+        ld (hl),0
+        ld a,CHEAT_MASK
+        ld (cheat_on),a
+        ; fall through
+
+; The logo in CHEAT_LOGO_COLOR: in the colour table's rows 0..EGG_ROW-1
+; (the picture's, the text's are white), each nibble LOGO_COLOR changed.
+; Read and written back a byte at a time (a byte changed only), at least
+; 29 T between VRAM accesses: safe outside vertical blank. Under 0.3 s.
+cheat_logo:
+        ld hl,(GRPCOL)
+        ld bc,EGG_ROW*256
+.byte:  di
+        ld a,l
+        out (VDP_ADDR),a
+        ld a,h
+        out (VDP_ADDR),a
+        ei
+        ex (sp),hl              ; (the VDP's read-ahead)
+        ex (sp),hl
+        in a,(VDP_DATA)
+        ld e,a
+        ld d,a
+        and 0F0h
+        cp LOGO_COLOR*16
+        jr nz,.lo
+        ld a,d
+        xor (LOGO_COLOR^CHEAT_LOGO_COLOR)*16
+        ld d,a
+.lo:    ld a,d
+        and 0Fh
+        cp LOGO_COLOR
+        jr nz,.put
+        ld a,d
+        xor LOGO_COLOR^CHEAT_LOGO_COLOR
+        ld d,a
+.put:   ld a,d
+        cp e
+        jr z,.same
+        di
+        ld a,l
+        out (VDP_ADDR),a
+        ld a,h
+        or 40h
+        out (VDP_ADDR),a
+        ei
+        ld a,d
+        out (VDP_DATA),a
+.same:  inc hl
+        dec bc
+        ld a,b
+        or c
+        jr nz,.byte
+        ret
+
+; CHEAT_WORD, each letter XORed with CHEAT_XOR (not plain in a ROM dump)
+CHEAT_XOR       equ 5Ah
+CHEAT_TEXT:
+        lua allpass
+        local w = string.gsub(sj.get_define("CHEAT_WORD"), '"', '')
+        for i = 1, #w do
+            sj.add_byte(string.byte(w, i) ~ sj.get_label("CHEAT_XOR"))
+        end
+        endlua
+CHEAT_LEN       equ $-CHEAT_TEXT
+        assert CHEAT_LEN >= 2 && CHEAT_LEN < 256
+        endif
 
 ; NZ: any key of matrix rows 0..KEY_ANY_ROWS-1 or either joystick's button
 ; down in the splash's last poll (not the sticks' directions)
@@ -1775,7 +1908,8 @@ read_input:
         in a,(PPI_B)
         rrca                    ; KEY_1 to bit 0 (IN_BOSS), KEY_2 to bit 1 (IN_SHIP)
         cpl                     ; 1 = pressed
-        and IN_BOSS|IN_SHIP
+        ld hl,cheat_on          ; (only in cheat mode)
+        and (hl)
         or c
         ld c,a
         endif
