@@ -41,7 +41,17 @@ every ship's nose at 230 px/s, drawn in the SCREEN 2 bitmap (the ships fill
 the 4 sprites a line), at most 2 volleys in flight (a press with both in
 flight is ignored), one volley per press. Each volley plays a 0.25 s laser
 "cheeoom" on PSG channel A. Controls: arrows + space (fire) + C (call-up), or
-either joystick (button A fires, B calls up). **Cheat mode** (user's
+either joystick (button A fires, B calls up). **Pause** (user's spec):
+in a game (game over too; not attract mode), a press of F1 or STOP
+(`pause_check`, after `read_input`; `pause_key`: a key down now, up
+before, `pause_held`) stops it: "PAUSED" (`PAUSE_TEXT`) white, centred on
+the top status row (`PAUSE_ROW` 0, `PAUSE_COL` 13), the PSG silenced
+(`init_sound`; each sound's next frame writes its volume and the mixer
+again), the sprites as they were, `halt` until the next press of either;
+then the text's cells blank again (spaces, colour 11h, as the row was),
+one more `halt`, the input read again (`read_input`: what's held then
+isn't a fresh fire or call-up) and the frame goes on. Release of a key
+never counts. `key_row` (A = row) reads a keyboard row (keeps BC). **Cheat mode** (user's
 spec; `cheat_on`, kept until a reset, before `game_ram`): off at power-on;
 on the title (not the high score list), CTRL held, C H E A T typed in
 turn (`CHEAT_WORD`, stored XORed with `CHEAT_XOR`, `CHEAT_TEXT`;
@@ -490,7 +500,10 @@ there, and remove an entry when it's fixed.
   rest of the status rows blank. Then: ship start, speed
   over 1 s, both arrows, edge clamps for 1, 2 and 4 ships and their sprite
   X / EC, bullet spawn point, speed, removal at the top, the shot sound's
-  length, the 2-volley limit, one shot per press, the reserve ships' pixels
+  length, the 2-volley limit, one shot per press; the pause (a volley in flight, its sound on: F1,
+  1 s on PAUSED on the top row in VRAM, R8..R10 0, nothing moved, no
+  main loop pass; STOP: the text gone, the volley one step on, the
+  sound one entry on and heard; `plan_pause`), the reserve ships' pixels
   and colours in VRAM; three call-ups (side, distance, frames ≤ 0.25 s,
   constant step, frozen front, glue point), a shot during one, C ignored
   with 4 ships, a 4-bullet volley; joystick buttons A (fires, no
@@ -592,7 +605,7 @@ the staged test below. Then the enemies' part, hits on,
   (R7..R10) and the top row unchanged; a call-up roll (a breakpoint)
   exactly every 5 s, a call-up starting exactly on the heads that could
   (against `call_up`'s start, a snapshot) and none else but an empty
-  front's; no dropped frame. The first plays 40 s (C held 1 s ignored; a game over, staged at 25 s if none came by itself:
+  front's; no dropped frame. The first plays 40 s (C held 1 s, F1 and STOP 0.5 s each ignored: no pause; a game over, staged at 25 s if none came by itself:
   no GAME OVER on any of its frames, the title 10 s on; the front moves
   both ways over 100+ columns, shoots,
   calls up, dodges: each dodge's target, from the threat tried (a

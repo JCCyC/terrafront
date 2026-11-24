@@ -66,9 +66,13 @@ On a PC, Mac or phone, with an emulator:
   Move ............ Left/Right   Stick left/right
   Fire ............ Space        Button 1 (A)
   Call up a ship .. C            Button 2 (B)
+  Pause ........... F1 or STOP   -
 
 Each press of fire shoots one volley; holding it down doesn't keep
 firing. At most two volleys fly at a time.
+
+F1 or STOP pauses the game ("PAUSED" shows at the top of the screen);
+press either again to go on.
 
 On the title screen, press the space bar or a joystick's button 1 to
 start a game. Left alone for 20 seconds, the title gives way to the

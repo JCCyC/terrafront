@@ -382,7 +382,45 @@ proc plan {} {
 	set a [expr {$a+2*$F}]
 	at $a { set ::spawns 0 ; down 0x01 }
 	at [expr {$a+$F}] { up 0x01 ; check {$::spawns == 1} "fire held 1 s: one shot ($::spawns)" }
-	plan_calls [expr {$a+$F+5}]
+	plan_pause [expr {$a+$F+5}]
+}
+
+# The pause, with a volley in flight and its sound playing: F1 pressed
+# (and let go): the next frame the main loop stops; 1 s on, PAUSED centred
+# on the top status row (white), the PSG silent (R8..R10), nothing moved
+# (the volley, the front, the stars, the formation, the sound's place), no
+# main loop pass; STOP pressed: the frame after the main loop's next pass,
+# the text gone (the row as before), the volley one frame's step on, the
+# sound one table entry on and heard again
+proc pause_snap {} {
+	list [m volleys 0] [m volleys 1] [m ship_x] [star_list] [w16 form_x] [w16 form_tick] [w16 sfx_ptr] [en_sts]
+}
+proc plan_pause {a} {
+	at $a { down 0x01 }
+	at [expr {$a+1}] { up 0x01 }
+	at [expr {$a+3}] {
+		set ::psnap [pause_snap] ; set ::pn $::n ; set ::pmid 0
+		keymatrixdown 6 0x20
+		after time 0.1 { keymatrixup 6 0x20 }
+		after time 1.0 { try pause_mid }
+	}
+	at [expr {$a+4}] {
+		set bad [lw_bad "L1 W1"]
+		lassign $::psnap y0 x0 sx st fx ft sp
+		set step [m bullet_step]
+		check {$::pmid && ![llength $bad] && [m volleys 0] == $y0 - $step && [m volleys 1] == $x0 && [m ship_x] == $sx && [w16 sfx_ptr] == $sp + 4 && [vol] > 0} "STOP ends the pause: PAUSED gone (wrong: [lrange $bad 0 5]), the volley one step on (Y [m volleys 0], from $y0 by $step), the shot sound one entry on and heard (volume [vol])"
+		unset ::last_frames    ;# (the pause's frames aren't dropped ones)
+	}
+	plan_calls [expr {$a+10}]
+}
+proc pause_mid {} {
+	set ::pmid 1
+	set bad [text_bad $::sym(PAUSE_ROW) $::sym(PAUSE_COL) "PAUSED" 6]
+	check {$::sym(PAUSE_COL) == 13 && ![llength $bad]} "F1 pauses: PAUSED centred on the top status row, white (wrong: [lrange $bad 0 5])"
+	check {[psg 8] == 0 && [psg 9] == 0 && [psg 10] == 0} "paused: the PSG silent (R8..R10 [psg 8] [psg 9] [psg 10])"
+	check {$::n == $::pn && [pause_snap] eq $::psnap} "paused 1 s: no main loop pass, nothing moved"
+	keymatrixdown 7 0x10
+	after time 0.1 { keymatrixup 7 0x10 }
 }
 
 # The call-ups. Start: one ship, 4 in reserve.
@@ -3276,6 +3314,8 @@ proc attract_frame {} {
 	if {$::attracts == 1} {
 		if {$::an == 2*$F} { cdown }
 		if {$::an == 3*$F} { cup }
+		if {$::an == 4*$F} { keymatrixdown 6 0x20 } elseif {$::an == 4*$F + $F/2} { keymatrixup 6 0x20 }
+		if {$::an == 5*$F} { keymatrixdown 7 0x10 } elseif {$::an == 5*$F + $F/2} { keymatrixup 7 0x10 }
 	} elseif {$::attracts == 2} {
 		if {$::an == $F} { ctrl 1 } elseif {$::an == $F + $F/2} { ctrl 0 } elseif {$::an == 2*$F} { vkey 1 } elseif {$::an == 2*$F + $F/2} { vkey 0 }
 		if {$::an == 3*$F} { joydown 1 0x10 ; set ::aquit_at $::an }
@@ -3295,7 +3335,7 @@ proc attract_restart {} {
 	set rbad {} ; set k 0
 	foreach r $::arolls { incr k ; if {$r != $k*5*$F} { lappend rbad $r } }
 	check {[llength $::arolls] == $nrolls && ![llength $rbad]} "attract mode $::attracts: a call-up roll every 5 s ($::arolls; want $nrolls, at multiples of [expr {5*$F}])"
-	check {$::att_bad == 0} "attract mode $::attracts: silent, the top status row unchanged, every frame; a call-up exactly on the rolls' heads that could ($::aheads heads, $::acalls call-ups by them, $::aforced by an empty front[expr {$::attracts == 1 ? "; C held 1 s ignored" : ""}]; [expr {$::att_bad ? "first wrong: $::att_first" : "none wrong"}])"
+	check {$::att_bad == 0} "attract mode $::attracts: silent, the top status row unchanged, every frame; a call-up exactly on the rolls' heads that could ($::aheads heads, $::acalls call-ups by them, $::aforced by an empty front[expr {$::attracts == 1 ? "; C held 1 s, F1 and STOP 0.5 s each ignored: no pause" : ""}]; [expr {$::att_bad ? "first wrong: $::att_first" : "none wrong"}])"
 	if {$::attracts == 1} {
 		check {$::aover >= 0 && $::aoverframes > 0} "attract mode 1: game over ([expr {$::astaged ? "staged at 25 s" : "by itself"}], [expr {$::aover - 1}] frames in): no GAME OVER shown on its $::aoverframes frames, back to the title 10 s on (above)"
 	}

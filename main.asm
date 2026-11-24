@@ -116,7 +116,9 @@
 ; license lines instead, until any key or button. Not in a game.
 ; Controls: left / right arrows, space (fire), C (call-up); or either
 ; joystick (button A fires, B calls up). Fire and call-up are
-; edge-triggered: one action per press.
+; edge-triggered: one action per press. F1 or STOP pauses the game (not
+; attract mode): PAUSED centred on the top status row, silent, until the
+; next press of either.
 ; Speeds are Bresenham on frames (whole pixels plus a remainder per frame,
 ; per frame rate), so they're the same in px/s at 50 and 60 Hz.
 ; ---------------------------------------------------------------------------
@@ -279,6 +281,9 @@ LW_LEN          equ 8           ; ... cells kept for it ("L255 W10")
 SCORE_ROW       equ 0           ; the score: the top status row ...
 SCORE_LEN       equ 8           ; ... its last cells, right-aligned, no leading zeros (99999999 at most)
 SCORE_COL       equ 32-SCORE_LEN
+PAUSE_ROW       equ 0           ; PAUSED (F1 or STOP pauses the game): the top status row, centred
+PAUSE_COL       equ (32-PAUSE_LEN)/2
+        assert PAUSE_COL >= LW_COL+LW_LEN && PAUSE_COL+PAUSE_LEN <= SCORE_COL
 ;
 ; Points: a pair broken up, a free enemy's death (shot, or crashing into a
 ; ship), with a one-ship front; with more ships, the front's share of them
@@ -494,6 +499,10 @@ KEY_ROW_CTRL    equ 6
 KEY_CTRL        equ 02h
 KEY_ROW_V       equ 5
 KEY_V           equ 08h
+KEY_ROW_F1      equ 6
+KEY_F1          equ 20h
+KEY_ROW_STOP    equ 7
+KEY_STOP        equ 10h
 KEY_ANY_ROWS    equ 9           ; the license goes at any key of rows 0..8 (as Skyfighter's)
 JOY_BUTTONS     equ 30h         ; R14: buttons A and B
 KEY_ROWS        equ 11          ; keyboard matrix rows 0..10 (9, 10: the keypad, if any)
@@ -675,6 +684,7 @@ att_target:     ds 1            ; ... the column it moves the front's ship_x to
 att_pause:      ds 1            ; ... thinks it still stands there
 att_tw:         ds 1            ; ... attract_dodge: the threat's width - 1
 title_left:     ds 2            ; splash: frames until attract mode
+pause_held:     ds 1            ; F1 and STOP held last time (KEY_F1, KEY_STOP bits: 1 = held)
 input:          ds 1            ; IN_* this frame
 input_prev:     ds 1            ; ... and last frame (fire is edge-triggered)
 ship_x:         ds 1            ; front slot 0's art's left column, 0..256-front_w
@@ -1018,6 +1028,7 @@ main_loop:
         halt
         call upload_sat         ; last frame's sprites, in vertical blank
         call read_input
+        call pause_check        ; (F1 or STOP: until the next press)
         call booms              ; before the hits: a new boom's first image shows its full count
         call enemy_booms        ; ... and before the hits
         call boss_booms
@@ -1873,11 +1884,8 @@ read_input:
         ld a,(input)
         ld (input_prev),a
         ld c,0
-        in a,(PPI_C)            ; keyboard row KEY_ROW
-        and 0F0h
-        or KEY_ROW
-        out (PPI_C),a
-        in a,(PPI_B)
+        ld a,KEY_ROW
+        call key_row
         cpl                     ; 1 = pressed
         ld b,a
         and KEY_LEFT
@@ -1891,21 +1899,15 @@ read_input:
         and KEY_SPACE
         jr z,.k3
         set 4,c                 ; IN_FIRE
-.k3:    in a,(PPI_C)            ; keyboard row KEY_ROW_C
-        and 0F0h
-        or KEY_ROW_C
-        out (PPI_C),a
-        in a,(PPI_B)
+.k3:    ld a,KEY_ROW_C
+        call key_row
         and KEY_C
         jr nz,.k4
         set 7,c                 ; IN_CALL
 .k4:
         if CHEAT_KEYS
-        in a,(PPI_C)            ; keyboard row KEY_ROW_1: the cheat keys 1 and 2
-        and 0F0h
-        or KEY_ROW_1
-        out (PPI_C),a
-        in a,(PPI_B)
+        ld a,KEY_ROW_1          ; the cheat keys 1 and 2
+        call key_row
         rrca                    ; KEY_1 to bit 0 (IN_BOSS), KEY_2 to bit 1 (IN_SHIP)
         cpl                     ; 1 = pressed
         ld hl,cheat_on          ; (only in cheat mode)
@@ -1925,17 +1927,11 @@ read_input:
         ld a,c
         ld (input),a
         ret
-.cpu:   in a,(PPI_C)            ; attract mode: Ctrl-V too (IN_EGG)
-        and 0F0h
-        or KEY_ROW_CTRL
-        out (PPI_C),a
-        in a,(PPI_B)
+.cpu:   ld a,KEY_ROW_CTRL       ; attract mode: Ctrl-V too (IN_EGG)
+        call key_row
         ld b,a
-        in a,(PPI_C)
-        and 0F0h
-        or KEY_ROW_V
-        out (PPI_C),a
-        in a,(PPI_B)
+        ld a,KEY_ROW_V
+        call key_row
         and KEY_V
         jr nz,.noegg
         ld a,b
@@ -1958,6 +1954,62 @@ read_input:
         ret
         assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h && IN_BOSS == 01h && IN_SHIP == 02h && IN_EGG == 40h
         assert KEY_1 == IN_BOSS*2 && KEY_2 == IN_SHIP*2
+
+; A = keyboard row A (bit = 0 when pressed). Keeps BC, D, HL.
+key_row:
+        ld e,a
+        in a,(PPI_C)
+        and 0F0h
+        or e
+        out (PPI_C),a
+        in a,(PPI_B)
+        ret
+
+; The pause (not in attract mode): a press of F1 or STOP stops the game
+; (nothing moves; the PSG silent, init_sound), PAUSED centred on the top
+; status row, until the next press; then the text goes and the game goes
+; on, with the input read again (read_input: what's held then isn't a
+; press of fire or call-up)
+pause_check:
+        ld a,(attract)
+        or a
+        ret nz
+        call pause_key
+        ret z
+        ld hl,PAUSE_TEXT
+        ld c,TEXT_COLOR*16+BG_COLOR
+        call .print
+        call init_sound
+.wait:  halt
+        call pause_key
+        jr z,.wait
+        ld hl,PAUSE_BLANK
+        ld c,BG_COLOR*16+BG_COLOR   ; (the status row's cells as they were)
+        call .print
+        halt
+        jp read_input
+.print: ld de,PAUSE_ROW*256+PAUSE_COL*8
+        jp print_text
+
+; NZ: F1 or STOP pressed now, up last time (pause_held)
+pause_key:
+        ld a,KEY_ROW_F1
+        call key_row
+        and KEY_F1
+        ld c,a
+        ld a,KEY_ROW_STOP
+        call key_row
+        and KEY_STOP
+        or c
+        xor KEY_F1|KEY_STOP     ; 1 = held
+        ld hl,pause_held
+        ld c,(hl)
+        ld (hl),a
+        ld a,c
+        cpl
+        and (hl)
+        ret
+        assert (KEY_F1 & KEY_STOP) == 0
 
 ; C |= the joystick's left, right, button A (fire) and B (call-up) as IN_*;
 ; the port is selected in R15 by (R15 and E) or B
@@ -6938,6 +6990,10 @@ EGG_TEXTS:
         assert CREDIT_ROW >= EGG_ROW && URL_ROW >= EGG_ROW && BLINK_ROW >= EGG_ROW   ; (title_rows wipes them)
         assert LICENSE_ROW >= EGG_ROW && LICENSE_ROW+1 <= 23 && LICENSE_LEN <= 32
 DEC_POWERS:     dw 10000, 1000, 100, 10, 1
+PAUSE_TEXT:     db "PAUSED",0
+PAUSE_LEN       equ $-PAUSE_TEXT-1
+PAUSE_BLANK:    db "      ",0
+        assert $-PAUSE_BLANK-1 == PAUSE_LEN
 OVER_TEXT:      db "GAME OVER",0
 OVER_LEN        equ $-OVER_TEXT-1
 SPACE_TEXT:     db " ",0

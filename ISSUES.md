@@ -38,11 +38,11 @@ screenshots, and with extra breakpoints in the wave-begin code.
 
 ## Code space: the ROM and the BIN are nearly full
 
-Found 2026-11-22 (high scores, 0.9.2). Since cheat mode (2026-11-24) the
-16 KB ROM has 545 bytes free (`code_end` 7DDFh); the BIN, the same code
-plus the disk code (`hsc_*`, `bdos`, `disk_timer`), ends at BFAAh, 86
+Found 2026-11-22 (high scores, 0.9.2). Since the pause (2026-11-24) the
+16 KB ROM has 471 bytes free (`code_end` 7E29h); the BIN, the same code
+plus the disk code (`hsc_*`, `bdos`, `disk_timer`), ends at BFF4h, 12
 bytes under its RAM at C000h (`assert $ <= RAM_BASE`). So the BIN runs
-out first: most likely at the next step of any size.
+out first: at the next step.
 
 Plan, when a step doesn't fit: first the BIN's RAM up (`RAM_BASE` CF00h:
 its IM 2 jump at D8D8h stays under `BIN_STACK_ROOM`, D900h; the BIN's
@@ -51,4 +51,5 @@ cartridge (4000h..BFFFh, page 2 enabled at `init` with ENASLT, as
 HARD-EARNED-EXPERIENCE.md says; its RAM at E000h stays). Past about
 19.75 KB the BIN needs another layout (part of it in page 1's RAM).
 
-**Decision:** pending (the user's): act when a step needs it.
+**Decision:** the user's (2026-11-24): move the RAM and extend the ROM
+when a step needs it; no need to squeeze code to stay in the limits.
