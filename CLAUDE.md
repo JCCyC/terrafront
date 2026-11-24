@@ -364,8 +364,10 @@ and 2k+1) flies alone from where it was, at a random one of 64 directions (never
 level: 0 and 32 are left out),
 at the loop's speed, the square legs' (102.3 px/s; `FREE_VEL_60/50` in
 `path.py`, 1/256 px a frame). When its art passes line 8 or 183 it is put
-back on that line and turns to a random direction away from it (any of
-the 31 strictly down or up ones, not a mirror). x is mod 272 as the
+back on that line and turns to a random direction away from it (at line
+8: any of the 31 strictly down ones; at 183: up, at least 30° from level,
+`BOUNCE_MIN_DEG` (user's spec), 30..150°: the 21 directions 38..58,
+`BOUNCE_STEPS`, `BOUNCE_DIRS`; not a mirror). x is mod 272 as the
 formation's. A free enemy hit: it shows the ship's three boom images in its
 own colour, where it was (the boom's art box from the enemy's left column),
 for the ship's boom frame counts, and the ship's death sound (re)starts;
@@ -650,7 +652,7 @@ the staged test below. Then the enemies' part, hits on,
   (written) the three crashes stop it at 99999999. It checks the velocity table (64 directions, the square
   legs' speed), every enemy's boom (images and frame counts), the break
   sound's starts and length, a death-sound start per enemy boom, bounces at
-  both lines (not mirrors), no level break-up direction, the SAT's flip and
+  both lines (not mirrors; the bottom's within `BOUNCE_MIN_DEG`..180−it), no level break-up direction, the SAT's flip and
   turn, no sprite the VDP drops (worked out from the SAT shown) dropped two
   frames running on a line of 5..7 sprites, and no frame dropped. Enemy
   bullets: a roll exactly every 0.25 s, about one in 4 hitting, each

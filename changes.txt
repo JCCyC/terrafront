@@ -1,5 +1,10 @@
 TERRA FRONT - CHANGES
 
+Version 0.9.4
+
+- Free enemies bouncing off the bottom of the screen no longer fly
+  away almost level: they turn up at least 30 degrees.
+
 Version 0.9.3
 
 - Pause: F1 or STOP pauses the game; press either again to go on.

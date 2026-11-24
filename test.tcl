@@ -1745,7 +1745,7 @@ proc all_volleys {} {
 set eprev {} ; set rotp 0 ; set vprev {}
 set hits 0 ; set breaks 0 ; set booms_n 0 ; set hit_bad 0 ; set hit_first ""
 set mot_bad 0 ; set mot_first "" ; set freeframes 0
-set btop 0 ; set bbottom 0 ; set nonmirror 0 ; set dirs {}
+set btop 0 ; set bbottom 0 ; set nonmirror 0 ; set dirs {} ; set bdirs {}
 set wgone -1 ; set wwaited 0
 set waves 0 ; set wenemy 0 ; set wcidx 0 ; set gone_sts {} ; set wave_bad 0 ; set wave_first ""
 proc wave_bad {s} { if {!$::wave_bad} { set ::wave_first "frame $::n: $s" } ; incr ::wave_bad }
@@ -1900,7 +1900,9 @@ proc enemy_model {cur vols} {
 			incr ::btop ; if {$cd != (64 - $pd) % 64} { incr ::nonmirror }
 		} elseif {$yi + $::art_b > 183} {
 			set y16 [expr {(183 - $::art_b)*256}]
-			if {$cd < 33} { mot_bad "enemy $i off the bottom, direction $cd isn't up" }
+			set ua [expr {360.0 - $cd*360.0/64}]
+			if {$cd < 33 || $ua < $::sym(BOUNCE_MIN_DEG) || $ua > 180 - $::sym(BOUNCE_MIN_DEG)} { mot_bad "enemy $i off the bottom, direction $cd isn't up $::sym(BOUNCE_MIN_DEG)..[expr {180 - $::sym(BOUNCE_MIN_DEG)}] degrees" }
+			lappend ::bdirs $cd
 			incr ::bbottom ; if {$cd != (64 - $pd) % 64} { incr ::nonmirror }
 		} elseif {$cd != $pd} { mot_bad "enemy $i turned ($pd -> $cd) away from a line" }
 		set w [list [expr {$x24 & 255}] [expr {$x24 >> 8}] [expr {$y16 & 255}] [expr {$y16 >> 8}]]
@@ -2215,7 +2217,7 @@ proc enemy_end {} {
 	check {$::waves == 1 && $::wave_bad == 0 && $::wwaited == $::wdelay} "the last one gone, the second wave: enemy 1, colour 3, its patterns in VRAM, the loop from its start, $::wdelay frames later (0.7 s; all gone for $::wwaited frames first; $::waves waves; enemy [m form_enemy], colour [m form_color]; [expr {$::wave_bad ? "first wrong: $::wave_first" : "none wrong"}])"
 	check {$::hit_bad == 0 && $::hits > 0} "hits = the model (each bullet against the enemies' art on the lines it covered, the first enemy hit, the bullet gone; pairs break, free ones boom) every frame ($::hits hits; [expr {$::hit_bad ? "first wrong: $::hit_first" : "none wrong"}])"
 	check {$::mot_bad == 0 && $::freeframes > 0} "free enemies = the model (velocity table, wrap, stopped at lines 8 / 183 and turned away) every frame, booms stationary ($::freeframes enemy-frames; [expr {$::mot_bad ? "first wrong: $::mot_first" : "none wrong"}])"
-	check {$::btop > 0 && $::bbottom > 0 && $::nonmirror > 0} "bounces: $::btop at the top, $::bbottom at the bottom, $::nonmirror not a mirror's"
+	check {$::btop > 0 && $::bbottom > 0 && $::nonmirror > 0} "bounces: $::btop at the top, $::bbottom at the bottom (directions [lsort -integer -unique $::bdirs], each $::sym(BOUNCE_MIN_DEG)..[expr {180 - $::sym(BOUNCE_MIN_DEG)}] degrees up), $::nonmirror not a mirror's"
 	# (at least 4 different: 7 or 8 random picks of 62 have fewer about
 	# 1 in 3000 games, simulated; at least 5 failed about 1 in 300)
 	check {[llength [lsort -unique $::dirs]] >= 4 && [lsearch -exact $::dirs 0] < 0 && [lsearch -exact $::dirs 32] < 0} "break-up directions at random, never level (0, 32): $::dirs"

@@ -38,10 +38,10 @@ screenshots, and with extra breakpoints in the wave-begin code.
 
 ## Code space: the ROM and the BIN are nearly full
 
-Found 2026-11-22 (high scores, 0.9.2). Since the pause (2026-11-24) the
-16 KB ROM has 471 bytes free (`code_end` 7E29h); the BIN, the same code
-plus the disk code (`hsc_*`, `bdos`, `disk_timer`), ends at BFF4h, 12
-bytes under its RAM at C000h (`assert $ <= RAM_BASE`). So the BIN runs
+Found 2026-11-22 (high scores, 0.9.2). Since the bottom bounce's
+minimum angle (2026-11-24, 0.9.4) the 16 KB ROM has 465 bytes free
+(`code_end` 7E2Fh); the BIN, the same code plus the disk code (`hsc_*`,
+`bdos`, `disk_timer`), ends at BFFAh, 6 bytes under its RAM at C000h (`assert $ <= RAM_BASE`). So the BIN runs
 out first: at the next step.
 
 Plan, when a step doesn't fit: first the BIN's RAM up (`RAM_BASE` CF00h:

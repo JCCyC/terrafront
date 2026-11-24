@@ -53,7 +53,8 @@
 ; U-boat Killer's "miss" boom on PSG channel B, and each of its two enemies
 ; flies on alone, at a random one of FREE_DIRS directions, at the loop's
 ; speed; at the playfield's top or bottom line it turns to a random
-; direction away from it (not a mirror), and past the right or left edge it
+; direction away from it (not a mirror; from the bottom, BOUNCE_MIN_DEG or
+; more from level), and past the right or left edge it
 ; comes back on the other side, as the formation. A free enemy hit
 ; explodes where it is, the ship's boom images in its colour, with the
 ; ship's death sound. The enemies' sprites take turns in the SAT (its order
@@ -152,7 +153,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 3
+VERSION_PATCH   equ 4
 
 ; ---- Tunables --------------------------------------------------------------
 
@@ -284,6 +285,15 @@ SCORE_COL       equ 32-SCORE_LEN
 PAUSE_ROW       equ 0           ; PAUSED (F1 or STOP pauses the game): the top status row, centred
 PAUSE_COL       equ (32-PAUSE_LEN)/2
         assert PAUSE_COL >= LW_COL+LW_LEN && PAUSE_COL+PAUSE_LEN <= SCORE_COL
+;
+; A free enemy at the playfield's bottom line turns up at least this many
+; degrees from level, either way (BOUNCE_MIN_DEG..180-BOUNCE_MIN_DEG); at the
+; top line, and out of a broken pair, any direction but level
+BOUNCE_MIN_DEG  equ 30
+; (the directions BOUNCE_MIN_DEG or more from level: a step is 360/FREE_DIRS)
+BOUNCE_STEPS    equ (BOUNCE_MIN_DEG*FREE_DIRS+359)/360
+BOUNCE_DIRS     equ FREE_DIRS/2-2*BOUNCE_STEPS+1
+        assert BOUNCE_STEPS >= 1 && BOUNCE_DIRS >= 1
 ;
 ; Points: a pair broken up, a free enemy's death (shot, or crashing into a
 ; ship), with a one-ship front; with more ships, the front's share of them
@@ -2443,7 +2453,8 @@ form_place:
 
 ; Each free enemy one frame on, at its direction's velocity (vel_table:
 ; whole and 1/256 px a frame); x mod FORM_WRAP. Its art past the playfield's
-; top or bottom line: back on it, and a random direction away from it.
+; top or bottom line: back on it, and a random direction away from it (from
+; the bottom, BOUNCE_MIN_DEG or more from level).
 move_enemies:
         ld ix,enemies
         ld b,ENEMY_N
@@ -2513,8 +2524,11 @@ free_step:
         sub b
         ld (ix+EN.Y),a
         ld (ix+EN.YF),0
-        call rand_half
-        or FREE_DIRS/2          ; up
+.up:    call rand               ; up, BOUNCE_MIN_DEG or more from level
+        and FREE_DIRS/2-1
+        cp BOUNCE_DIRS
+        jr nc,.up
+        add a,FREE_DIRS/2+BOUNCE_STEPS
         ld (ix+EN.DIR),a
         ret
 .top:   ld a,(form_art_t)       ; past the top line
