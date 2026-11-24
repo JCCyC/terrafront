@@ -324,7 +324,9 @@ BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OV
 ; during a boss) goes to the level's next boss: that frame its wave's
 ; enemies are gone (no bonus ship counted), the level text shows the wave
 ; before it (form_enemy, form_cidx and wave_n moved on as if the waves
-; between were played), and the boss begins the next frame. 0: no cheat
+; between were played), and the boss begins the next frame. Key 2 (a press,
+; in a game, not in game over; a boss on or not) gives a reserve ship, if
+; under RESERVE_MAX, with the happy beep (as a bonus ship). 0: no cheats
 CHEAT_KEYS      equ 1
 ; The formation's loop (its boxes and cycle: path.py): at its highest, its
 ; top (the top pair's sprites' first line) this many lines under the
@@ -441,6 +443,7 @@ IN_RIGHT        equ 08h
 IN_FIRE         equ 10h
 IN_CALL         equ 80h
 IN_BOSS         equ 01h         ; the cheat key 1 (CHEAT_KEYS)
+IN_SHIP         equ 02h         ; the cheat key 2 (CHEAT_KEYS)
 IN_EGG          equ 40h         ; Ctrl-V, both down (read in attract mode only)
 ENT_UP          equ 01h         ; the initials' entry (ent_dirs): up, straight ...
 ENT_DOWN        equ 02h         ; ... down, straight (and IN_LEFT, IN_RIGHT) ...
@@ -477,6 +480,7 @@ KEY_ROW_C       equ 3
 KEY_C           equ 01h
 KEY_ROW_1       equ 0
 KEY_1           equ 02h
+KEY_2           equ 04h
 KEY_ROW_CTRL    equ 6
 KEY_CTRL        equ 02h
 KEY_ROW_V       equ 5
@@ -1764,16 +1768,18 @@ read_input:
         set 7,c                 ; IN_CALL
 .k4:
         if CHEAT_KEYS
-        in a,(PPI_C)            ; keyboard row KEY_ROW_1: the cheat key 1
+        in a,(PPI_C)            ; keyboard row KEY_ROW_1: the cheat keys 1 and 2
         and 0F0h
         or KEY_ROW_1
         out (PPI_C),a
         in a,(PPI_B)
-        and KEY_1
-        jr nz,.k5
-        set 0,c                 ; IN_BOSS
+        rrca                    ; KEY_1 to bit 0 (IN_BOSS), KEY_2 to bit 1 (IN_SHIP)
+        cpl                     ; 1 = pressed
+        and IN_BOSS|IN_SHIP
+        or c
+        ld c,a
         endif
-.k5:    ld b,03h                ; joystick 1: (R15 and AFh) or 03h
+    ld b,03h                ; joystick 1: (R15 and AFh) or 03h
         ld e,0AFh
         call read_joy
         ld b,4Ch                ; joystick 2: (R15 and DFh) or 4Ch
@@ -1816,7 +1822,8 @@ read_input:
         call attract_cpu
         ld (input),a
         ret
-        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h && IN_BOSS == 01h && IN_EGG == 40h
+        assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h && IN_BOSS == 01h && IN_SHIP == 02h && IN_EGG == 40h
+        assert KEY_1 == IN_BOSS*2 && KEY_2 == IN_SHIP*2
 
 ; C |= the joystick's left, right, button A (fire) and B (call-up) as IN_*;
 ; the port is selected in R15 by (R15 and E) or B
@@ -4030,6 +4037,14 @@ load_formation:
 ; its bonus is over. While the boss is on: it moves (fighting), or its
 ; bonus ends (BS_END: the text gone, the score; BS_NEXT: the next wave)
 next_wave:
+        if CHEAT_KEYS
+        ld a,(input_prev)       ; the cheat key 2 pressed: a reserve ship
+        cpl
+        ld hl,input
+        and (hl)
+        and IN_SHIP
+        call nz,bonus_ship
+        endif
         ld a,(boss_st)
         or a
         jr z,.waves
@@ -4086,16 +4101,7 @@ next_wave:
         xor a
 .lost:  ld (hl),0
         ret nz                  ; (a ship lost)
-        ld a,(over_on)
-        or a
-        ret nz
-        ld a,(reserves)
-        cp RESERVE_MAX
-        ret nc
-        inc a
-        ld (reserves),a
-        call draw_reserves
-        jp bonus_start
+        jp bonus_ship
 .go:    ld a,1                  ; the last wave's (or boss's) enemy bullets go (next frame's eb_move)
         ld (eb_wipe),a
         ld hl,boss_done
@@ -4140,6 +4146,21 @@ next_wave:
         ld (form_acc),a
         jp form_place
         assert EN_FORM == 0
+
+; A bonus ship (next_wave.done; the cheat key 2): not in game over (nor
+; attract mode: the pseudo-player never presses the key), a reserve ship
+; more, if under RESERVE_MAX, shown in the reserve and the happy beep
+bonus_ship:
+        ld a,(over_on)
+        or a
+        ret nz
+        ld a,(reserves)
+        cp RESERVE_MAX
+        ret nc
+        inc a
+        ld (reserves),a
+        call draw_reserves
+        jp bonus_start
 
         if CHEAT_KEYS
 ; The cheat key 1 (next_wave, no boss on): not in game over (nor attract

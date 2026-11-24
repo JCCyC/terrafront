@@ -47,7 +47,10 @@ either joystick (button A fires, B calls up). **Cheat (playtesting):** key 1
 to the level's next boss: that frame the wave's enemies are gone (no bonus
 counted), `form_enemy`, `form_cidx` and `wave_n` move on to the wave
 before the boss (its level text shown), and the boss begins (wave 1..5:
-the boss after wave 5; 6..10: after 10). The bottom status area shows the reserve ships
+the boss after wave 5; 6..10: after 10). Key 2 (`IN_SHIP`, from
+`next_wave`, a boss on or not), a press in a game (not in game over),
+gives a reserve ship as a bonus ship does (`bonus_ship`: under
+`RESERVE_MAX` only, shown that frame, the happy beep). The bottom status area shows the reserve ships
 (4 at the start; `images/reserve-ship.png`, 8×8, drawn in the bitmap) at its
 left, art from column 0, one black pixel apart (`draw_reserves`, A = how
 many). C calls one up (not while one is flying, nor with the front
