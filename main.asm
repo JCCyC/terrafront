@@ -152,7 +152,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 2
+VERSION_PATCH   equ 3
 
 ; ---- Tunables --------------------------------------------------------------
 

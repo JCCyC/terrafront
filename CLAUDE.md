@@ -150,7 +150,7 @@ Ctrl-V (CTRL row 6 bit 1 + V row 5 bit 3, the press of the pair, either
 key last, `egg_pressed`, per splash poll) on the title shows, over the
 picture in place of its text (`title_rows` unpacks the picture's rows
 `EGG_ROW` (20)..23 again, then the lines are printed white, each centred,
-odd lengths half a cell left), "VERSION 0.9.1" (from `VERSION_BYTES` at
+odd lengths half a cell left), "VERSION X.Y.Z" (from `VERSION_BYTES` at
 4010h, `put_dec`) on row 20 and "JCCYC IS" / "JUAN CARLOS CASTRO Y
 CASTRO" / "WELCOME TO THE FRONT!" (`EGG_TEXTS`) on rows 21..23 (no blank
 line after the version: only rows 20..23 are free of the logo; Claude's
@@ -439,6 +439,11 @@ heaviest frames to `build/profile-<machine>.txt`.
 (`galaga.rom`, notes in `GALAGA-TECHNIQUES.md`). Its ship moves 1.5 px a
 frame on the Expert (60 Hz) = 90 px/s, measured in openMSX from the SAT
 while holding →. Terra Front's ship is 20% faster: 108 px/s.
+
+**Version:** every change to the ROM or BIN bumps `VERSION_PATCH` (user's
+rule), with its entry in `changes.txt` (player-facing; hidden features as
+the eggs: generic or none) and `terrafnt.txt`'s first line, so `make zip`
+passes.
 
 **How the user works:** one small step at a time, a spec per step.
 Implement only the step asked for. Tunables are constants at the top of
