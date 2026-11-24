@@ -3,7 +3,7 @@ TERRA FRONT - CHANGES
 Version 0.9.3
 
 - Pause: F1 or STOP pauses the game; press either again to go on.
-- The enemy formation's loop is flatter and sits lower on the screen.
+- The enemy formation's loop is flatter and sits higher on the screen.
 
 Version 0.9.2
 
