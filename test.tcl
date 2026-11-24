@@ -1491,14 +1491,14 @@ cart_bp $sym(main_loop) {} {
 
 # The formation, from the spec: its pairs (dx dy from its top left, in the
 # picture images/formation-enemy-0-color-12.png, starting at column 25),
-# starting with its top on line 66 (the loop centred between lines 8 and
-# 168, the front's sprites); a loop at constant speed of four legs {dx dy}
+# starting with its top on line 46 (its highest 18 lines under line 8, the
+# playfield's first); a loop at constant speed of four legs {dx dy}
 # a cycle (FORM_TICKS / FORM_TICK_RATE s, path.py's CYCLE_SECS), 25 px east
 # a cycle; x mod 272 (256 + a pair), a pair
 # at 256..271 is at -16..-1 on screen (early clock)
 set FPAIRS {{20 0} {55 8} {0 20} {35 28}}
-set FLEGS {{35 -29} {60 29} {-35 29} {-35 -29}}
-set FX0 25 ; set FY0 66 ; set FWRAP 272
+set FLEGS {{35 -20} {60 20} {-35 20} {-35 -20}}
+set FX0 25 ; set FY0 46 ; set FWRAP 272
 # Path entries stepped after k frames (Bresenham: whole entries a frame)
 proc form_ticks {k} { expr {$k * $::sym(FORM_TICK_RATE) / $::F} }
 proc form_at {k} {
@@ -1616,7 +1616,7 @@ proc check_form_pattern {} {
 proc check_form_end {} {
 	check {$::form_bad == 0 && $::form_frames > 10*$::F} "formation = the spec's loop ([format %.3f [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]] s, constant speed, 25 px east a cycle), pairs in the picture's layout, colour [m form_color], every frame ($::form_frames frames, off by $::form_err px at most; [expr {$::form_bad ? "first wrong: $::form_first" : "none wrong"}])"
 	check {$::form_laps > 0 && $::form_lapbad == 0} "a cycle later the formation is 25 px east on the same lines ($::form_laps frames checked)"
-	check {$::form_ymin >= 8 && $::form_ymax + 44 <= $::sym(SHIP_TOP) && $::form_ymin <= 39 && $::form_ymax >= 93} "formation's top from line $::form_ymin to $::form_ymax: between the status area and the front's sprites"
+	check {$::form_ymin >= 8 && $::form_ymax + 44 <= $::sym(SHIP_TOP) && $::form_ymin <= 28 && $::form_ymax >= 64} "formation's top from line $::form_ymin to $::form_ymax (the spec: 26..66): between the status area and the front's sprites"
 	check {$::form_w2 > $::F} "the second wave's formation checked too ($::form_w2 frames)"
 	check {$::form_left > 0 && $::form_right > 0} "pairs leaving the right edge ($::form_right pair-frames) come back in from the left, early clock ($::form_left)"
 }
@@ -1654,7 +1654,7 @@ proc check_vel_table {} {
 	set tot 0.0
 	foreach l $::FLEGS { set tot [expr {$tot + hypot([lindex $l 0], [lindex $l 1])}] }
 	set cyc [expr {double($::sym(FORM_TICKS)) / $::sym(FORM_TICK_RATE)}]
-	set sq [expr {hypot(35, 29)}]
+	set sq [expr {hypot(35, 20)}]
 	set want [expr {$sq / ($cyc * $sq / $tot)}]
 	set bad {} ; set lo 1e9 ; set hi 0
 	for {set d 0} {$d < 64} {incr d} {

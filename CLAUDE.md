@@ -311,15 +311,17 @@ starts a 0.7 s wait (`WAVE_DELAY_MS`: 42 frames at 60 Hz, 35 at 50 Hz,
 counted down in `wave_wait`), and the frame it runs out begins the next
 wave (`next_wave`, after `move_enemies`): its patterns
 loaded (`load_formation`), all in their pairs, the loop from its start
-(column 25, line 66), shown from that frame's SAT on. Each pair
+(column 25, line 46), shown from that frame's SAT on. Each pair
 is one 16×16 sprite, the 8×16 enemy twice side by side; laid out
 as in `images/formation-enemy-0-color-12.png` and starting at its column
-25, flies a loop at a constant 113 px/s: northeast across a 35×29 box,
-east-southeast across 60×29, southwest and northwest across 35×29, in
+25, flies a loop at a constant 102 px/s: northeast across a 35×20 box,
+east-southeast across 60×20, southwest and northwest across 35×20, in
 1.8 s (`CYCLE_SECS` in `path.py`, the user's choice), 25 px east a cycle
-(first 70×58 etc. in 1 s, then halved, then slowed to 1.8 s). The loop is centred between line 8 and the front's
-sprite lines (168..183): the cycle starts with the formation's top on
-line 66. x is mod 272: a pair past the right edge comes
+(first 70×58 etc. in 1 s, then halved, then slowed to 1.8 s, then
+20 tall, the widths and 1.8 s kept). At its highest the formation's top
+(the top pair's sprites' first line, whatever the enemy's art) is 18 lines
+under line 8 (`FORM_TOP_GAP`, line 26): the cycle starts with it on
+line 46 (`FORM_Y0`). x is mod 272: a pair past the right edge comes
 back in from the left (EC). Its sprites come after the front's and the
 incoming ship's in the SAT. Every other frame the whole SAT is reversed
 (`sat_flip`), and with each straight frame the enemies' order turns one
@@ -336,7 +338,7 @@ the seabed; Skyfighter's `BOOM_ROCK`, byte for byte; 0.8 s) on PSG channel
 B, and each of its two enemies (`enemies`, 8 records, pair k = enemies 2k
 and 2k+1) flies alone from where it was, at a random one of 64 directions (never
 level: 0 and 32 are left out),
-at the loop's speed, the square legs' (112.8 px/s; `FREE_VEL_60/50` in
+at the loop's speed, the square legs' (102.3 px/s; `FREE_VEL_60/50` in
 `path.py`, 1/256 px a frame). When its art passes line 8 or 183 it is put
 back on that line and turns to a random direction away from it (any of
 the 31 strictly down or up ones, not a mirror). x is mod 272 as the

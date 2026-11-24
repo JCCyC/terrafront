@@ -7,7 +7,8 @@ across a RECT x RISE one, southwest across SQUARE x RISE, northwest across
 SQUARE x RISE. A cycle takes CYCLE_SECS and leaves the formation RECT -
 SQUARE px east of where it started, on the same lines. (The first spec's
 boxes were 70x70, 120x70; cut to 58 tall to fit, then all halved, speed
-too, the cycle's time kept. main.asm asserts that the formation, 44 px
+too, the cycle's time kept; then 20 tall, the widths and the cycle's time
+kept. main.asm asserts that the formation, 44 px
 tall, stays between the top status area and the front's sprite lines.)
 
 Writes sjasmplus source to stdout:
@@ -32,7 +33,7 @@ import sys
 
 SQUARE = 35         # px: the square boxes' width
 RECT = 60           # px: the rectangle's width
-RISE = 29           # px: every box's height
+RISE = 20           # px: every box's height
 CYCLE_SECS = 1.8    # the only timing tunable
 
 FREE_DIRS = 64      # a free enemy's directions

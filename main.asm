@@ -326,7 +326,10 @@ BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OV
 ; before it (form_enemy, form_cidx and wave_n moved on as if the waves
 ; between were played), and the boss begins the next frame. 0: no cheat
 CHEAT_KEYS      equ 1
-; (the formation's loop: path.py)
+; The formation's loop (its boxes and cycle: path.py): at its highest, its
+; top (the top pair's sprites' first line) this many lines under the
+; playfield's first
+FORM_TOP_GAP    equ 18
 
 ; ---- Layout ----------------------------------------------------------------
 
@@ -345,9 +348,8 @@ BULLET_START    equ SHIP_TOP+SHIP_ART_T-BULLET_H    ; a new bullet's top line: r
         assert FRONT_MAX*SHIP_ART_W <= 128  ; a front left of the middle has room on its right
 
 ; The formation (FORM_* from build/sprites.inc and build/path.inc): its top
-; line when the cycle starts, so that its loop is centred between the
-; playfield's first line and the front's sprites' first
-FORM_Y0         equ (PLAY_TOP+SHIP_TOP-FORM_H)/2
+; line when the cycle starts (the first leg rises FORM_RISE to its highest)
+FORM_Y0         equ PLAY_TOP+FORM_TOP_GAP+FORM_RISE
         assert FORM_Y0-FORM_RISE >= PLAY_TOP && FORM_Y0+FORM_RISE+FORM_H <= SHIP_TOP
 ; Enemy bullets: a shooter's art's last line at most EB_LAST; the roll
 ; clock counts 1/300 s (a whole number of them a frame at 50 and 60 Hz)
