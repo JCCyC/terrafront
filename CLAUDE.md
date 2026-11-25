@@ -349,7 +349,8 @@ lines; `move_stars` flags its lines `LN_MID`; its stars turned off at
 its start). Its hits, colours (the body's bytes rewritten,
 `b2_colours`, the white kept), death, booms (Boss1's sprites at its
 place), bonus and the next wave as Boss1's; no rain (`boss_fire`
-returns). Under it a line of 4 pairs of one random enemy (`load_enemy`;
+returns). Under it a line of 3 pairs (`B2_PAIRS`; user's spec: at most
+6 enemies, record pairs 0..2, enemies 6 and 7 stay gone) of one random enemy (`load_enemy`;
 `ENEMY_COLS`), each pair a random colour of `FORM_COLOR_LIST` (user's
 choice; each enemy record has its colour, `EN.COL`, which `ent_at`
 uses; `load_formation` sets every record's to `form_color`), their art's
@@ -357,11 +358,14 @@ first line `B2_GAP_Y` (8) blank lines under its art (line 32), 8 blank
 px between pairs' arts (`B2_GAP_X`), swerving at a constant speed (user's
 choice) from the middle going right (Claude's choice): at the left end
 the leftmost art pixel on column 56 (`B2_MARGIN`), at the right end the
-rightmost on 199, 0.5 s end to end (`B2_SWERVE_MS`; `boss2_move` from
+rightmost on 199, at a 4-pair line's speed (user's spec: 3 pairs took
+fewer and kept the speed; `B2_SWERVE_PAIRS`: its range, a slot less
+than the 3 pairs', in 0.5 s, `B2_SWERVE_MS`; so a traverse is longer; `boss2_move` from
 `boss_move`; `b2_pos` 0..`b2_range`, reflected at the ends; `b2_place`
 puts the pairs in their slots, `b2_slot`). Pairs break up and fly free
-as a wave's; scores as a wave's. With 6 living enemies or fewer
-(`B2_SPAWN_AT`) and under 16 spawns (`B2_SPAWNS`), `b2_spawn` makes a
+as a wave's; scores as a wave's. With 4 living enemies or fewer
+(`B2_SPAWN_AT`; Claude's choice, as 6 of 8 was) and under 17 spawns
+(`B2_SPAWNS`; user's spec: 20 pairs in all, as before), `b2_spawn` makes a
 record pair with both gone (else two half-gone ones: the second's enemy
 moved into the first's gone record; none, booms still on: a later
 frame) a pair in a random free slot (Claude's choice), coming down from
@@ -638,18 +642,18 @@ the staged test below. Then the enemies' part, hits on,
   (written) by 1-, 2- and 3-ship fronts (500, 400, 300); the test steers
   under it and fires every other frame, enemy bullets not hitting ships).
   Bosses 2 and 4 are Boss2 (`b2_frame`'s model every frame instead of
-  Boss1's): its start (the random enemy's patterns, its 4 pairs, colours
-  of the list, slots 0..3, the line's ends 56 and 199 from the art),
+  Boss1's): its start (the random enemy's patterns, its 3 pairs, colours
+  of the list, slots 0..2, enemies 6 and 7 gone (every frame too), the line's ends 56 and 199 from the art),
   its cells in the bitmap (`check_bitmap`: its art and colours, no star
   or bullet), the line's place (the swerve's Bresenham, frames with no
-  spawn coming down), each pair's place, each spawn (6 living or fewer,
+  spawn coming down), each pair's place, each spawn (4 living or fewer,
   a free slot, both records a pair in one colour, coming down exactly
   0.5 s, none while one comes, none due but when no record pair can be
   freed), its hits (a bullet on its art alone: a hit; with an enemy's art
   there too: maybe), the break sound per hit and pair broken, its death
   (every enemy, enemy bullet and old volley gone that frame); the test
   takes free enemies off (written gone) once their art passes line 120;
-  boss 2 fought all through by a 1-ship front (16 spawns), boss 4 with 1
+  boss 2 fought all through by a 1-ship front (17 spawns), boss 4 with 1
   hit left (its colours written to VRAM too); the points from its
   enemies written off at its death (the score as it began).
   Then the enemy bullets' levels (rolls forced to hit): the

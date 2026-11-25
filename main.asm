@@ -90,9 +90,9 @@
 ; the points, and the next wave.
 ; After wave BOSS2_AFTER (10) of a level, Boss2 (images/boss2.png) instead:
 ; still, in the bitmap at the playfield's top, centred (no star or bullet
-; drawn in its cells), over a line of FORM_PAIRS_N pairs of a random enemy
+; drawn in its cells), over a line of B2_PAIRS pairs of a random enemy
 ; (each pair a random colour) that swerves left and right (B2_MARGIN px
-; from the edges, B2_SWERVE_MS end to end); with B2_SPAWN_AT living
+; from the edges, at B2_SWERVE_PAIRS pairs' speed); with B2_SPAWN_AT living
 ; enemies or fewer it sends down a new pair into a free slot of the line
 ; (B2_DESC_MS, the line still meanwhile; B2_SPAWNS at most). Its pairs
 ; break up and score as a wave's, it's one more shooter of the enemies'
@@ -166,7 +166,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 7
+VERSION_PATCH   equ 8
 
 ; ---- Tunables --------------------------------------------------------------
 
@@ -352,17 +352,19 @@ BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OV
 ; Boss2 (images/boss2.png): after this wave of a level (one of
 ; BOSS_AFTER_LIST), Boss2 instead of the boss above (Boss1). Stationary,
 ; in the bitmap, centred at the playfield's top; under it a line of
-; FORM_PAIRS_N pairs of one random enemy (each pair in a random colour of
+; B2_PAIRS pairs of one random enemy (each pair in a random colour of
 ; FORM_COLOR_LIST) swerves left and right; it takes hits and changes colour
 ; as Boss1 (its white parts stay), with Boss1's bonus; a bullet of the
 ; enemies' may come from it too (it's one more shooter)
 BOSS2_AFTER     equ 10
+B2_PAIRS        equ 3           ; the pairs' line: this many slots (at most 2 * this enemies; record pairs 0..this-1)
 B2_GAP_Y        equ 8           ; the pairs' art's first line this many blank lines under its art's last
 B2_GAP_X        equ 8           ; ... blank px between two pairs' arts
 B2_MARGIN       equ 56          ; ... at the line's left end, its art's first column; at the right end its last 255 - this
-B2_SWERVE_MS    equ 500         ; ... from one end to the other
-B2_SPAWN_AT     equ 6           ; living enemies this many or fewer: it spawns a pair into a free slot of the line ...
-B2_SPAWNS       equ 16          ; ... this many at most
+B2_SWERVE_MS    equ 500         ; ... its speed: a line of B2_SWERVE_PAIRS pairs from one end to the other in this long ...
+B2_SWERVE_PAIRS equ 4           ; ... (the speed's range: B2_PAIRS pairs' less a slot for each pair more)
+B2_SPAWN_AT     equ 4           ; living enemies this many or fewer: it spawns a pair into a free slot of the line ...
+B2_SPAWNS       equ 17          ; ... this many at most
 B2_DESC_MS      equ 500         ; ... coming down from just above the screen to its slot in this long (the line stops meanwhile)
 ;
 ; A cheat for playtesting: key 1 (a press, in a game, not in game over nor
@@ -443,13 +445,16 @@ B2_Y            equ PLAY_TOP
 B2_VRAM         equ B2_Y/8*256+B2_X ; its first cell, from GRPCGP / GRPCOL
 B2_LINE_TOP     equ B2_Y+BOSS2_LAST+1+B2_GAP_Y
 B2_DESC_FROM    equ 16
-B2_SW_MUL       equ 1000/B2_SWERVE_MS   ; the swerve's px/s: its range times this
+B2_SW_MUL       equ 1000/B2_SWERVE_MS   ; the swerve's px/s: B2_SWERVE_PAIRS pairs' range times this
 B2_DESC_MUL     equ 1000/B2_DESC_MS     ; the descent's px/s: its distance times this
         assert B2_X%8 == 0 && B2_Y%8 == 0 && B2_Y == BOSS_Y && BOSS2_LAST == BOSS_H-1
         assert 1000%B2_SWERVE_MS == 0 && 1000%B2_DESC_MS == 0 && B2_SW_MUL >= 1 && B2_DESC_MUL >= 1
-        ; the line: FORM_PAIRS_N pairs, each at most 16 px of art, inside the margins, with room to swerve
-        assert 2*B2_MARGIN+FORM_PAIRS_N*16+(FORM_PAIRS_N-1)*B2_GAP_X+(256-2*B2_MARGIN)/50+1 < 256
-        assert (256-2*B2_MARGIN)*B2_SW_MUL < 65536 && B2_SPAWN_AT < ENEMY_N-1 && B2_SPAWNS < 256
+        ; the line: B2_PAIRS pairs (B2_SWERVE_PAIRS for the speed), each at most 16 px of art, inside
+        ; the margins, with room to swerve (a frame's step, at most the speed's range / 50 + 1, under it)
+        assert B2_SWERVE_PAIRS >= B2_PAIRS && B2_PAIRS >= 2 && B2_PAIRS <= 4 && B2_PAIRS <= FORM_PAIRS_N
+        assert 2*B2_MARGIN+B2_SWERVE_PAIRS*16+(B2_SWERVE_PAIRS-1)*B2_GAP_X < 256
+        assert (256-2*B2_MARGIN-B2_SWERVE_PAIRS*9-(B2_SWERVE_PAIRS-1)*B2_GAP_X)*B2_SW_MUL/50+1 < 256-2*B2_MARGIN-B2_PAIRS*16-(B2_PAIRS-1)*B2_GAP_X
+        assert (256-2*B2_MARGIN)*B2_SW_MUL < 65536 && B2_SPAWN_AT < 2*B2_PAIRS-1 && B2_SPAWNS < 256
         assert B2_LINE_TOP+16+B2_DESC_FROM < 256 && (B2_LINE_TOP+B2_DESC_FROM)*B2_DESC_MUL < 65536
         assert B2_LINE_TOP+16 <= FORM_Y0+FORM_RISE+FORM_H      ; (as the formation: clear of the front)
 ; boss_st: none, fighting, booming (one state a boom image), a frame with
@@ -5211,13 +5216,14 @@ boss_sat:
 
 ; Boss2 begins (boss_begin, after BOSS2_AFTER; every enemy gone): fighting,
 ; in its first colour, in the bitmap (its stars there off: it covers them);
-; under it FORM_PAIRS_N pairs of a random enemy (each pair in a random
+; under it B2_PAIRS pairs of a random enemy (each pair in a random
 ; colour), pair k in slot k, the line in its middle going right. The line's
 ; geometry from the enemy's art: a pair's art W = 8 + its last column - its
 ; first + 1 px wide, slots W + B2_GAP_X apart, the line's art B2_MARGIN px
 ; from the screen's left edge at its left end (b2_x0: slot 0's sprite
 ; column there), b2_range px from it to its right end (as far from the
-; right edge), crossed in B2_SWERVE_MS; a spawn's way down, from
+; right edge); its speed: a line of B2_SWERVE_PAIRS pairs' range (b2_range
+; less (B2_SWERVE_PAIRS - B2_PAIRS) slots) in B2_SWERVE_MS; a spawn's way down, from
 ; B2_DESC_FROM lines above line 0 to the line, in B2_DESC_MS
 boss2_begin:
         ld a,BS_FIGHT
@@ -5260,15 +5266,23 @@ boss2_begin:
         sub e
         ld (b2_x0),a
         ld a,d
-        add a,a
-        add a,a
-        add a,(FORM_PAIRS_N-1)*B2_GAP_X     ; the line's art's width
+        ld b,B2_PAIRS-1
+.w:     add a,d
+        djnz .w
+        add a,(B2_PAIRS-1)*B2_GAP_X         ; the line's art's width
         neg
         add a,256-2*B2_MARGIN
         ld (b2_range),a
         ld l,a
         srl a
         ld (b2_pos),a           ; in the middle
+        ld a,(b2_step)          ; the speed's range: B2_SWERVE_PAIRS pairs'
+        ld b,a
+        ld a,l
+        dup B2_SWERVE_PAIRS-B2_PAIRS
+        sub b
+        edup
+        ld l,a
         ld h,0
         ld d,h
         ld e,l
@@ -5299,8 +5313,8 @@ boss2_begin:
         ld (b2_dwhole),a
         ld a,d
         ld (b2_dfrac),a
-        ld ix,enemies           ; the pairs (the records were all gone)
-        ld b,FORM_PAIRS_N
+        ld ix,enemies           ; the pairs (the records were all gone; the
+        ld b,B2_PAIRS           ; others stay so)
         ld hl,b2_slot
         ld c,0
 .p:     push bc
@@ -5570,7 +5584,7 @@ b2_place:
         add ix,de
         inc c
         ld a,c
-        cp FORM_PAIRS_N
+        cp B2_PAIRS
         jr c,.p
         ret
         assert b2_slot/256 == (b2_slot+FORM_PAIRS_N-1)/256 && FORM_PAIRS_N*4 < 256
@@ -5630,12 +5644,12 @@ b2_spawn:
         add ix,de
         inc c
         ld a,c
-        cp FORM_PAIRS_N
+        cp B2_PAIRS
         jr c,.k
         ret                     ; none yet
 .found: ld hl,b2_slot           ; IX, C: the record pair. E = the line's
         ld iy,enemies           ; slots taken (bit k: slot k)
-        ld b,FORM_PAIRS_N
+        ld b,B2_PAIRS
         ld e,0
 .tk:    ld a,(iy+EN.ST)
         or a
@@ -5658,7 +5672,9 @@ b2_spawn:
         pop de
         djnz .tk
 .slot:  call rand               ; a free one, at random (keeps BC, DE)
-        and FORM_PAIRS_N-1
+        and 3
+        cp B2_PAIRS
+        jr nc,.slot
         ld d,a
         ld b,a
         inc b
@@ -5682,7 +5698,7 @@ b2_spawn:
         ld hl,b2_spawned
         inc (hl)
         ret
-        assert (FORM_PAIRS_N & (FORM_PAIRS_N-1)) == 0 && B2_SPAWN_AT < 2*FORM_PAIRS_N   ; (a slot free then)
+        assert B2_PAIRS <= 4 && B2_SPAWN_AT < 2*B2_PAIRS   ; (a slot free then)
 
 ; ---- Call-up ---------------------------------------------------------------
 

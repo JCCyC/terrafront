@@ -2610,11 +2610,12 @@ proc boss_end {} {
 # (images/boss2.png) instead of the boss: still, in the bitmap at the
 # playfield's top, centred (columns 96..159, lines 8..23), in the boss's
 # first colour (its white stays white). Under it, 8 blank lines between,
-# a line of 4 pairs of one random enemy, each pair a random colour of the
-# waves', 8 blank px between pairs' arts, swerving left and right at a
-# constant speed, 0.5 s from end to end: at its left end the leftmost art
+# a line of 3 pairs of one random enemy (6 enemies at most), each pair a
+# random colour of the waves', 8 blank px between pairs' arts, swerving
+# left and right at a constant speed, a 4-pair line's (its range, a slot
+# less than the 3 pairs', in 0.5 s): at its left end the leftmost art
 # pixel on column 56, at its right end the rightmost on 199 (from its
-# middle, going right). 6 living enemies or fewer: a new pair (16 at most)
+# middle, going right). 4 living enemies or fewer: a new pair (17 at most)
 # in a free slot of the line, coming down from above the screen in 0.5 s,
 # the line still meanwhile, one at a time (not hit before its art is all
 # on screen, not shooting while it comes). Its pairs break up and fly as
@@ -2637,7 +2638,7 @@ proc b2_snap {} { list [m b2_desc] [m b2_spawned] [b2_ens] }
 # the line's place after m frames of swerving
 proc b2_pos_at {m} {
 	set R $::b2R
-	set p [expr {($R/2 + $m*2*$R/$::F) % (2*$R)}]
+	set p [expr {($R/2 + $m*2*$::b2Rs/$::F) % (2*$R)}]
 	expr {$p <= $R ? $p : 2*$R - $p}
 }
 # 1: an enemy (in a pair or free; its art box all on screen) of ens has a
@@ -2658,7 +2659,7 @@ proc b2_en_on {ens x lo hi} {
 # The pairs at their slots' places (the one coming down drem lines above)
 proc b2_places {pos desc drem} {
 	set bad {}
-	for {set p 0} {$p < 4} {incr p} {
+	for {set p 0} {$p < 3} {incr p} {
 		lassign [en_state [expr {2*$p}]] st - - x - y
 		if {$st} continue
 		lassign [en_state [expr {2*$p+1}]] st1 - - x1 - y1
@@ -2676,19 +2677,21 @@ proc b2_begin {st} {
 	set e [b2_enemy] ; set ::b2e $e
 	set l [m ENEMY_COLS [expr {2*$e}]] ; set r [m ENEMY_COLS [expr {2*$e+1}]] ; set t [m ENEMY_ROWS [expr {2*$e}]]
 	set W [expr {9 + $r - $l}]
-	set ::b2step [expr {$W + 8}] ; set ::b2R [expr {144 - 4*$W - 24}] ; set ::b2x0 [expr {56 - $l}]
+	# 3 slots; the speed a 4-pair line's: its range (one slot less) in 0.5 s
+	set ::b2step [expr {$W + 8}] ; set ::b2R [expr {144 - 3*$W - 16}] ; set ::b2x0 [expr {56 - $l}]
+	set ::b2Rs [expr {$::b2R - $::b2step}]
 	set ::b2land [expr {32 - $t}] ; set ::b2dfull [expr {$::b2land + 16}]
 	set ::b2m 0 ; set ::b2dk 0 ; set ::b2n 0 ; set ::b2lands {} ; set ::b2removed 0 ; set ::b2def 0 ; set ::b2maybe 0
 	set ::b2waits 0 ; set ::b2s0 $::score_model ; set ::b2h 0
 	set bad [form_pattern_bad $e]
 	set cols {}
-	for {set p 0} {$p < 4} {incr p} {
+	for {set p 0} {$p < 3} {incr p} {
 		set c0 [m enemies [expr {2*$p*$::sym(EN) + $::sym(EN.COL)}]] ; set c1 [m enemies [expr {(2*$p+1)*$::sym(EN) + $::sym(EN.COL)}]]
 		if {$c0 != $c1 || $c0 ni $::COLS || [m b2_slot $p] != $p} { lappend bad "pair $p colour $c0/$c1 slot [m b2_slot $p]" }
 		lappend cols $c0
 	}
-	if {[en_sts] ne {0 0 0 0 0 0 0 0}} { lappend bad "states [en_sts]" }
-	if {$::b2x0 + $l != 56 || $::b2x0 + $::b2R + 3*$::b2step + 8 + $r != 199} { lappend bad "the line's ends" }
+	if {[en_sts] ne {0 0 0 0 0 0 5 5}} { lappend bad "states [en_sts]" }
+	if {$::b2x0 + $l != 56 || $::b2x0 + $::b2R + 2*$::b2step + 8 + $r != 199} { lappend bad "the line's ends" }
 	set bad [concat $bad [b2_places [b2_pos_at 0] 0 0]]
 	if {$st != 1 || [m boss_x] != 96 || [m boss_hits] || [m boss_cidx] || [m boss_color] != 5 || ![m b2_shown] || [m b2_pos] != $::b2R/2 || [m b2_dir] || [m b2_desc] || [m b2_spawned] || [m form_enemy] != 9 || [llength $bad]} {
 		bbad "Boss2 ($::bosses) began: st $st x [m boss_x] hits [m boss_hits]/[m boss_cidx] colour [m boss_color] shown [m b2_shown] pos [m b2_pos] (want [expr {$::b2R/2}]) dir [m b2_dir] desc [m b2_desc] spawned [m b2_spawned] after wave [expr {[m form_enemy] + 1}]; wrong: $bad"
@@ -2763,6 +2766,7 @@ proc b2_frame {st} {
 	if {[m boss_color] != [lindex $::REDDEN [m boss_cidx]] || [m boss_hits] > 9} { bbad "Boss2: hits [m boss_hits]/[m boss_cidx], colour [m boss_color]" }
 	# the swerve (frames with no pair coming down at their start)
 	set desc [m b2_desc] ; set sp [m b2_spawned]
+	if {[lrange $sts 6 7] ne {5 5}} { bbad "Boss2: enemies 6 and 7 not gone ([en_sts]): at most 6 enemies" }
 	if {$desc0 == 0} { incr ::b2m }
 	set pos [m b2_pos]
 	if {$pos != [b2_pos_at $::b2m]} { bbad "Boss2's line at [m b2_pos], want [b2_pos_at $::b2m] (after $::b2m frames)" }
@@ -2786,18 +2790,18 @@ proc b2_frame {st} {
 		for {set i 0} {$i < 8} {incr i} { if {$i/2 != $p && [lindex $sts $i] < 2} { incr live } }
 		set c0 [m enemies [expr {2*$p*$::sym(EN) + $::sym(EN.COL)}]] ; set c1 [m enemies [expr {(2*$p+1)*$::sym(EN) + $::sym(EN.COL)}]]
 		set s [m b2_slot $p] ; set taken {}
-		for {set q 0} {$q < 4} {incr q} { if {$q != $p && [lindex $sts [expr {2*$q}]] == 0} { lappend taken [m b2_slot $q] } }
-		if {$sp != $sp0 + 1 || $sp0 >= 16 || $p < 0 || $live > 6 || [lrange $sts [expr {2*$p}] [expr {2*$p+1}]] ne {0 0} || $c0 != $c1 || $c0 ni $::COLS || $s in $taken || [m b2_drem] != $::b2dfull} {
+		for {set q 0} {$q < 3} {incr q} { if {$q != $p && [lindex $sts [expr {2*$q}]] == 0} { lappend taken [m b2_slot $q] } }
+		if {$sp != $sp0 + 1 || $sp0 >= 17 || $p < 0 || $p > 2 || $s > 2 || $live > 4 || [lrange $sts [expr {2*$p}] [expr {2*$p+1}]] ne {0 0} || $c0 != $c1 || $c0 ni $::COLS || $s in $taken || [m b2_drem] != $::b2dfull} {
 			bbad "Boss2's spawn $sp: pair $p, $live others living, states [lrange $sts [expr {2*$p}] [expr {2*$p+1}]], colours $c0/$c1, slot $s (taken: $taken), drem [m b2_drem] (want $::b2dfull)"
 		}
 		set ::b2dk 0 ; incr ::b2n ; lappend ::b2slots $s
 	} else {
-		# none: due (6 living or fewer, spawns left) only if no record
+		# none: due (4 living or fewer, spawns left) only if no record
 		# pair could be freed (enemies still booming)
 		set live 0 ; foreach c $sts { if {$c < 2} { incr live } }
-		if {$sp0 < 16 && $live <= 6} {
+		if {$sp0 < 17 && $live <= 4} {
 			set both 0 ; set half 0
-			for {set p 0} {$p < 4} {incr p} {
+			for {set p 0} {$p < 3} {incr p} {
 				set g [expr {([lindex $sts [expr {2*$p}]] == 5) + ([lindex $sts [expr {2*$p+1}]] == 5)}]
 				if {$g == 2} { incr both } elseif {$g == 1} { incr half }
 			}
@@ -2824,7 +2828,7 @@ proc b2_end {} {
 		if {$lands ne "" && $lands ne [expr {$F/2}]} { set ok 0 }
 	}
 	lassign [lindex $::b2res 0] - - n1
-	check {[llength $::b2res] == 2 && [lindex $::b2res 0 0] == 2 && [lindex $::b2res 1 0] == 4 && $ok && $n1 == 16 && [llength [lsort -unique $::b2slots]] >= 2 && $::b2_bitmaps > 0 && $::b2_shots > 0} "Boss2 after wave 10 (bosses 2 and 4): in the bitmap (its art, its colours every frame), its line of 4 pairs of a random enemy (random colours), swerving 0.5 s end to end between columns 56 and 199, spawns (6 living or fewer, a free slot, coming down in [expr {$F/2}] frames, the line still, one at a time, 16 at most; the free slots each picked), its hits and colours, its bullets ($::b2_shots from it), its death (every enemy and bullet gone that frame) ({boss enemy spawns landings-frames taken-off waits points hits-alone hits-maybe}: $::b2res; colours $::b2cols; slots $::b2slots)"
+	check {[llength $::b2res] == 2 && [lindex $::b2res 0 0] == 2 && [lindex $::b2res 1 0] == 4 && $ok && $n1 == 17 && [llength [lsort -unique $::b2slots]] >= 2 && $::b2_bitmaps > 0 && $::b2_shots > 0} "Boss2 after wave 10 (bosses 2 and 4): in the bitmap (its art, its colours every frame), its line of 3 pairs of a random enemy (random colours; enemies 6 and 7 gone), swerving at a 4-pair line's speed (its range in 0.5 s) between columns 56 and 199, spawns (4 living or fewer, a free slot, coming down in [expr {$F/2}] frames, the line still, one at a time, 17 at most; the free slots each picked), its hits and colours, its bullets ($::b2_shots from it), its death (every enemy and bullet gone that frame) ({boss enemy spawns landings-frames taken-off waits points hits-alone hits-maybe}: $::b2res; colours $::b2cols; slots $::b2slots)"
 }
 
 # ---- The enemies' bullets ---------------------------------------------------

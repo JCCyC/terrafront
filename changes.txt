@@ -1,5 +1,10 @@
 TERRA FRONT - CHANGES
 
+Version 0.9.8
+
+- The boss after wave 10 is easier: its line has three enemy pairs
+  instead of four (it sends down one more to make up for it).
+
 Version 0.9.7
 
 - Playtesting adjustments.
