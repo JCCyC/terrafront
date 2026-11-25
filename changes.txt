@@ -1,5 +1,9 @@
 TERRA FRONT - CHANGES
 
+Version 0.10.0
+
+- Version number bump.
+
 Version 0.9.8
 
 - The boss after wave 10 is easier: its line has three enemy pairs

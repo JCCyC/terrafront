@@ -165,8 +165,8 @@ RAM_BASE        equ 0E000h
 ; Stored at 4010h (BIN: 8010h), right after the cartridge header: major,
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
-VERSION_MINOR   equ 9
-VERSION_PATCH   equ 8
+VERSION_MINOR   equ 10
+VERSION_PATCH   equ 0
 
 ; ---- Tunables --------------------------------------------------------------
 
