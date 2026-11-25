@@ -1127,8 +1127,8 @@ proc screenshot_and_finish {} {
 # other keys and button B mixing their times into entropy but not
 # starting; space starts the game, and the plan above runs.
 set ROOT [file dirname [file dirname $::env(SYMFILE)]]
-set TITLE [exec sh -c "cd '$ROOT' && python3 title.py --raw"]
-set FONT [exec sh -c "cd '$ROOT' && python3 font.py --raw"]
+set TITLE [exec sh -c "cd '$ROOT' && ../.venv/bin/python title.py --raw"]
+set FONT [exec sh -c "cd '$ROOT' && ../.venv/bin/python font.py --raw"]
 set BROW $sym(BLINK_ROW)
 # the text, from the ROM, centred on BLINK_ROW in font.py's glyphs (rows
 # on the cell's lines 0..5, 6..7 blank), white on black: TITLE_ON; its

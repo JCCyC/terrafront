@@ -3,6 +3,8 @@ BIN     := terrafnt.bin
 DSK     := terrafnt.dsk
 # Empty bootable 720K MSX disk (tracked; made once by blankdisk.py)
 BLANKDSK := blank720k.dsk
+# Python scripts run in the workspace's venv (../.venv, with Pillow)
+PYTHON  := ../.venv/bin/python
 INCS    := build/sprites.inc build/sfx.inc build/path.inc build/title.inc build/font.inc
 
 # Version from main.asm, for the zip name
@@ -45,23 +47,23 @@ build/sprites.inc: png2spr.py images/player-ship.png images/player-ship-coming.p
 		images/player-ship-boom-1.png images/player-ship-boom-2.png images/player-ship-boom-3.png \
 		images/boss.png $(wildcard images/enemy-*.png) $(wildcard images/formation-enemy-*-color-*.png)
 	@mkdir -p build
-	python3 png2spr.py > $@
+	$(PYTHON) png2spr.py > $@
 
 build/sfx.inc: sfx.py
 	@mkdir -p build
-	python3 sfx.py > $@
+	$(PYTHON) sfx.py > $@
 
 build/path.inc: path.py
 	@mkdir -p build
-	python3 path.py > $@
+	$(PYTHON) path.py > $@
 
 build/title.inc: title.py png2spr.py images/title.png
 	@mkdir -p build
-	python3 title.py > $@
+	$(PYTHON) title.py > $@
 
 build/font.inc: font.py images/font.png
 	@mkdir -p build
-	python3 font.py > $@
+	$(PYTHON) font.py > $@
 
 zip: $(ZIP)
 
@@ -83,11 +85,11 @@ freeware: $(FREEWARE)
 playtest: $(PLAYTEST)
 
 $(FREEWARE): $(ZIP) $(LICENSE_PY)
-	python3 licensezip.py $< "THIS GAME IS FREEWARE" "SHARE THE ZIPFILE AT WILL" >$@.tmp
+	$(PYTHON) licensezip.py $< "THIS GAME IS FREEWARE" "SHARE THE ZIPFILE AT WILL" >$@.tmp
 	mv $@.tmp $@
 
 $(PLAYTEST): $(ZIP) $(LICENSE_PY)
-	python3 licensezip.py $< "PLAYTEST COPY" "DO NOT DISTRIBUTE" >$@.tmp
+	$(PYTHON) licensezip.py $< "PLAYTEST COPY" "DO NOT DISTRIBUTE" >$@.tmp
 	mv $@.tmp $@
 
 run: $(ROM)
