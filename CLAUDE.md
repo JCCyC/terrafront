@@ -286,7 +286,7 @@ again after each pair of waves, a bonus or not (reserve full).
 **Boss:** (Boss1; after wave 10, Boss2: below) after waves 5 and 10 of a level (`BOSS_AFTER_LIST`; its last
 enemy gone, the 0.7 s wait, then `next_wave.go` calls `boss_begin`
 instead of the next wave; `boss_done` set when it's over sends the next
-`.go` on to the wave), the boss (`images/boss.png`, 64×16, four 16×16
+`.go` on to the wave), the boss (`images/boss1.png`, 64×16, four 16×16
 sprites, names 32..44, in the enemies' SAT entries) with its art's top
 on line 8, from column 0 going right, cruising at 32 px/s
 (`BOSS_SPEED`) between the playfield's edges (columns 0 and 192;

@@ -2356,7 +2356,7 @@ proc vis_frame {} {
 
 
 # ---- The boss ----------------------------------------------------------------
-# From the spec: after waves 5 and 10 of a level, the boss (images/boss.png,
+# From the spec: after waves 5 and 10 of a level, the boss (images/boss1.png,
 # 64 x 16, four sprites; its art from BOSS_PATTERN) on the playfield's
 # first lines, cruising left and right, bumping into the playfield's edges
 # (columns 0..192), one way in 6 s (32 px/s, from the left end going right); its

@@ -40,7 +40,7 @@ Writes sjasmplus source to stdout:
   FORM_PAIRS_N   how many
   FORM_X0        the formation's left column in the picture
   FORM_W, FORM_H its size in px
-  BOSS_PATTERN   4 x 32 bytes: the boss (images/boss.png, 64x16, one colour;
+  BOSS_PATTERN   4 x 32 bytes: the boss (images/boss1.png, 64x16, one colour;
                  its colour is set in main.asm) as four 16x16 sprites, left
                  to right
   BOSS_BOOM_PATTERN  3 x 4 x 32 bytes: per boom image (BOOM_PNGS), 4 sprites
@@ -69,7 +69,7 @@ RESERVE_PNG = 'images/reserve-ship.png'
 ENEMY_PNG = 'images/enemy-{}.png'
 FORMATION_PNG = glob.glob('images/formation-enemy-*-color-*.png')
 BOOM_PNGS = [f'images/player-ship-boom-{i}.png' for i in (1, 2, 3)]
-BOSS_PNG = 'images/boss.png'
+BOSS_PNG = 'images/boss1.png'
 BOSS_BOOMS = 8
 BOSS2_PNG = 'images/boss2.png'
 

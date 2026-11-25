@@ -78,7 +78,7 @@
 ; ship lost: a reserve ship more, if the reserve has room (RESERVE_MAX),
 ; with a 0.25 s "happy beep" on PSG channel A (it wins over the shot's).
 ; After waves 5 and 10 of a level (BOSS_AFTER_LIST), the boss
-; (images/boss.png, four sprites) instead of the next wave: it cruises left
+; (images/boss1.png, four sprites) instead of the next wave: it cruises left
 ; and right at the playfield's top at BOSS_SPEED px/s, bumping into its
 ; edges (BOSS_MARGIN px from them), and rains bullets (the enemies', at BOSS_EB_PCT % of
 ; BULLET_SPEED) from random columns of its lower edge at the rate that keeps
@@ -335,7 +335,7 @@ EB_N            equ 5           ; slots: EB_MAX_LIST's largest
 ; past red; hues from the TMS9918's usual RGB values
         define FORM_COLOR_REDDENING 5, 7, 3, 2, 10, 11, 9, 8, 13
 ;
-; The boss (images/boss.png): after these waves of a level (its last
+; The boss (images/boss1.png): after these waves of a level (its last
 ; wave's last enemy gone, WAVE_DELAY_MS later), the boss instead of the next wave
         define BOSS_AFTER_LIST 5, 10
 BOSS_MARGIN     equ 0           ; it cruises left and right at the playfield's top, turning this many px from either edge ...
