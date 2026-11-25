@@ -121,9 +121,6 @@ These are for a front of one ship. A bigger front scores less: 80% with
 two ships, 60% with three, 50% with four. The score is at the top right;
 the level and wave at the top left.
 
-Key 1, during a game, skips to the level's next boss. It is there for
-playtesting.
-
 
 7. HIGH SCORES
 
