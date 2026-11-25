@@ -29,10 +29,11 @@ flagged, so their stars take `star`'s full way), its start
 the enemy; could be split over two frames), its death (`move_bullets`
 6.0 ms: `b2_erase`, 256 VRAM bytes, inside it).
 
-**Decision:** pending (the user's): enough for now, or more (the next
-candidates: Boss2's start and death split over two frames, its hidden
-stars skipped, `eb_move`'s speed worked out every frame, `star`'s full
-way, the per-bullet overhead left in `volley_px` and `bullet_px`).
+**Decision:** the user's (2026-11-25): enough for now; apply these only
+when a step really needs them (a frame over budget). The candidates:
+Boss2's start and death split over two frames, its hidden stars
+skipped, `eb_move`'s speed worked out every frame, `star`'s full way,
+the per-bullet overhead left in `volley_px` and `bullet_px`.
 
 ## openMSX sometimes crashes during the headless test
 
