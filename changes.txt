@@ -1,5 +1,10 @@
 TERRA FRONT - CHANGES
 
+Version 0.9.6
+
+- When the game plays by itself, every other time it starts with a
+  boss, the two bosses in turn.
+
 Version 0.9.5
 
 - A new boss after wave 10 of each level: it stays at the top of the

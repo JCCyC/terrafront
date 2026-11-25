@@ -3514,13 +3514,29 @@ proc attract_begin {} {
 	set F [m fps]
 	check {$::sn == 27*$F} "the title left alone after $::twhy: attract mode $::attracts after $::sn frames (want [expr {27*$F}]: the title 20 s, the high score list 7 s)"
 	check {[vdp_r1] & 0x40} "attract mode $::attracts: display on (R1 [format %02X [vdp_r1]])"
+	# runs 2, 4, ...: a boss instead of wave 1, Boss1 and Boss2 in turn
+	set boss [expr {$::attracts % 2 ? 0 : ($::attracts % 4 ? 1 : 2)}]
 	top_want
 	set bad [top_bad]
-	for {set a 256} {$a < 23*256} {incr a} { if {[debug read VRAM $a]} { lappend bad [format %04X $a] } }
-	check {![llength $bad]} "attract mode $::attracts: the top status row as the title had it (\"$::lw_last\" on its left, \"$::score_last\" on its right), the bitmap below it blank (wrong: [lrange $bad 0 5])"
+	for {set a 256} {$a < 23*256} {incr a} {
+		set i [expr {($a >> 8) - 1}] ; set c [expr {($a & 255) - 96}]
+		if {$boss == 2 && $i < 2 && $c >= 0 && $c < 64} {
+			if {[debug read VRAM $a] != [m BOSS2_PAT [expr {64*$i + $c}]]} { lappend bad "Boss2 [format %04X $a]" }
+		} elseif {[debug read VRAM $a]} { lappend bad [format %04X $a] }
+	}
+	check {![llength $bad]} "attract mode $::attracts: the top status row as the title had it (\"$::lw_last\" on its left, \"$::score_last\" on its right), the bitmap below it blank[expr {$boss == 2 ? " but Boss2's art" : ""}] (wrong: [lrange $bad 0 5])"
 	set st {} ; for {set k 0} {$k < 4} {incr k} { lappend st [m boom_stage $k] }
 	set left [expr {[m att_left] + 256*[m att_left 1]}]
-	check {[m front_mask] == 1 && [m ship_x] == $::sym(SHIP_X_MAX)/2 && $st eq {0 0 0 0} && [m reserves] == 4 && [m form_enemy] == 0 && [m form_color] == 2 && ![m over_on] && $left == 40*$F} "attract mode $::attracts: as a new game (one ship in the middle, 4 in reserve, the first wave), for [expr {$left/$F}] s"
+	check {[m front_mask] == 1 && [m ship_x] == $::sym(SHIP_X_MAX)/2 && $st eq {0 0 0 0} && [m reserves] == 4 && ![m over_on] && $left == 40*$F && [m level] == 1} "attract mode $::attracts: as a new game (one ship in the middle, 4 in reserve, level 1), for [expr {$left/$F}] s"
+	if {$boss == 0} {
+		check {[m form_enemy] == 0 && [m form_color] == 2 && [m wave_n] == 0 && ![m boss_st]} "attract mode $::attracts: the first wave (enemy [m form_enemy], colour [m form_color], wave_n [m wave_n], boss_st [m boss_st])"
+	} else {
+		set w [expr {$boss == 1 ? $::sym(ATTRACT_BOSS1) : $::sym(BOSS2_AFTER)}]
+		set gone 1 ; set kinds {}
+		set kinds [en_sts]
+		if {$boss == 1} { set gone [expr {[lsort -unique $kinds] eq [list $::sym(EN_GONE)]}] }
+		check {[m boss_st] == $::sym(BS_FIGHT) && ([m boss_kind] != 0) == ($boss == 2) && [m form_enemy] == $w - 1 && [m wave_n] == $w - 1 && [m form_cidx] == ($w - 1) % $::sym(FORM_COLORS_N) && $gone && [m b2_shown] == ($boss == 2)} "attract mode $::attracts: Boss$boss instead of the first wave, as after wave $w (boss_st [m boss_st], boss_kind [m boss_kind], form_enemy [m form_enemy], wave_n [m wave_n], form_cidx [m form_cidx], enemies' states $kinds, b2_shown [m b2_shown])"
+	}
 	check_reserves 4
 	set ::attr 1 ; set ::an 0 ; set ::att_bad 0 ; set ::att_first ""
 	set ::arolls {} ; set ::aroll -1 ; set ::aheads 0 ; set ::acalls 0 ; set ::aforced 0

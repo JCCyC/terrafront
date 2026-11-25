@@ -115,7 +115,13 @@ none at power-on), and a new game as at power-on.
 frame `splash` sees; `title_left`), then the high score list 7 s (below),
 plays a pseudo-game (`attract`, set by
 `splash`) for 40 s (`ATTRACT_MS`, `att_left`; or till game over's 10 s,
-if that comes first): a new game's start (`attract_init`), but the top
+if that comes first): a new game's start (`attract_init`; every other
+run, user's spec, a boss instead of wave 1, Boss1 and Boss2 in turn:
+`att_runs`, kept until a reset, before `game_ram`, odd: as after wave
+`ATTRACT_BOSS1` (5) or `BOSS2_AFTER`, the waves before it counted as
+played, every enemy gone, `boss_begin` called; level 1; runs from
+power-on: wave 1, Boss1, wave 1, Boss2, ...; the test checks each run's
+start: attract modes 2 and 4 Boss1 and Boss2), but the top
 status row stays as the title had it (the last game's level, wave and
 score; none at power-on: `splash` clears from row 1 on, `level_text` and
 `show_score` do nothing, `lw_text` and `score_shown` kept for the next

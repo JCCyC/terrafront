@@ -118,6 +118,8 @@
 ; above it, presses fire at random,
 ; and every ATTRACT_CALL_MS calls up a reserve ship with a chance of 1 in
 ; ATTRACT_CALL_CHANCE, through the game's own controls code (virtual keys).
+; Every other run starts with a boss instead of wave 1, Boss1 and Boss2 in
+; turn (runs from power-on: wave 1, Boss1, wave 1, Boss2, wave 1, ...).
 ; A press of fire (space or either joystick's button A) ends it at once;
 ; then, and at its end, it's back to the title. A press of Ctrl-V ends it
 ; too, and the title comes with the easter egg up.
@@ -164,7 +166,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 5
+VERSION_PATCH   equ 6
 
 ; ---- Tunables --------------------------------------------------------------
 
@@ -285,6 +287,7 @@ ATTRACT_NEAR    equ 3           ; ... the target reached: the front's ship_x wit
 ATTRACT_DODGE_CHANCE equ 1      ; ... at a think, it looks out for a threat with a chance of 1 in this (a power of 2)
 ATTRACT_DODGE_LINES equ 40      ; ... seen: an enemy bullet's top, a free enemy's art's last line, this close above the front's art or lower
 ATTRACT_DODGE_MARGIN equ 4      ; ... and its column within this many px of the front's; it moves the front this far clear of it
+ATTRACT_BOSS1   equ 5           ; every other run starts with a boss: Boss1 as after this wave (of BOSS_AFTER_LIST), then Boss2 (BOSS2_AFTER), in turn
 OVER_ROW        equ 12          ; GAME OVER's character row (lines 96..103: the screen's middle), centred on it
 OVER_COL        equ (32-OVER_LEN)/2 ; ... its first column
 LW_ROW          equ 0           ; the level and wave ("L1 W1"): the top status row ...
@@ -714,6 +717,7 @@ score_digits:   ds SCORE_LEN    ; show_score: the score's cells, ASCII ...
 score_shown:    ds SCORE_LEN+1  ; ... and as they show (0-terminated; the title shows the last game's; 0: none)
 egg_now:        ds 1            ; nonzero: the title opens with the egg up (attract mode's or the list's Ctrl-V)
 cheat_on:       ds 1            ; cheat mode: CHEAT_MASK (the cheat keys' IN_* bits) if on, else 0 (until a reset)
+att_runs:       ds 1            ; attract mode's runs so far (mod 256): odd, it starts with a boss (bit 1: Boss2)
 cheat_step:     ds 1            ; ... the title: CHEAT_WORD's letters typed so far, CTRL held
 hi_table:       ds HI_COUNT*HI_SIZE ; the high scores, best first (ties: the older above)
         ifdef BIN
@@ -2168,7 +2172,11 @@ joy_r14:
 ; Attract mode's start (new_game, after init_stars: rand is seeded): its
 ; time, the real input all held (a press must come after it), the first
 ; think in think_frames, the first call-up roll ATTRACT_CALL_MS on, a random
-; target column
+; target column. Every other run (att_runs odd) a boss instead of wave 1,
+; Boss1 and Boss2 in turn: the waves before it counted as played
+; (form_enemy, form_cidx, wave_n, as cheat_boss), every enemy gone, the
+; boss begun (its sprites from build_sat's SAT on; Boss2 in the bitmap
+; now, the display off); the level stays 1, the next wave the one after it
 attract_init:
         ld hl,(attract_len)
         ld (att_left),hl
@@ -2180,7 +2188,30 @@ attract_init:
         ld (att_calls),a
         call rand
         ld (att_target),a
-        ret
+        ld hl,att_runs
+        ld a,(hl)
+        inc (hl)
+        rra
+        ret nc                  ; (even: wave 1)
+        rra
+        ld a,ATTRACT_BOSS1
+        jr nc,.boss
+        ld a,BOSS2_AFTER
+.boss:  dec a
+        ld (form_enemy),a
+        ld (wave_n),a
+.cidx:  sub FORM_COLORS_N
+        jr nc,.cidx
+        add a,FORM_COLORS_N
+        ld (form_cidx),a
+        ld hl,enemies+EN.ST
+        ld de,EN
+        ld b,ENEMY_N
+.gone:  ld (hl),EN_GONE
+        add hl,de
+        djnz .gone
+        jp boss_begin
+        assert ATTRACT_BOSS1 != BOSS2_AFTER && ATTRACT_BOSS1 <= ENEMIES && BOSS2_AFTER <= ENEMIES
 
 ; A = the pseudo-player's input this frame (IN_*): right or left towards
 ; att_target (the front's last column at most) until ship_x is within
