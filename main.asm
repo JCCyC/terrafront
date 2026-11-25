@@ -166,7 +166,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 6
+VERSION_PATCH   equ 7
 
 ; ---- Tunables --------------------------------------------------------------
 
@@ -371,8 +371,12 @@ B2_DESC_MS      equ 500         ; ... coming down from just above the screen to 
 ; before it (form_enemy, form_cidx and wave_n moved on as if the waves
 ; between were played), and the boss begins the next frame. Key 2 (a press,
 ; in a game, not in game over; a boss on or not) gives a reserve ship, if
-; under RESERVE_MAX, with the happy beep (as a bonus ship). 0: no cheats
-; (nor cheat mode). They work only in cheat mode: on the title (not the
+; under RESERVE_MAX, with the happy beep (as a bonus ship). Key 3 (a press,
+; in a game) toggles invulnerability (invul; off at a new game): enemy
+; bullets and enemies pass through the front's ships, which show in
+; INVUL_COLOR (the incoming ship too; booms as ever). Key 4 (a press, in a
+; game) kills a random living ship of the front (ship_dies), invulnerable
+; or not. 0: no cheats (nor cheat mode). They work only in cheat mode: on the title (not the
 ; high score list), CTRL held, CHEAT_WORD's letters typed in turn (a wrong
 ; letter or CTRL up starts over); it stays on until a reset, and no score
 ; enters the high score table meanwhile. The title's logo then shows in
@@ -381,6 +385,7 @@ CHEAT_KEYS      equ 1
         define CHEAT_WORD "CHEAT"
 LOGO_COLOR      equ 7           ; cyan: the logo's colour in images/title.png ...
 CHEAT_LOGO_COLOR equ 2          ; ... and in cheat mode (green)
+INVUL_COLOR     equ 2           ; the player's ships while invulnerable (the cheat key 3; green)
 ; The formation's loop (its boxes and cycle: path.py): at its highest, its
 ; top (the top pair's sprites' first line) this many lines under the
 ; playfield's first
@@ -515,7 +520,9 @@ IN_FIRE         equ 10h
 IN_CALL         equ 80h
 IN_BOSS         equ 01h         ; the cheat key 1 (CHEAT_KEYS)
 IN_SHIP         equ 02h         ; the cheat key 2 (CHEAT_KEYS)
-CHEAT_MASK      equ IN_BOSS|IN_SHIP ; the cheat keys (cheat_on)
+IN_INVUL        equ 20h         ; the cheat key 3 (CHEAT_KEYS; not read in attract mode)
+IN_KILL         equ 40h         ; the cheat key 4 (CHEAT_KEYS; not read in attract mode: IN_EGG's bit)
+CHEAT_MASK      equ IN_BOSS|IN_SHIP|IN_INVUL|IN_KILL ; the cheat keys (cheat_on)
 IN_EGG          equ 40h         ; Ctrl-V, both down (read in attract mode only)
 ENT_UP          equ 01h         ; the initials' entry (ent_dirs): up, straight ...
 ENT_DOWN        equ 02h         ; ... down, straight (and IN_LEFT, IN_RIGHT) ...
@@ -553,6 +560,8 @@ KEY_C           equ 01h
 KEY_ROW_1       equ 0
 KEY_1           equ 02h
 KEY_2           equ 04h
+KEY_3           equ 08h
+KEY_4           equ 10h
 KEY_ROW_CTRL    equ 6
 KEY_CTRL        equ 02h
 KEY_ROW_V       equ 5
@@ -752,6 +761,8 @@ title_left:     ds 2            ; splash: frames until attract mode
 pause_held:     ds 1            ; F1 and STOP held last time (KEY_F1, KEY_STOP bits: 1 = held)
 input:          ds 1            ; IN_* this frame
 input_prev:     ds 1            ; ... and last frame (fire is edge-triggered)
+invul:          ds 1            ; nonzero: invulnerable (the cheat key 3)
+ship_col:       ds 1            ; build_sat: the player's ships' colour this frame
 ship_x:         ds 1            ; front slot 0's art's left column, 0..256-front_w
 ship_acc:       ds 1            ; Bresenham remainder
 ; The front: FRONT_MAX slots from the left, SHIP_ART_W px apart. Slot 0
@@ -2030,18 +2041,7 @@ read_input:
         and KEY_C
         jr nz,.k4
         set 7,c                 ; IN_CALL
-.k4:
-        if CHEAT_KEYS
-        ld a,KEY_ROW_1          ; the cheat keys 1 and 2
-        call key_row
-        rrca                    ; KEY_1 to bit 0 (IN_BOSS), KEY_2 to bit 1 (IN_SHIP)
-        cpl                     ; 1 = pressed
-        ld hl,cheat_on          ; (only in cheat mode)
-        and (hl)
-        or c
-        ld c,a
-        endif
-    ld b,03h                ; joystick 1: (R15 and AFh) or 03h
+.k4:     ld b,03h                ; joystick 1: (R15 and AFh) or 03h
         ld e,0AFh
         call read_joy
         ld b,4Ch                ; joystick 2: (R15 and DFh) or 4Ch
@@ -2050,6 +2050,24 @@ read_input:
         ld a,(attract)
         or a
         jr nz,.cpu
+        if CHEAT_KEYS
+        ld a,KEY_ROW_1          ; the cheat keys 1..4 (only in cheat mode)
+        call key_row
+        cpl                     ; 1 = pressed
+        ld b,a
+        rrca                    ; KEY_1, KEY_2 to bits 0, 1 (IN_BOSS, IN_SHIP)
+        and IN_BOSS|IN_SHIP
+        ld d,a
+        ld a,b
+        rlca                    ; KEY_3, KEY_4 to bits 5, 6 (IN_INVUL, IN_KILL)
+        rlca
+        and IN_INVUL|IN_KILL
+        or d
+        ld hl,cheat_on
+        and (hl)
+        or c
+        ld c,a
+        endif
         ld a,c
         ld (input),a
         ret
@@ -2079,7 +2097,8 @@ read_input:
         ld (input),a
         ret
         assert IN_LEFT == 04h && IN_RIGHT == 08h && IN_FIRE == 10h && IN_CALL == 80h && IN_BOSS == 01h && IN_SHIP == 02h && IN_EGG == 40h
-        assert KEY_1 == IN_BOSS*2 && KEY_2 == IN_SHIP*2
+        assert SPR_EC == 80h && IN_KILL == IN_EGG     ; (IN_KILL read outside attract mode only)
+        assert KEY_1 == IN_BOSS*2 && KEY_2 == IN_SHIP*2 && KEY_3*4 == IN_INVUL && KEY_4*4 == IN_KILL
 
 ; A = keyboard row A (bit = 0 when pressed). Keeps BC, D, HL.
 key_row:
@@ -2941,6 +2960,9 @@ eb_speed:
 ; starts to die (ship_dies; not again if a bullet hit it already).
 ; Keeps IX.
 eb_hit:
+        ld a,(invul)
+        or a
+        ret nz                  ; invulnerable: no hit (no carry)
         ld a,(eb_alive)
         inc a
         jr nz,.have
@@ -3617,6 +3639,9 @@ collide:
         ld a,(rot_left)
         or a
         call nz,rot_step
+        ld a,(invul)
+        or a
+        ret nz                  ; invulnerable: enemies pass through
         call alive_mask
         or a
         ret z
@@ -4464,12 +4489,7 @@ load_enemy:
 ; bonus ends (BS_END: the text gone, the score; BS_NEXT: the next wave)
 next_wave:
         if CHEAT_KEYS
-        ld a,(input_prev)       ; the cheat key 2 pressed: a reserve ship
-        cpl
-        ld hl,input
-        and (hl)
-        and IN_SHIP
-        call nz,bonus_ship
+        call cheat_keys         ; 2, 3, 4
         endif
         ld a,(boss_st)
         or a
@@ -4589,6 +4609,48 @@ bonus_ship:
         jp bonus_start
 
         if CHEAT_KEYS
+; The cheat keys 2, 3 and 4 (next_wave, a boss on or not; never pressed in
+; attract mode): key 2 a reserve ship (bonus_ship), key 3 invulnerability
+; on or off, key 4 a random living ship of the front dies (ship_dies)
+cheat_keys:
+        ld a,(input_prev)
+        cpl
+        ld hl,input
+        and (hl)
+        ld c,a                  ; C = the keys pressed this frame
+        and IN_INVUL
+        jr z,.ship
+        ld hl,invul
+        ld a,(hl)
+        cpl
+        ld (hl),a
+.ship:  ld a,c
+        and IN_SHIP
+        push bc
+        call nz,bonus_ship
+        pop bc
+        ld a,c
+        and IN_KILL
+        ret z
+        call alive_mask
+        or a
+        ret z                   ; none living
+        ld c,a
+.r:     call rand               ; a random slot, till one with a living ship (keeps BC, DE)
+        and FRONT_MAX-1
+        ld e,a
+        ld b,a
+        inc b
+        ld a,c
+.bit:   rrca
+        djnz .bit
+        jr nc,.r
+        ld hl,boom_stage
+        ld d,0
+        add hl,de
+        jp ship_dies
+        assert FRONT_MAX == 4
+
 ; The cheat key 1 (next_wave, no boss on): not in game over (nor attract
 ; mode: the pseudo-player never presses it), the level's next boss (the
 ; first of BOSS_AFTER_LIST from this wave on) begins next frame
@@ -6321,6 +6383,12 @@ booms:
 ; sat_buf from the front's slots (the ship or its boom) and the incoming
 ; ship (the end marker stays)
 build_sat:
+        ld a,(invul)
+        or a
+        ld a,SHIP_COLOR
+        jr z,.sc
+        ld a,INVUL_COLOR
+.sc:    ld (ship_col),a
         ld hl,sat_buf
         ld ix,boom_stage
         ld a,(front_mask)
@@ -6328,7 +6396,8 @@ build_sat:
         ld a,(ship_x)
         ld e,a                  ; this slot's art's left column
         ld b,FRONT_MAX
-.slot:  ld c,SHIP_COLOR
+.slot:  ld a,(ship_col)
+        ld c,a
         rr d
         jr nc,.park
         ld (hl),SHIP_TOP-1      ; a sprite's first line is Y + 1
@@ -6337,7 +6406,7 @@ build_sat:
         sub SHIP_ART_L
         jr nc,.x
         add a,32                ; left of 0: the early clock
-        ld c,SHIP_COLOR|SPR_EC
+        set 7,c                 ; (SPR_EC)
 .x:     ld (hl),a
         jr .rest
 .park:  ld (hl),SPR_PARK
@@ -6377,12 +6446,16 @@ build_sat:
         ld de,-COMING_L_ART_L
         ld b,NAME_COMING_L
 .side:  add hl,de               ; the sprite's X (signed)
-        ld a,l
+        ld a,(invul)
+        or a
         ld c,COMING_COLOR
+        jr z,.cc
+        ld c,INVUL_COLOR
+.cc:    ld a,l
         bit 7,h
         jr z,.cx
         add a,32                ; left of 0 (down to -16): the early clock
-        ld c,COMING_COLOR|SPR_EC
+        set 7,c                 ; (SPR_EC)
         jr .on
 .cx:    ld a,h
         or a

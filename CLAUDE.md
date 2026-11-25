@@ -74,7 +74,15 @@ before the boss (its level text shown), and the boss begins (wave 1..5:
 the boss after wave 5; 6..10: after 10). Key 2 (`IN_SHIP`, from
 `next_wave`, a boss on or not), a press in a game (not in game over),
 gives a reserve ship as a bonus ship does (`bonus_ship`: under
-`RESERVE_MAX` only, shown that frame, the happy beep). The bottom status area shows the reserve ships
+`RESERVE_MAX` only, shown that frame, the happy beep). Key 3 (`IN_INVUL`,
+`cheat_keys` from `next_wave`), a press in a game, toggles
+invulnerability (`invul`, game RAM: off at each new game): `eb_hit` and
+`collide` return at once (enemy bullets and free enemies pass through),
+and `build_sat` shows the front's ships and the incoming one in
+`INVUL_COLOR` (2; via `ship_col`; booms as ever; the incoming ship is
+Claude's choice). Key 4 (`IN_KILL`), a press in a game, kills a random
+living ship of the front (`ship_dies`), invulnerable or not. Keys 3 and
+4 are read only out of attract mode (`IN_KILL` is `IN_EGG`'s bit). The bottom status area shows the reserve ships
 (4 at the start; `images/reserve-ship.png`, 8×8, drawn in the bitmap) at its
 left, art from column 0, one black pixel apart (`draw_reserves`, A = how
 many). C calls one up (not while one is flying, nor with the front
@@ -699,13 +707,19 @@ the staged test below. Then the enemies' part, hits on,
   button A; Ctrl-V and joystick 1's button A, Ctrl-V and space: each
   takes the egg away (the title's text back), no game; then a press of
   space: a fourth game, as at power-on (Ctrl-V in it: nothing), for the
-  final screenshot (before that, games 3 and 4: keys 1 and 2 do
+  final screenshot (before that, games 3 and 4: keys 1..4 do
   nothing out of cheat mode). Cheat mode (`cheat_frame`, `cheat_game`):
   the title after game 5: CHEAT without CTRL, CTRL C H E A (CTRL
   released and pressed) T, CTRL C H E X A T: still off; CTRL C H C H E
   A T: on, the logo's colour bytes (rows 1..19) 7 made 2 (`cheat_colours`,
   `::cheat`: every later title check too); game 6: key 1, the boss after
-  wave 5 (L1 W5), key 2, a fifth reserve, the per-frame models off; its
+  wave 5 (L1 W5), key 2, a fifth reserve, the per-frame models off;
+before key 1: key 3 (the ship green in the SAT), staged (a four-ship
+front, enemy 0 free on ship 1's art, enemy bullets on ships 0, 1, 3):
+the next frame no ship dies, the enemy and ship 0's bullet fly on;
+key 4 twice (one more ship booming each), after key 1 key 3 again (the
+two left white) and key 4 (one booming); games 3 and 4: keys 1..4 do
+nothing out of cheat mode; its
   99999998 makes no entry (`hi_enter` not called); game 7 for the
   screenshot. Every wave's end: the bonus model (ship deaths
   seen at `ship_dies`, the streak, the reserve that frame in RAM and VRAM,

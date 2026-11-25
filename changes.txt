@@ -1,5 +1,9 @@
 TERRA FRONT - CHANGES
 
+Version 0.9.7
+
+- Playtesting adjustments.
+
 Version 0.9.6
 
 - When the game plays by itself, every other time it starts with a

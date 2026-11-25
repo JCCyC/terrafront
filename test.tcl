@@ -798,7 +798,7 @@ proc want_sat {} {
 			set sx [expr {$x + $i*$::W - $::sym(SHIP_ART_L)}]
 			set st [m boom_stage $i]
 			set nm [expr {$st ? $::sym(NAME_BOOM) + 4*($st - 1) : 0}]
-			set col [expr {$st ? $::sym(BOOM_COLOR) : $::sym(SHIP_COLOR)}]
+			set col [expr {$st ? $::sym(BOOM_COLOR) : [m invul] ? $::sym(INVUL_COLOR) : $::sym(SHIP_COLOR)}]
 			lappend r [expr {$::sym(SHIP_TOP) - 1}] [expr {$sx < 0 ? $sx + 32 : $sx}] $nm [expr {$sx < 0 ? 0x80 | $col : $col}]
 		} else { lappend r 0xC0 - - - }
 	}
@@ -812,7 +812,8 @@ proc want_sat {} {
 		if {$sx > 255} {
 			lappend r 0xC0 - - -
 		} else {
-			lappend r [expr {$::sym(SHIP_TOP) - 1}] [expr {$sx < 0 ? $sx + 32 : $sx}] $nm [expr {$sx < 0 ? 0x8F : 0x0F}]
+			set cc [expr {[m invul] ? $::sym(INVUL_COLOR) : $::sym(COMING_COLOR)}]
+			lappend r [expr {$::sym(SHIP_TOP) - 1}] [expr {$sx < 0 ? $sx + 32 : $sx}] $nm [expr {$sx < 0 ? 0x80 | $cc : $cc}]
 		}
 	} else { lappend r 0xC0 - - - }
 	# the enemies, from RAM, rotated (form_frame checks the pairs against the loop)
@@ -3427,11 +3428,11 @@ proc new_game_checks {} {
 		at [expr {$::n+5}] { ctrl 1 ; vkey 1 }
 		at [expr {$::n+10}] { ctrl 0 ; vkey 0 }
 		at [expr {$::n+12}] { check {![m egg_now] && ![m over_on] && [m front_mask] == 1} "Ctrl-V in a game: nothing" }
-		# the cheat keys 1 and 2 before cheat mode: nothing
+		# the cheat keys 1..4 before cheat mode: nothing
 		if {$::games < 5} {
-			at [expr {$::n+14}] { keymatrixdown 0 0x06 }
-			at [expr {$::n+17}] { keymatrixup 0 0x06 }
-			at [expr {$::n+19}] { check {![m cheat_on] && ![m boss_st] && [m form_enemy] == 0 && [m reserves] == 4} "new game $::games: the cheat keys 1 and 2 out of cheat mode: nothing (boss_st [m boss_st], enemy [m form_enemy], [m reserves] in reserve)" }
+			at [expr {$::n+14}] { keymatrixdown 0 0x1E }
+			at [expr {$::n+17}] { keymatrixup 0 0x1E }
+			at [expr {$::n+19}] { check {![m cheat_on] && ![m boss_st] && [m form_enemy] == 0 && [m reserves] == 4 && ![m invul] && [m front_mask] == 1 && ![m boom_stage]} "new game $::games: the cheat keys 1..4 out of cheat mode: nothing (boss_st [m boss_st], enemy [m form_enemy], [m reserves] in reserve, invul [m invul], front [m front_mask], boom [m boom_stage])" }
 		}
 		if {$::games == 3} { at [expr {$::n+$::F}] { hi_game 4 } } elseif {$::games == 4} { at [expr {$::n+$::F}] { hi_game 5 } } elseif {$::games == 5} { at [expr {$::n+20}] cheat_game } else {
 			at [expr {$::n+8*$::F}] { hi_end ; screenshot_and_finish }
@@ -4010,19 +4011,111 @@ proc cheat_frame {} {
 		}
 	}
 }
-# Game 6, in cheat mode: key 1 goes to the level's next boss (L1 W5's),
-# key 2 gives a reserve ship; then game over with the best score: no entry
-proc cheat_game {} {
-	set ::nocheck 1 ; set ::ebon 0   ;# (the boss's cheat: the per-frame models don't follow it)
-	check {[m cheat_on] == $::sym(CHEAT_MASK)} "cheat mode still on in a new game"
-	keymatrixdown 0 0x02
-	at [expr {$::n+2}] { keymatrixup 0 0x02 }
-	at [expr {$::n+5}] {
-		check {[m boss_st] && [m form_enemy] == 4 && [lw_bad "L1 W5"] eq ""} "cheat mode: key 1 in a game: the boss after wave 5 (boss_st [m boss_st], enemy [m form_enemy]), \"L1 W5\" shown"
-		keymatrixdown 0 0x04
+# Game 6, in cheat mode: key 3 makes the front invulnerable (green;
+# staged: enemy bullets and a free enemy on its ships pass through), key 4
+# kills a random living ship (twice), key 1 goes to the level's next boss
+# (L1 W5's), key 3 again: vulnerable (its colour back), key 4 kills one
+# more, key 2 gives a reserve ship; then game over with the best score:
+# no entry
+proc key0 {bit} {
+	keymatrixdown 0 $bit
+	at [expr {$::n+2}] [list keymatrixup 0 $bit]
+}
+# The SAT shown's colours of the front's ships (not booming)
+proc ship_cols {} {
+	set r {}
+	for {set e 0} {$e < 32} {incr e} {
+		if {[sat [expr {4*$e}]] == $::sym(SHIP_TOP) - 1 && [sat [expr {4*$e + 2}]] == $::sym(NAME_SHIP)} { lappend r [expr {[sat [expr {4*$e + 3}]] & 15}] }
 	}
-	at [expr {$::n+7}] { keymatrixup 0 0x04 }
-	at [expr {$::n+10}] {
+	return $r
+}
+proc booming {} {
+	set r {}
+	for {set k 0} {$k < 4} {incr k} { if {[m boom_stage $k]} { lappend r $k } }
+	return $r
+}
+proc cheat_game {} {
+	set ::nocheck 1 ; set ::ebon 0   ;# (the cheats: the per-frame models don't follow them)
+	check {[m cheat_on] == $::sym(CHEAT_MASK)} "cheat mode still on in a new game"
+	check {![m invul]} "game 6: not invulnerable at its start"
+	key0 0x08
+	at [expr {$::n+5}] {
+		set c [ship_cols]
+		check {[m invul] && $c eq [list $::sym(INVUL_COLOR)]} "cheat mode: key 3 in a game: invulnerable (invul [m invul]), the ship in colour $::sym(INVUL_COLOR) (the SAT's: $c)"
+		cheat_stage
+	}
+}
+# A four-ship front at column 100, invulnerable; enemy 0 free, flying
+# straight down, placed so that after its next move it is on ship 1's art;
+# enemy bullets on ship 0's nose, ship 1's art's column 0 (deep), ship 3's
+# nose and column 8: next frame no ship dies, the enemy flies on (on the
+# ship's art), the bullet on ship 0's nose flies on
+proc cheat_stage {} {
+	if {[m call_on]} { at [expr {$::n + 1}] cheat_stage ; return }
+	load_art
+	set sx0 100 ; set T $::sym(SHIP_TOP) ; set W $::W ; set nose $::sym(SHIP_NOSE_DX)
+	lassign [vel 16] vx vy
+	set a {}
+	for {set y [expr {$T - $::art_b}]} {$y + $::art_b <= 183 && ![llength $a]} {incr y} {
+		for {set x [expr {$sx0 + $W - 8}]} {$x <= $sx0 + 2*$W} {incr x} {
+			if {[touches $x $y $sx0 {0 1 2 3}] eq {1}} { set a [list $x $y] ; break }
+		}
+	}
+	if {![llength $a]} { fail "invulnerability, staged: no placement on ship 1 found" ; return }
+	set_front 4 $sx0
+	lassign $a x y
+	set x0 [expr {($x - ($vx >> 8)) % $::FWRAP}] ; set y0 [expr {$y - ($vy >> 8)}]
+	set r $::sym(enemies)
+	foreach {f v} [list ST $::sym(EN_FREE) LEFT 0 XF 0 X [expr {$x0 & 255}] YF 0 Y $y0 DIR 16] { debug write memory [expr {$r + $::sym(EN.$f)}] $v }
+	debug write memory [expr {$r + $::sym(EN.X) + 1}] [expr {$x0 >> 8}]
+	debug write memory [expr {$::sym(enemies) + $::sym(EN) + $::sym(EN.ST)}] $::sym(EN_GONE)
+	set bs [list [list [expr {$T - 4}] [expr {$sx0 + $nose}]] [list [expr {$T + 9}] [expr {$sx0 + $W}]] \
+		[list [expr {$T - 4}] [expr {$sx0 + 3*$W + $nose}]] [list [expr {$T + 9}] [expr {$sx0 + 3*$W + 8}]]]
+	eb_set $bs
+	set ::cs_eb0 [lindex $bs 0]
+	say "invulnerability staged: a four-ship front at column $sx0, enemy 0 on ship 1 after its move ($a), enemy bullets $bs"
+	at [expr {$::n + 1}] {
+		set e [en_state 0]
+		lassign $e st l xf x yf y
+		set t [touches $x $y 100 {0 1 2 3}]
+		lassign $::cs_eb0 by bx
+		set b0 [lindex [eb_list] 0]
+		set want [list [expr {$by + [m eb_step]}] $bx]
+		check {[booming] eq {} && [m front_mask] == 15 && $st == $::sym(EN_FREE) && $t ne {} && $b0 eq $want} "invulnerable, staged, the next frame: no ship dies (booming: [booming]), enemy 0 flies on on the ships' art (state $st, touching ships $t), the bullet on ship 0's nose flies on ($b0, want $want)"
+	}
+	at [expr {$::n + 3}] {
+		set c [ship_cols]
+		check {[booming] eq {} && $c eq [lrepeat 4 $::sym(INVUL_COLOR)]} "invulnerable: the four ships in colour $::sym(INVUL_COLOR), none blown up (the SAT's: $c; booming: [booming])"
+		key0 0x10
+	}
+	at [expr {$::n + 8}] {
+		set ::cs_b1 [booming]
+		check {[llength $::cs_b1] == 1 && [m invul] && [m front_mask] == 15 && [m boom_stage [lindex $::cs_b1 0]] == 1} "cheat mode: key 4, invulnerable: one ship of the front blows up (booming: $::cs_b1)"
+		key0 0x10
+	}
+	at [expr {$::n + 13}] {
+		set b [booming]
+		check {[llength $b] == 2 && [lindex $::cs_b1 0] in $b} "cheat mode: key 4 again: another living ship blows up (booming: $b; the first $::cs_b1)"
+		key0 0x02
+	}
+	at [expr {$::n + 18}] {
+		check {[m boss_st] && [m form_enemy] == 4 && [lw_bad "L1 W5"] eq ""} "cheat mode: key 1 in a game: the boss after wave 5 (boss_st [m boss_st], enemy [m form_enemy]), \"L1 W5\" shown"
+	}
+	# (the two booms over: two ships left; the boss's bullets wiped, so
+	# that none reaches the front before the checks)
+	at [expr {$::n + 32}] { eb_set {} ; key0 0x08 }
+	at [expr {$::n + 37}] {
+		set c [ship_cols]
+		set fm [m front_mask]
+		check {![m invul] && ($fm & 1) + ($fm >> 1 & 1) + ($fm >> 2 & 1) + ($fm >> 3 & 1) == 2 && [booming] eq {} && $c eq [lrepeat 2 $::sym(SHIP_COLOR)]} "cheat mode: key 3 again: not invulnerable (invul [m invul]), the two ships left (front [m front_mask]) in colour $::sym(SHIP_COLOR) again (the SAT's: $c)"
+		key0 0x10
+	}
+	at [expr {$::n + 40}] {
+		set b [booming]
+		check {[llength $b] == 1} "cheat mode: key 4, not invulnerable: one ship of the front blows up (booming: $b)"
+		key0 0x04
+	}
+	at [expr {$::n + 44}] {
 		check {[m reserves] == 5} "cheat mode: key 2 in a game: a reserve ship ([m reserves] in reserve)"
 		set ::games 6
 		score_write 99999998
