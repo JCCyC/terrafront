@@ -215,19 +215,24 @@ proc score_ram {} {
 }
 proc score_vram_bad {} { text_bad $::sym(SCORE_ROW) $::sym(SCORE_COL) [score_str $::score_model] $::sym(SCORE_LEN) }
 proc en_sts {} { set l {} ; for {set i 0} {$i < 8} {incr i} { lappend l [m enemies [expr {$i*$::sym(EN) + $::sym(EN.ST)}]] } ; return $l }
-set cheat_wipe 0
+set cheat_wipe 0 ; set b2_vanished 0
 cart_bp $sym(cheat_boss) {} { set ::cheat_wipe 1 }
 proc score_frame {} {
 	set now [en_sts]
 	set breaks 0 ; set frees 0
 	if {[llength $::sc_prev]} {
+		set f0 [m boom_frames]
 		for {set i 0} {$i < 8} {incr i} {
 			set p [lindex $::sc_prev $i] ; set c [lindex $now $i]
-			if {$i % 2 == 0 && $p == 0 && $c != 0} { incr breaks }
-			if {$p < 2 && $c >= 2} { incr frees }
+			# (a pair gone at once, Boss2's vanish, isn't a break)
+			if {$i % 2 == 0 && $p == 0 && $c != 0 && $c != 5} { incr breaks }
+			# a boom begun this frame: its first image, its full count (Boss2
+			# moves a free or booming enemy to another record)
+			if {$c == 2 && [m enemies [expr {$i*$::sym(EN) + $::sym(EN.LEFT)}]] == $f0} { incr frees }
 		}
 	}
 	if {$::cheat_wipe} { set breaks 0 ; set frees 0 ; set ::cheat_wipe 0 }   ;# (the cheat key 1: the wave's enemies gone, no points)
+	set vanish $::b2_vanished ; set ::b2_vanished 0   ;# (Boss2 died: its enemies gone, hit or not this frame)
 	set nb 0 ; set nf 0 ; set ::sc_boss 0 ; set old $::score_model
 	foreach c $::sc_calls {
 		lassign $c kind ships col
@@ -236,7 +241,7 @@ proc score_frame {} {
 		dict incr ::sc_hist "$kind/$ships[expr {$col ? "/crash" : ""}]"
 		set ::score_model [expr {$::score_model + $pts > 99999999 ? 99999999 : $::score_model + $pts}]
 	}
-	if {$nb != $breaks || $nf != $frees} { sc_bad "$nb break-up and $nf free scores, want $breaks and $frees (states [lrange $::sc_prev 0 end] -> $now)" }
+	if {!$vanish && ($nb != $breaks || $nf != $frees)} { sc_bad "$nb break-up and $nf free scores, want $breaks and $frees (states [lrange $::sc_prev 0 end] -> $now)" }
 	if {[score_ram] != $::score_model} { sc_bad "score [score_ram] in RAM, want $::score_model" }
 	if {[m score_dirty]} { sc_bad "the score changed but wasn't shown" }
 	if {$::score_model != $old || $::sc_shown} {
@@ -976,6 +981,9 @@ proc mid_cells {} {
 	}
 	return $r
 }
+# Pixel (x, y) in Boss2's cells (lines 8..23, columns 96..159)
+proc in_b2 {x y} { expr {$y >= 8 && $y < 24 && $x >= 96 && $x < 160} }
+set b2_bitmaps 0
 proc check_bitmap {} {
 	set mid [lsort -unique [concat [mid_cells] $::mid_prev]]
 	set ::mid_prev [mid_cells]
@@ -984,6 +992,7 @@ proc check_bitmap {} {
 	if {$::bitmap_skip} { set ::bitmap_skip 0 ; return }   ;# put_star0 just undrew star 0
 	set bad0 {}
 	set want [dict create]
+	set b2 [m b2_shown]     ;# (Boss2 in the bitmap: its cells kept from stars and bullets)
 	set bl {}
 	foreach v [volley_live] {
 		set y [lindex $v 0]
@@ -994,6 +1003,7 @@ proc check_bitmap {} {
 	foreach e $bl {
 		lassign $e y x
 		for {set r $y} {$r < $y + $::sym(BULLET_H)} {incr r} {
+			if {$b2 && [in_b2 $x $r]} continue
 			set a [expr {($r/8)*256 + ($x/8)*8 + $r%8}]
 			set b [expr {0x80 >> ($x%8)}]
 			if {[dict exists $want $a]} { set b [expr {$b | [dict get $want $a]}] ; set shared 1 }
@@ -1006,6 +1016,7 @@ proc check_bitmap {} {
 	foreach e [star_list] {
 		lassign $e x y on
 		if {$y >= $midrow && $y < $midrow + 8 && ($x & 0xF8) in $mid} { incr i ; continue }
+		if {$b2 && [in_b2 $x $y]} { if {$on} { lappend bad0 "star $i shown in Boss2's cells" } ; incr i ; continue }
 		set hid [bullet_in $x $y]
 		if {$hid} { incr ::star_hidden ; if {$i == 0} { incr ::star0_hid } }
 		if {$on == $hid} { lappend bad0 "star $i on $on" }
@@ -1032,14 +1043,29 @@ proc check_bitmap {} {
 		}
 	}
 	set bad $bad0
+	set b2col [dict create]
+	if {$b2} {
+		# its cells: BOSS2_PAT, and BOSS2_COL with its colour in the body's
+		set bc [expr {[m boss_color] << 4}]
+		for {set i 0} {$i < 128} {incr i} {
+			set a [expr {256*(1 + $i/64) + 96 + $i%64}]
+			if {[debug read VRAM $a] != [m BOSS2_PAT $i]} { lappend bad "Boss2 $a" }
+			set c [m BOSS2_COL $i] ; if {$c < 16} { set c [expr {$c | $bc}] }
+			dict set b2col $a $c
+			dict unset want $a ; dict unset got $a
+		}
+		incr ::b2_bitmaps
+	}
 	dict for {a b} $want { if {![dict exists $got $a] || [dict get $got $a] != $b} { lappend bad $a } }
 	dict for {a b} $got { if {![dict exists $want $a]} { lappend bad $a } }
 	set cb [debug read_block VRAM 0x2100 [expr {22*256}]]
 	foreach p [regexp -all -indices -inline {[^\xF1]} $cb] {
 		set a [expr {[lindex $p 0] + 256}]
 		binary scan [string index $cb [lindex $p 0]] cu c
+		if {[dict exists $b2col $a]} continue
 		if {!([dict exists $starb $a] && $c == 0xE1)} { lappend bad "colour $a" }
 	}
+	dict for {a c} $b2col { if {[debug read VRAM [expr {0x2000 + $a}]] != $c} { lappend bad "Boss2 colour $a" } }
 	dict for {a b} $starb {
 		if {[debug read VRAM [expr {0x2000 + $a}]] != 0xE1} { lappend bad "star colour $a" }
 	}
@@ -1638,8 +1664,8 @@ proc check_form_pick {} {
 	check {[m form_enemy] == 0 && [m form_cidx] == 0 && [m form_color] == 2} "the first wave: enemy [m form_enemy], colour [m form_color] (index [m form_cidx]; want enemy 0, colour 2)"
 }
 # The wave's enemy's patterns in VRAM, against ENEMY_PATTERN: wrong bytes
-proc form_pattern_bad {} {
-	set e [m form_enemy]
+proc form_pattern_bad {{e ""}} {
+	if {$e eq ""} { set e [m form_enemy] }
 	set bad {}
 	set a [expr {0x3800 + $::sym(NAME_ENEMY)*8}]
 	for {set i 0} {$i < 32} {incr i} {
@@ -2370,7 +2396,12 @@ cart_bp $sym(boss_fire.shoot) {} {
 	lappend ::eb_spawned $b
 	incr ::bshots_now
 }
-cart_bp $sym(boss_dies) {} { if {$::started} { set ::bdead_alive [living [front_now]] } }
+cart_bp $sym(boss_dies) {} {
+	if {$::started} {
+		set ::bdead_alive [living [front_now]]
+		if {[m boss_kind]} { set ::b2_vanished 1 ; set ::b2_ebwipe 1 }   ;# (Boss2: its enemies and bullets gone at once)
+	}
+}
 proc vols {} {
 	set r {}
 	for {set i 0} {$i < $::sym(MAX_VOLLEYS)} {incr i} {
@@ -2383,7 +2414,7 @@ proc vols {} {
 # its state {st x colour} wants them
 proc boss_sat_got {} {
 	set r {}
-	for {set e 0} {$e < 13} {incr e} { if {[sat [expr {4*$e}]] == 7} { lappend r [list [sat [expr {4*$e+1}]] [sat [expr {4*$e+2}]] [sat [expr {4*$e+3}]]] } }
+	for {set e 0} {$e < 13} {incr e} { if {[sat [expr {4*$e}]] == 7 && [sat [expr {4*$e+2}]] >= 32} { lappend r [list [sat [expr {4*$e+1}]] [sat [expr {4*$e+2}]] [sat [expr {4*$e+3}]]] } }
 	lsort $r
 }
 proc boss_sat_want {st x c} {
@@ -2406,9 +2437,10 @@ proc boss_frame {} {
 		if {$st} { bbad "a boss with none expected (wave [m wave_n])" }
 		set ::bm [list 0] ; return
 	}
-	lassign $::bm pst px pc
-	# the SAT shown: built after the last frame's work
-	set sw [expr {$pst ? [boss_sat_want $pst $px $pc] : {}}]
+	lassign $::bm pst px pc pk
+	# the SAT shown: built after the last frame's work (Boss2 fighting: in
+	# the bitmap, none)
+	set sw [expr {$pst && !($pst == 1 && $pk ne "" && $pk) ? [boss_sat_want $pst $px $pc] : {}}]
 	set sg [boss_sat_got]
 	if {$sg ne $sw} { bbad "the SAT's boss entries $sg, want $sw" }
 	if {$pst == 0} {
@@ -2418,6 +2450,7 @@ proc boss_frame {} {
 		set ::b0 $::n ; set ::bacc 0 ; set ::bgap [bgap] ; set ::bdrop0 $::dropped
 		set ::bhits 0 ; set ::bcidx 0 ; set ::bshots 0 ; set ::bmin 9 ; set ::bmax 0 ; set ::bhist {} ; set ::btext 0 ; set ::bdead_alive -1
 		set ::bwave [list [m form_enemy] [m wave_n] [m level]]
+		if {[m boss_kind]} { b2_begin $st ; return }
 		set bad {}
 		for {set i 0} {$i < 16*32} {incr i} {
 			if {[debug read VRAM [expr {0x3800 + 32*8 + $i}]] != [m BOSS_PATTERN $i]} { lappend bad $i ; break }
@@ -2425,7 +2458,7 @@ proc boss_frame {} {
 		if {[m boss_x] != 0 || [m boss_dir] || [m boss_hits] || [m boss_cidx] || [m boss_color] != 5 || [m boss_gap] != $::bgap || $st != 1 || [m form_enemy] % 5 != 4 || [llength $bad]} {
 			bbad "boss [expr {$::bosses}] began: st $st x [m boss_x] dir [m boss_dir] hits [m boss_hits]/[m boss_cidx] colour [m boss_color] gap [m boss_gap] (want 0 0 0/0 5 $::bgap), after wave [expr {[m form_enemy] + 1}], patterns wrong at $bad"
 		}
-		set ::bm [list 1 [m boss_x] [m boss_color]]   ;# (as this frame's SAT has it: before the writes)
+		set ::bm [list 1 [m boss_x] [m boss_color] 0]   ;# (as this frame's SAT has it: before the writes)
 		# the fight: a front of 4, 1, 2, 3 ships (bosses 1..4); boss 1
 		# fought all through (the score 0 first), the others with 1 hit left
 		set k [lindex $::bfront_n [expr {($::bosses - 1) % 4}]]
@@ -2444,7 +2477,8 @@ proc boss_frame {} {
 		return
 	}
 	set k [expr {$::n - $::b0}]
-	if {$pst == 1} {
+	if {$pst == 1 && $pk} { b2_frame $st }
+	if {$pst == 1 && !$pk} {
 		# this frame's hits: each bullet of the last frame's volleys, in
 		# order, over the lines it covered (its new top to its old bottom)
 		# against the art where the boss showed
@@ -2548,7 +2582,7 @@ proc boss_frame {} {
 	}
 	if {$st == 0 && $pst != 7} { bbad "the boss gone in state $pst" }
 	set ::bvprev [vols]
-	set ::bm [list $st [m boss_x] [m boss_color]]
+	set ::bm [list $st [m boss_x] [m boss_color] [m boss_kind]]
 	set ::brk_seen $::brk_all
 }
 set bhits_all 0 ; set bbrk 0
@@ -2567,6 +2601,229 @@ proc boss_end {} {
 	check {$::bbad == 0 && $::bosses == 4} "bosses after waves 5, 10, 15 and 20 = the model every frame: its sprites (patterns, colour, place), 32 px/s between columns 0 and 192, its rain (one every gap px at 70% of 230 px/s whatever the wave, 5 in flight at most, 4 or 5 once it's going), the hits (each bullet on its art: gone, the break sound (re)started ($::bbrk starts); every 10 the next colour of 5 7 3 2 10 11 9 8 13; 10 in 13: it dies), its booms, \"BONUS ddd POINTS\" for 2 s, its points by the front's share as it died, the next wave ($::bosses bosses: {boss ships points frames ok} $::bres; [expr {$::bbad ? "first wrong: $::bfirst" : "none wrong"}])"
 	lassign $::b1 runs want hits shots mn mx txt drop sc
 	check {$hits == 90 && $sc == 250 && [llength $offs] >= 32 && [lindex $offs 0] >= 0 && [lindex $offs end] <= 63} "boss 1, fought through by a 4-ship front: 90 hits ([expr {$hits}]), states $runs (want $want), $shots bullets from [llength $offs] of its 64 columns ($mn..$mx in flight), the bonus text $txt frames, the score 0 + 250 = $sc, $drop frames dropped"
+	b2_end
+}
+
+# ---- Boss2 -------------------------------------------------------------------
+# From the spec: after wave 10 of a level (bosses 2 and 4 here) Boss2
+# (images/boss2.png) instead of the boss: still, in the bitmap at the
+# playfield's top, centred (columns 96..159, lines 8..23), in the boss's
+# first colour (its white stays white). Under it, 8 blank lines between,
+# a line of 4 pairs of one random enemy, each pair a random colour of the
+# waves', 8 blank px between pairs' arts, swerving left and right at a
+# constant speed, 0.5 s from end to end: at its left end the leftmost art
+# pixel on column 56, at its right end the rightmost on 199 (from its
+# middle, going right). 6 living enemies or fewer: a new pair (16 at most)
+# in a free slot of the line, coming down from above the screen in 0.5 s,
+# the line still meanwhile, one at a time (not hit before its art is all
+# on screen, not shooting while it comes). Its pairs break up and fly as
+# a wave's; its hits and colours as the boss's; a bullet of the enemies'
+# (wave 1's: 70%, at most 3 in flight) may come from it, line 24, any of
+# its columns. Its death: every enemy and bullet gone at once; then as the
+# boss. The test fights it as the boss, and makes free enemies gone once
+# their art passes line 120 (so they never reach the front, and spawns
+# come); its points from the enemies are written off at its death (the
+# score as it began), so the bonuses add up as before.
+set b2res {} ; set b2_shots 0 ; set b2cols {} ; set b2slots {}
+proc b2px {x l} { expr {([m BOSS2_PATTERN [expr {($x >> 3)*16 + $l}]] >> (7 - $x % 8)) & 1} }
+proc b2_enemy {} { expr {([m form_rows] + 256*[m form_rows 1] - $::sym(ENEMY_PATTERN)) / 32} }
+proc b2_ens {} {
+	set r {}
+	for {set i 0} {$i < 8} {incr i} { lassign [en_state $i] st - - x - y ; lappend r [list $st $x $y] }
+	return $r
+}
+proc b2_snap {} { list [m b2_desc] [m b2_spawned] [b2_ens] }
+# the line's place after m frames of swerving
+proc b2_pos_at {m} {
+	set R $::b2R
+	set p [expr {($R/2 + $m*2*$R/$::F) % (2*$R)}]
+	expr {$p <= $R ? $p : 2*$R - $p}
+}
+# 1: an enemy (in a pair or free; its art box all on screen) of ens has a
+# pixel of its art in column x on one of lines lo..hi
+proc b2_en_on {ens x lo hi} {
+	foreach en $ens {
+		lassign $en st ex ey
+		if {$st > 1 || $ey > 200} continue
+		set c [expr {$x - [screen_x $ex]}]
+		if {$c < 0 || $c > 7} continue
+		for {set l $lo} {$l <= $hi} {incr l} {
+			set r [expr {$l - $ey}]
+			if {$r >= 0 && $r < 16 && ([m ENEMY_PATTERN [expr {$::b2e*32 + $r}]] >> (7 - $c) & 1)} { return 1 }
+		}
+	}
+	return 0
+}
+# The pairs at their slots' places (the one coming down drem lines above)
+proc b2_places {pos desc drem} {
+	set bad {}
+	for {set p 0} {$p < 4} {incr p} {
+		lassign [en_state [expr {2*$p}]] st - - x - y
+		if {$st} continue
+		lassign [en_state [expr {2*$p+1}]] st1 - - x1 - y1
+		set s [m b2_slot $p]
+		set wx [expr {$::b2x0 + $pos + $s*$::b2step}]
+		set wy [expr {$desc == $p + 1 ? ($::b2land - $drem) & 255 : $::b2land}]
+		if {$st1 || $x != $wx || $x1 != $wx + 8 || $y != $wy || $y1 != $wy} { lappend bad "pair $p (slot $s) at $x,$y $x1,$y1, want $wx,$wy" }
+	}
+	return $bad
+}
+proc b2_bcd {v} {
+	for {set k 0} {$k < 4} {incr k} { debug write memory [expr {$::sym(score) + $k}] [expr {[scan [format %02d [expr {$v % 100}]] %x]}] ; set v [expr {$v / 100}] }
+}
+proc b2_begin {st} {
+	set e [b2_enemy] ; set ::b2e $e
+	set l [m ENEMY_COLS [expr {2*$e}]] ; set r [m ENEMY_COLS [expr {2*$e+1}]] ; set t [m ENEMY_ROWS [expr {2*$e}]]
+	set W [expr {9 + $r - $l}]
+	set ::b2step [expr {$W + 8}] ; set ::b2R [expr {144 - 4*$W - 24}] ; set ::b2x0 [expr {56 - $l}]
+	set ::b2land [expr {32 - $t}] ; set ::b2dfull [expr {$::b2land + 16}]
+	set ::b2m 0 ; set ::b2dk 0 ; set ::b2n 0 ; set ::b2lands {} ; set ::b2removed 0 ; set ::b2def 0 ; set ::b2maybe 0
+	set ::b2waits 0 ; set ::b2s0 $::score_model ; set ::b2h 0
+	set bad [form_pattern_bad $e]
+	set cols {}
+	for {set p 0} {$p < 4} {incr p} {
+		set c0 [m enemies [expr {2*$p*$::sym(EN) + $::sym(EN.COL)}]] ; set c1 [m enemies [expr {(2*$p+1)*$::sym(EN) + $::sym(EN.COL)}]]
+		if {$c0 != $c1 || $c0 ni $::COLS || [m b2_slot $p] != $p} { lappend bad "pair $p colour $c0/$c1 slot [m b2_slot $p]" }
+		lappend cols $c0
+	}
+	if {[en_sts] ne {0 0 0 0 0 0 0 0}} { lappend bad "states [en_sts]" }
+	if {$::b2x0 + $l != 56 || $::b2x0 + $::b2R + 3*$::b2step + 8 + $r != 199} { lappend bad "the line's ends" }
+	set bad [concat $bad [b2_places [b2_pos_at 0] 0 0]]
+	if {$st != 1 || [m boss_x] != 96 || [m boss_hits] || [m boss_cidx] || [m boss_color] != 5 || ![m b2_shown] || [m b2_pos] != $::b2R/2 || [m b2_dir] || [m b2_desc] || [m b2_spawned] || [m form_enemy] != 9 || [llength $bad]} {
+		bbad "Boss2 ($::bosses) began: st $st x [m boss_x] hits [m boss_hits]/[m boss_cidx] colour [m boss_color] shown [m b2_shown] pos [m b2_pos] (want [expr {$::b2R/2}]) dir [m b2_dir] desc [m b2_desc] spawned [m b2_spawned] after wave [expr {[m form_enemy] + 1}]; wrong: $bad"
+	}
+	set ::bm [list 1 [m boss_x] [m boss_color] 1]
+	# the fight: Boss2's first fought all through, the second with 1 hit left
+	set k [lindex $::bfront_n [expr {($::bosses - 1) % 4}]]
+	set_front $k [expr {[m boss_x] + 32 - $k*$::W/2}]
+	if {$::bosses > 2} {
+		debug write memory $::sym(boss_hits) 9 ; debug write memory $::sym(boss_cidx) 8 ; debug write memory $::sym(boss_color) 13
+		for {set i 0} {$i < 128} {incr i} {
+			set c [m BOSS2_COL $i] ; if {$c < 16} { set c [expr {$c | 0xD0}] }
+			debug write VRAM [expr {0x2000 + 256*(1 + $i/64) + 96 + $i%64}] $c
+		}
+		set ::b2h 89
+	}
+	set ::bvprev [vols]
+	set ::bshots_now 0
+	set ::brk_seen $::brk_all
+	set ::b2p [b2_snap]
+	lappend ::b2cols $cols
+}
+proc b2_frame {st} {
+	lassign $::b2p desc0 sp0 ens0
+	set sts [en_sts]
+	# the hits: the last frame's bullets on its art, over the lines each
+	# covered (an enemy's art there too, in front of it: maybe the enemy's)
+	set step [m bullet_step]
+	set hnow [expr {$st == 1 ? 10*[m boss_cidx] + [m boss_hits] : 90}]
+	set def 0 ; set maybe 0 ; set defs {}
+	foreach v $::bvprev {
+		set y [lindex $v 0] ; if {!$y} continue
+		foreach x [lrange $v 1 end] {
+			if {!$x} continue
+			set c [expr {$x - 96}] ; if {$c < 0 || $c > 63} continue
+			set lo [expr {$y - $step}] ; set hi [expr {$y + 2}]
+			set ba 0
+			for {set l $lo} {$l <= $hi} {incr l} { if {$l >= 8 && $l < 24 && [b2px $c [expr {$l - 8}]]} { set ba 1 ; break } }
+			if {!$ba} continue
+			if {[b2_en_on $ens0 $x $lo $hi]} { incr maybe } else { incr def ; lappend defs [list $y $x] }
+		}
+	}
+	set left [expr {90 - $::b2h}] ; set d [expr {$hnow - $::b2h}]
+	set lo [expr {$def < $left ? $def : $left}] ; set hi [expr {$def + $maybe < $left ? $def + $maybe : $left}]
+	if {$d < $lo || $d > $hi} { bbad "Boss2: $d hits, want $lo..$hi ($def on its art alone, $maybe with an enemy's)" }
+	incr ::b2def $def ; incr ::b2maybe $maybe
+	if {$st == 1} {
+		foreach g $defs {
+			lassign $g y x
+			foreach v [vols] { if {[lindex $v 0] == $y - $step && $x in [lrange $v 1 end]} { bbad "a bullet that hit Boss2 flies on ($v)" } }
+		}
+	}
+	# the break sound: each hit, each pair broken up
+	set brk 0
+	for {set i 0} {$i < 8} {incr i 2} { if {[lindex $ens0 $i 0] == 0 && [lindex $sts $i] ni {0 5}} { incr brk } }
+	if {$::brk_all - $::brk_seen != $d + $brk} { bbad "Boss2: [expr {$::brk_all - $::brk_seen}] break sound starts, want [expr {$d + $brk}] ($d hits, $brk pairs broken)" }
+	set ::b2h $hnow
+	if {$::bshots_now} { bbad "Boss2 rained the boss's bullets" }
+	if {$st != 1} {
+		# it died: every enemy and bullet gone that frame (but a volley fired after it)
+		set vl [volley_live]
+		set vbad [expr {[llength $vl] > 1 || ([llength $vl] && [lindex $vl 0 0] != $::sym(BULLET_START))}]
+		if {[en_sts] ne {5 5 5 5 5 5 5 5} || [m b2_shown] || [eb_live] || [m b2_desc] || $vbad || [m boss_color] != 13 || $::bdead_alive != [m boss_alive]} {
+			bbad "Boss2 died: states [en_sts], shown [m b2_shown], [eb_live] enemy bullets, volleys $vl, desc [m b2_desc], colour [m boss_color], alive [m boss_alive] (want $::bdead_alive)"
+		}
+		lappend ::b2res [list $::bosses $::b2e $::b2n [lsort -unique $::b2lands] $::b2removed $::b2waits [expr {$::score_model - $::b2s0}] $::b2def $::b2maybe]
+		b2_bcd $::b2s0 ; debug write memory $::sym(score_dirty) 1
+		set ::score_model $::b2s0 ; set ::sc_shown 1
+		keys 0
+		return
+	}
+	if {[m boss_color] != [lindex $::REDDEN [m boss_cidx]] || [m boss_hits] > 9} { bbad "Boss2: hits [m boss_hits]/[m boss_cidx], colour [m boss_color]" }
+	# the swerve (frames with no pair coming down at their start)
+	set desc [m b2_desc] ; set sp [m b2_spawned]
+	if {$desc0 == 0} { incr ::b2m }
+	set pos [m b2_pos]
+	if {$pos != [b2_pos_at $::b2m]} { bbad "Boss2's line at [m b2_pos], want [b2_pos_at $::b2m] (after $::b2m frames)" }
+	if {$desc0} {
+		# coming down: 0.5 s from B2_DESC_FROM above line 0 (shot: over)
+		set p [expr {$desc0 - 1}]
+		if {[lindex $sts [expr {2*$p}]] != 0} {
+			if {$desc} { bbad "Boss2's spawn broken up, still coming down" }
+		} else {
+			incr ::b2dk
+			set rem [expr {$::b2dfull - $::b2dk*2*$::b2dfull/$::F}]
+			if {$rem <= 0} {
+				lappend ::b2lands $::b2dk
+				if {$desc || [m b2_drem]} { bbad "Boss2's spawn landed: desc $desc, drem [m b2_drem]" }
+			} elseif {$desc != $desc0 || [m b2_drem] != $rem} { bbad "Boss2's spawn: desc $desc drem [m b2_drem], want $desc0 $rem (frame $::b2dk)" }
+		}
+		if {$sp != $sp0} { bbad "Boss2 spawned while one came down" }
+	} elseif {$sp != $sp0} {
+		set p [expr {$desc - 1}]
+		set live 0
+		for {set i 0} {$i < 8} {incr i} { if {$i/2 != $p && [lindex $sts $i] < 2} { incr live } }
+		set c0 [m enemies [expr {2*$p*$::sym(EN) + $::sym(EN.COL)}]] ; set c1 [m enemies [expr {(2*$p+1)*$::sym(EN) + $::sym(EN.COL)}]]
+		set s [m b2_slot $p] ; set taken {}
+		for {set q 0} {$q < 4} {incr q} { if {$q != $p && [lindex $sts [expr {2*$q}]] == 0} { lappend taken [m b2_slot $q] } }
+		if {$sp != $sp0 + 1 || $sp0 >= 16 || $p < 0 || $live > 6 || [lrange $sts [expr {2*$p}] [expr {2*$p+1}]] ne {0 0} || $c0 != $c1 || $c0 ni $::COLS || $s in $taken || [m b2_drem] != $::b2dfull} {
+			bbad "Boss2's spawn $sp: pair $p, $live others living, states [lrange $sts [expr {2*$p}] [expr {2*$p+1}]], colours $c0/$c1, slot $s (taken: $taken), drem [m b2_drem] (want $::b2dfull)"
+		}
+		set ::b2dk 0 ; incr ::b2n ; lappend ::b2slots $s
+	} else {
+		# none: due (6 living or fewer, spawns left) only if no record
+		# pair could be freed (enemies still booming)
+		set live 0 ; foreach c $sts { if {$c < 2} { incr live } }
+		if {$sp0 < 16 && $live <= 6} {
+			set both 0 ; set half 0
+			for {set p 0} {$p < 4} {incr p} {
+				set g [expr {([lindex $sts [expr {2*$p}]] == 5) + ([lindex $sts [expr {2*$p+1}]] == 5)}]
+				if {$g == 2} { incr both } elseif {$g == 1} { incr half }
+			}
+			if {$both || $half >= 2} { bbad "Boss2: no spawn with $live living (states $sts)" }
+			incr ::b2waits
+		}
+	}
+	set bad [b2_places $pos $desc [m b2_drem]]
+	if {[llength $bad]} { bbad "Boss2's pairs: $bad" }
+	# the test fights it, and takes free enemies off past line 120
+	boss_hunt
+	set ab [m form_art_b]
+	for {set i 0} {$i < 8} {incr i} {
+		lassign [en_state $i] est - - - - ey
+		if {$est == 1 && $ey + $ab > 120} { debug write memory [expr {$::sym(enemies) + $i*$::sym(EN) + $::sym(EN.ST)}] 5 ; incr ::b2removed }
+	}
+	set ::b2p [b2_snap]
+}
+proc b2_end {} {
+	set F $::F
+	set ok 1
+	foreach r $::b2res {
+		lassign $r boss e n lands removed waits pts def maybe
+		if {$lands ne "" && $lands ne [expr {$F/2}]} { set ok 0 }
+	}
+	lassign [lindex $::b2res 0] - - n1
+	check {[llength $::b2res] == 2 && [lindex $::b2res 0 0] == 2 && [lindex $::b2res 1 0] == 4 && $ok && $n1 == 16 && [llength [lsort -unique $::b2slots]] >= 2 && $::b2_bitmaps > 0 && $::b2_shots > 0} "Boss2 after wave 10 (bosses 2 and 4): in the bitmap (its art, its colours every frame), its line of 4 pairs of a random enemy (random colours), swerving 0.5 s end to end between columns 56 and 199, spawns (6 living or fewer, a free slot, coming down in [expr {$F/2}] frames, the line still, one at a time, 16 at most; the free slots each picked), its hits and colours, its bullets ($::b2_shots from it), its death (every enemy and bullet gone that frame) ({boss enemy spawns landings-frames taken-off waits points hits-alone hits-maybe}: $::b2res; colours $::b2cols; slots $::b2slots)"
 }
 
 # ---- The enemies' bullets ---------------------------------------------------
@@ -2592,19 +2849,23 @@ proc eb_live {} { set k 0 ; foreach b [eb_list] { if {[lindex $b 0]} { incr k } 
 # The enemies that can shoot, from RAM now: their bullets' places {Y X}
 # (under the art's last row, the art's column EB_DX, on screen)
 proc eb_cands {} {
-	set e [m form_enemy]
-	set ab [m ENEMY_ROWS [expr {2*$e+1}]]
+	set ab [m form_art_b]
 	set last [expr {$::sym(SHIP_TOP) + $::sym(SHIP_ART_T) - 8}]
+	set desc [m b2_desc]
 	set r {}
 	for {set i 0} {$i < 8} {incr i} {
 		lassign [en_state $i] st - - x - y
 		if {$st > 1 || $y + $ab > $last} continue
+		if {$desc && $i/2 == $desc - 1} continue   ;# (Boss2's spawn coming down)
 		set c [expr {[screen_x $x] + $::sym(EB_DX)}]
 		if {$c < 0 || $c > 255} continue
 		lappend r [list [expr {$y + $ab + 1}] $c]
 	}
+	# Boss2 fighting: one more, at line 24, from any of its columns (b2)
+	if {[m boss_st] == 1 && [m boss_kind]} { lappend r b2 }
 	return $r
 }
+set b2_ebwipe 0
 set ebon 0 ; set eb_bad 0 ; set eb_first "" ; set eb_force 0 ; set eb_expect "" ; set eb_cands {}
 set eb_rolls {} ; set eb_nat 0 ; set eb_nathit 0 ; set eb_full 0 ; set eb_none 0 ; set eb_spawns 0
 set eb_spawned {} ; set eb_prev {} ; set eb_w 0 ; set eb_epoch -1 ; set eb_S 0 ; set eb_k 0
@@ -2657,7 +2918,7 @@ proc eb_roll {} {
 	if {$a & 3} return
 	if {!$::eb_force} { incr ::eb_nathit }
 	set n [eb_live]
-	lassign [eb_spec [m wave_n]] - mx
+	lassign [eb_spec [expr {[m boss_st] ? 0 : [m wave_n]}]] - mx   ;# (a boss: wave 1's most)
 	set c [eb_cands]
 	set ::eb_cands $c
 	if {$n >= $mx} { incr ::eb_full ; set ::eb_last [list full $n $mx] ; return }
@@ -2672,6 +2933,9 @@ proc eb_shoot {} {
 	set hl [reg HL]
 	set b [list [debug read memory $hl] [debug read memory [expr {$hl+1}]]]
 	set k [lsearch -exact $::eb_expect $b]
+	if {$k < 0 && "b2" in $::eb_expect && [lindex $b 0] == 24 && [lindex $b 1] >= 96 && [lindex $b 1] < 160} {
+		set k [lsearch -exact $::eb_expect b2] ; incr ::b2_shots
+	}
 	if {$k < 0} { eb_bad "a bullet at $b, not from an enemy able to shoot ($::eb_expect; last roll $::eb_last)" ; return }
 	dict incr ::eb_ranks "$k/[llength $::eb_expect]"
 	set ::eb_expect ""
@@ -2706,9 +2970,10 @@ proc eb_frame {} {
 			lassign $fr mk sx0 st
 			for {set k 0} {$k < 4} {incr k} { if {($mk >> $k & 1) && ![lindex $st $k]} { lappend alive $k } }
 		}
+		set b2w $::b2_ebwipe ; set ::b2_ebwipe 0
 		foreach p $::eb_prev {
 			lassign $p y x
-			if {$y && $::eb_wipe} { set y 0 ; incr wiped }
+			if {$y && ($::eb_wipe || $b2w)} { set y 0 ; incr wiped }
 			if {$y && [llength $alive]} {
 				set k [eb_ship_hit $x $y [expr {$y + $step + 2}] $sx0 $alive]
 				if {$k >= 0} { set y 0 ; incr ::eb_shiphits ; if {$k ni $killed} { lappend killed $k } }
@@ -3077,7 +3342,7 @@ proc over_frame {} {
 }
 proc over_plan_10 {} {
 	set N0 $::N0 ; set F $::F
-	set ::ox [m ship_x] ; set ::ostar [m stars]
+	set ::ox [m ship_x] ; set ::ostar [m stars $::sym(STAR)]   ;# (star 1: over_stage moves star 0)
 	set ::oform [list [m form_tick] [m form_tick 1] [m form_x]]
 	set ::owant [expr {10*$F}]
 	set ::owhy "10 s; space and joystick 2's button A pressed one frame before 3 s and held past it ignored"
@@ -3094,7 +3359,7 @@ proc over_plan_10 {} {
 	at [expr {$N0+2*$F}] {
 		up 0x80
 		check {[m ship_x] == $::ox && $::spawns == 0 && [llength [volley_live]] == 0 && ![m call_on] && [m front_mask] == 0 && [m reserves] == 0} "game over: right, fire and C do nothing (ship_x [m ship_x], $::spawns shots, call_on [m call_on], mask [m front_mask])"
-		check {[list [m form_tick] [m form_tick 1] [m form_x]] ne $::oform && [m stars] != $::ostar} "game over: the game runs on (the formation and the stars move)"
+		check {[list [m form_tick] [m form_tick 1] [m form_x]] ne $::oform && [m stars $::sym(STAR)] != $::ostar} "game over: the game runs on (the formation and the stars move)"
 	}
 	at [expr {$N0+3*$F-2}] { down 0x01 ; joydown 2 0x10 }
 	at [expr {$N0+3*$F+5}] { up 0x01 ; joyup 2 }

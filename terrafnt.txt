@@ -1,4 +1,4 @@
-TERRA FRONT v. 0.9.4
+TERRA FRONT v. 0.9.5
 Hold the Front!
 
 (C) JCCyC 2026
@@ -23,7 +23,7 @@ reserve ships to fill the gaps in the front.
   on a Gradiente Expert 1.1 (a Brazilian MSX1), a 60 Hz machine, and on
   a Philips NMS 8250 (a European MSX2), a 50 Hz machine. It plays at
   the same speed on both.
-- The file TERRAFNT.ROM, a 16 KB cartridge image. Or, on an MSX with a
+- The file TERRAFNT.ROM, a 32 KB cartridge image. Or, on an MSX with a
   disk drive, the disk image TERRAFNT.DSK or the file TERRAFNT.BIN (see
   below).
 - The keyboard, or a joystick in either port.
@@ -48,9 +48,9 @@ On a real MSX, with a ROM launcher:
   it as if it were a cartridge.
 
 On a real MSX, as a real cartridge:
-  The game is a plain 16 KB ROM at address 4000h, with no mapper: burn
-  it into a 27C128 EPROM (or a 27C256 with the image written twice) on
-  a blank MSX cartridge board.
+  The game is a plain 32 KB ROM at addresses 4000h-BFFFh, with no
+  mapper: burn it into a 27C256 EPROM on a blank MSX cartridge board
+  that maps it there.
 
 On a PC, Mac or phone, with an emulator:
   Any MSX emulator can run it: openMSX, blueMSX, fMSX, WebMSX and
@@ -98,8 +98,13 @@ breaks up: its two enemies fly off alone, bouncing off the top and the
 bottom of the playfield. Shoot them down, or the front will have to
 dodge them. They shoot back, more and faster as the waves go by.
 
-Levels: a level is 10 waves. After waves 5 and 10 of each level comes a
-boss, which takes many hits and rains bullets on the front.
+Levels: a level is 10 waves. After wave 5 of each level comes a boss
+that cruises along the top of the screen, takes many hits and rains
+bullets on the front. After wave 10 comes another: it stays put at the
+top, behind a line of enemy pairs that swerves left and right, and
+sends down new pairs as the old ones fall. Its pairs break up and score
+as in a wave, and it shoots too. When it is destroyed, every enemy and
+bullet left vanishes.
 
 Bonus ship: finish two waves in a row without losing a ship, and a
 reserve ship is added (five at most).

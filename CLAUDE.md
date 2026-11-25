@@ -3,11 +3,14 @@
 The game's name is **Terra Front** (two words); `terrafront` (directory) and
 `terrafnt` (8.3 file names) are only identifiers.
 
-An MSX1 shoot-'em-up in Z80 assembly (sjasmplus), built as a 16 KB plain
-cartridge ROM at 4000h..7FFFh (`terrafnt.rom`, an 8.3 name). RAM at E000h.
-Nearly full: see ISSUES.md ("Code space"). Also a disk version, as
+An MSX1 shoot-'em-up in Z80 assembly (sjasmplus), built as a 32 KB plain
+cartridge ROM at 4000h..BFFFh (`terrafnt.rom`, an 8.3 name; `init`'s
+first call, `enable_page2`, in page 1, switches page 2 to the cartridge,
+Palavrale's way). RAM at E000h (variables up to `RES_PICS`, +500h;
+`LN_FLAGS` at +700h). The BIN's limit comes first: see ISSUES.md ("Code
+space"). Also a disk version, as
 Skyfighter's: `terrafnt.bin` (`sjasmplus -DBIN`:
-the same code at 8000h, BLOADed from Disk BASIC, RAM at C000h laid out
+the same code at 8000h, BLOADed from Disk BASIC, RAM at CF00h laid out
 as the ROM's, `CODE_BASE` / `RAM_BASE`; its `isr` also calls H.TIMI,
 `disk_timer`, for the first `DISK_HOOK_SECS` (10), so the disk ROM turns
 the drive motor off) on `terrafnt.dsk` (`blank720k.dsk`, copied from
@@ -280,7 +283,7 @@ frame it shows in the reserve and a 0.25 s "happy beep" (`BONUS_60/50`:
 C6 E6 G6 C7, tone only) plays on PSG channel A (`bonus_start`, `sfx`), winning over
 the shot (whose table runs on unheard). The count (`clean_waves`) starts
 again after each pair of waves, a bonus or not (reserve full).
-**Boss:** after waves 5 and 10 of a level (`BOSS_AFTER_LIST`; its last
+**Boss:** (Boss1; after wave 10, Boss2: below) after waves 5 and 10 of a level (`BOSS_AFTER_LIST`; its last
 enemy gone, the 0.7 s wait, then `next_wave.go` calls `boss_begin`
 instead of the next wave; `boss_done` set when it's over sends the next
 `.go` on to the wave), the boss (`images/boss.png`, 64×16, four 16×16
@@ -318,7 +321,47 @@ frame dropped one) the next wave (its bullets wiped as any wave's). A middle-row
 (`mid_show`: `mid_text`, `mid_x0`, `mid_w`) keeps stars and bullets out
 of its cells (`over_at`), GAME OVER's or the bonus's. Not a wave for the
 bonus ship's count (a ship lost in it counts against the next wave);
-the level text stays as the wave before. Behind it all, 15
+the level text stays as the wave before.
+**Boss2** (user's spec; `boss_kind` nonzero, `boss2_begin` from
+`boss_begin` when the wave was `BOSS2_AFTER`, 10): `images/boss2.png`
+(64×16, white and one body colour; its two 3-colour bytes' lone blue
+pixels made black, user's choice) in the bitmap, still, at the
+playfield's top, centred (columns 96..159, lines 8..23, `B2_X`, `B2_Y`;
+png2spr.py: `BOSS2_PAT`, `BOSS2_COL` with the body's colour bytes 01h,
+`b2_put`; `BOSS2_PATTERN` in Boss1's layout for `boss_px`, `boss_art`).
+While it shows (`b2_shown`) no star or bullet is drawn in its cells
+(`over_at` and `bullet_px` check them; `volley_px` the slow way on its
+lines; `move_stars` flags its lines `LN_MID`; its stars turned off at
+its start). Its hits, colours (the body's bytes rewritten,
+`b2_colours`, the white kept), death, booms (Boss1's sprites at its
+place), bonus and the next wave as Boss1's; no rain (`boss_fire`
+returns). Under it a line of 4 pairs of one random enemy (`load_enemy`;
+`ENEMY_COLS`), each pair a random colour of `FORM_COLOR_LIST` (user's
+choice; each enemy record has its colour, `EN.COL`, which `ent_at`
+uses; `load_formation` sets every record's to `form_color`), their art's
+first line `B2_GAP_Y` (8) blank lines under its art (line 32), 8 blank
+px between pairs' arts (`B2_GAP_X`), swerving at a constant speed (user's
+choice) from the middle going right (Claude's choice): at the left end
+the leftmost art pixel on column 56 (`B2_MARGIN`), at the right end the
+rightmost on 199, 0.5 s end to end (`B2_SWERVE_MS`; `boss2_move` from
+`boss_move`; `b2_pos` 0..`b2_range`, reflected at the ends; `b2_place`
+puts the pairs in their slots, `b2_slot`). Pairs break up and fly free
+as a wave's; scores as a wave's. With 6 living enemies or fewer
+(`B2_SPAWN_AT`) and under 16 spawns (`B2_SPAWNS`), `b2_spawn` makes a
+record pair with both gone (else two half-gone ones: the second's enemy
+moved into the first's gone record; none, booms still on: a later
+frame) a pair in a random free slot (Claude's choice), coming down from
+16 lines above line 0 (`B2_DESC_FROM`) to the line in 0.5 s
+(`B2_DESC_MS`; `b2_desc`, `b2_drem`), the line still meanwhile, one at a
+time; not hit while its art box is partly above line 0 (`hit_lines`),
+and it doesn't shoot while it comes; shot: its way down is over. Enemy
+bullets as wave 1's (70%, at most 3: `wave_entry` gives a boss the first
+entry), the boss one more shooter (user's choice: `enemy_fire` adds it,
+line 24, a random one of its columns; rolls of 0..15 then). Its death
+(`boss_dies`): every enemy gone, the enemy bullets wiped by that frame's
+`eb_move`, the volleys gone (`b2_vanish`, `move_bullets`), its bitmap
+blank (`b2_erase`).
+Behind it all, 15
 one-pixel light grey stars (random columns, random lines, never two on a
 line) scroll left at 10 px/s (1 px every 6 frames at 60 Hz, every 5 at
 50 Hz), drawn in the bitmap (`move_stars`, after `fire`); one leaving past
@@ -412,7 +455,7 @@ volley's or an enemy's) is drawn as the bits of all of them (`eb_draw`,
 after the volleys); stars hide in their bytes as in the volleys'. The
 SAT's reversal every other frame is done by `upload_sat` (the entries
 sent backwards, in vertical blank). The worst frame measured (`make profile`, over the
-test's games) is about 14.6 ms on the Expert (16.67 ms a frame; ISSUES.md).
+test's games) is about 15.7 ms on the Expert (16.67 ms a frame; ISSUES.md).
 Speed-ups that keep it there: `hit_lines` puts each enemy's art's first
 line in `hc_first` and its left column on screen (mod 256) in `hc_x` once
 a frame; `volley_hits` only tries, per bullet, the enemies whose art has a
@@ -580,6 +623,21 @@ the staged test below. Then the enemies' part, hits on,
   first: 250 after it, no frame dropped), bosses 2..4 with 1 hit left
   (written) by 1-, 2- and 3-ship fronts (500, 400, 300); the test steers
   under it and fires every other frame, enemy bullets not hitting ships).
+  Bosses 2 and 4 are Boss2 (`b2_frame`'s model every frame instead of
+  Boss1's): its start (the random enemy's patterns, its 4 pairs, colours
+  of the list, slots 0..3, the line's ends 56 and 199 from the art),
+  its cells in the bitmap (`check_bitmap`: its art and colours, no star
+  or bullet), the line's place (the swerve's Bresenham, frames with no
+  spawn coming down), each pair's place, each spawn (6 living or fewer,
+  a free slot, both records a pair in one colour, coming down exactly
+  0.5 s, none while one comes, none due but when no record pair can be
+  freed), its hits (a bullet on its art alone: a hit; with an enemy's art
+  there too: maybe), the break sound per hit and pair broken, its death
+  (every enemy, enemy bullet and old volley gone that frame); the test
+  takes free enemies off (written gone) once their art passes line 120;
+  boss 2 fought all through by a 1-ship front (16 spawns), boss 4 with 1
+  hit left (its colours written to VRAM too); the points from its
+  enemies written off at its death (the score as it began).
   Then the enemy bullets' levels (rolls forced to hit): the
   wave then (21) and waves 1..8 (`wave_n` written): the speed, and with
   one fewer than the most in flight (the test's own bullets, two sharing

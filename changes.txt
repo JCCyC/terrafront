@@ -1,5 +1,14 @@
 TERRA FRONT - CHANGES
 
+Version 0.9.5
+
+- A new boss after wave 10 of each level: it stays at the top of the
+  screen behind a line of enemy pairs that swerves left and right, and
+  sends down new pairs as they fall. It takes hits and changes colour
+  like the boss after wave 5, and gives the same bonus. When it is
+  destroyed, every enemy and bullet left vanishes.
+- The cartridge image is now 32 KB (it was 16 KB).
+
 Version 0.9.4
 
 - Free enemies bouncing off the bottom of the screen no longer fly

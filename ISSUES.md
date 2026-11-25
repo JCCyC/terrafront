@@ -21,9 +21,18 @@ routines' worst: `game_over` 4.7 (GAME OVER over a boss's bonus text),
 `next_wave` 4.0 (a wave begin), `collide` 3.7 and `show_score` 3.4 (the
 test's staged collisions and score writes).
 
+Boss2 (2026-11-25, 0.9.5) raised the worst frame to about 15.7 ms (no
+frame dropped on any machine): its fights' star steps with two volleys
+and three enemy bullets (`move_stars` up to 5.1 ms: Boss2's 16 lines are
+flagged, so their stars take `star`'s full way), its start
+(`next_wave` 7.9 ms: `boss2_begin` draws its 256 VRAM bytes and loads
+the enemy; could be split over two frames), its death (`move_bullets`
+6.0 ms: `b2_erase`, 256 VRAM bytes, inside it).
+
 **Decision:** pending (the user's): enough for now, or more (the next
-candidates: `eb_move`'s speed worked out every frame, `star`'s full way,
-the per-bullet overhead left in `volley_px` and `bullet_px`).
+candidates: Boss2's start and death split over two frames, its hidden
+stars skipped, `eb_move`'s speed worked out every frame, `star`'s full
+way, the per-bullet overhead left in `volley_px` and `bullet_px`).
 
 ## openMSX sometimes crashes during the headless test
 
@@ -36,20 +45,15 @@ screenshots, and with extra breakpoints in the wave-begin code.
 
 **Decision:** pending. Rerun the machine for now.
 
-## Code space: the ROM and the BIN are nearly full
+## Code space: the BIN's limit
 
-Found 2026-11-22 (high scores, 0.9.2). Since the bottom bounce's
-minimum angle (2026-11-24, 0.9.4) the 16 KB ROM has 465 bytes free
-(`code_end` 7E2Fh); the BIN, the same code plus the disk code (`hsc_*`,
-`bdos`, `disk_timer`), ends at BFFAh, 6 bytes under its RAM at C000h (`assert $ <= RAM_BASE`). So the BIN runs
-out first: at the next step.
+Found 2026-11-22 (high scores, 0.9.2). Acted on 2026-11-25 (Boss2,
+0.9.5), as planned: the ROM is a plain 32 KB cartridge (4000h..BFFFh,
+page 2 switched by `enable_page2`), its code ending at 83F9h (about 15 KB
+free); the BIN's RAM moved to CF00h (its IM 2 jump at D8D8h, under
+`BIN_STACK_ROOM`), its code ending at C59Dh: about 2.4 KB under CF00h,
+so the BIN runs out first. Past that (about 19.75 KB of code) the BIN
+needs another layout (part of it in page 1's RAM).
 
-Plan, when a step doesn't fit: first the BIN's RAM up (`RAM_BASE` CF00h:
-its IM 2 jump at D8D8h stays under `BIN_STACK_ROOM`, D900h; the BIN's
-code may then reach CF00h, 19.75 KB); then, for the ROM, a plain 32 KB
-cartridge (4000h..BFFFh, page 2 enabled at `init` with ENASLT, as
-HARD-EARNED-EXPERIENCE.md says; its RAM at E000h stays). Past about
-19.75 KB the BIN needs another layout (part of it in page 1's RAM).
-
-**Decision:** the user's (2026-11-24): move the RAM and extend the ROM
-when a step needs it; no need to squeeze code to stay in the limits.
+**Decision:** the user's (2026-11-24): extend when a step needs it; no
+need to squeeze code to stay in the limits.

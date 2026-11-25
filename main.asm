@@ -1,5 +1,5 @@
 ; ---------------------------------------------------------------------------
-; Terra Front - the front (MSX1, 16 KB ROM at 4000h; or a BIN at 8000h for Disk BASIC)
+; Terra Front - the front (MSX1, 32 KB ROM at 4000h; or a BIN at 8000h for Disk BASIC)
 ;
 ; SCREEN 2, all black. The top and bottom STATUS_LINES pixel lines are kept
 ; out of the playfield (for the score and the reserve ships). The front, up
@@ -88,6 +88,16 @@
 ; eight ship booms side by side, then "BONUS ddd POINTS" (BOSS_PTS by the
 ; front's share as it died) in the screen's middle for BONUS_TEXT_MS, then
 ; the points, and the next wave.
+; After wave BOSS2_AFTER (10) of a level, Boss2 (images/boss2.png) instead:
+; still, in the bitmap at the playfield's top, centred (no star or bullet
+; drawn in its cells), over a line of FORM_PAIRS_N pairs of a random enemy
+; (each pair a random colour) that swerves left and right (B2_MARGIN px
+; from the edges, B2_SWERVE_MS end to end); with B2_SPAWN_AT living
+; enemies or fewer it sends down a new pair into a free slot of the line
+; (B2_DESC_MS, the line still meanwhile; B2_SPAWNS at most). Its pairs
+; break up and score as a wave's, it's one more shooter of the enemies'
+; bullets (wave 1's); its hits, colours (its white stays), booms and bonus
+; are Boss1's; as it dies, every enemy and bullet is gone at once.
 ; It starts with a splash screen, images/title.png (title.py), with
 ; "(C) 2026 JCCYC" and "HTTPS://RETROPOLIS.COM.BR" on rows 21 and 22 and
 ; "PRESS SPACE OR FIRE TO BEGIN" on row 23, centred, in the game's font
@@ -126,16 +136,17 @@
 
 ; ---- Memory map ------------------------------------------------------------
 
-; The ROM sits in page 1 (4000h..7FFFh) with its RAM at E000h. The BIN
+; The ROM is a plain 32 KB cartridge in pages 1 and 2 (4000h..BFFFh; init
+; switches page 2 to it) with its RAM at E000h. The BIN
 ; (sjasmplus -DBIN, BLOADed from Disk BASIC by the disk's AUTOEXEC.BAS) is
-; the same code at 8000h (page 1 holds BASIC there), its RAM at C000h laid
+; the same code at 8000h (page 1 holds BASIC there), its RAM at CF00h laid
 ; out as the ROM's, clear of BASIC's stack (about DB80h, which the game
 ; keeps: BIN_STACK_ROOM below it) and the disk ROM's work area (from
 ; HIMEM, about DE00h), whose interrupt hook the BIN keeps calling for a
 ; while (it turns the drive motor off).
                 ifdef BIN
 CODE_BASE       equ 8000h
-RAM_BASE        equ 0C000h
+RAM_BASE        equ 0CF00h
 BIN_STACK_ROOM  equ 0DB00h-200h     ; the BIN's RAM must end below it
 ; The disk ROM's frame interrupt hook turns the drive motor off a few
 ; seconds after the BLOAD (Skyfighter measured 4 s on the Expert with an
@@ -153,7 +164,7 @@ RAM_BASE        equ 0E000h
 ; minor (bytes), patch (word, little-endian)
 VERSION_MAJOR   equ 0
 VERSION_MINOR   equ 9
-VERSION_PATCH   equ 4
+VERSION_PATCH   equ 5
 
 ; ---- Tunables --------------------------------------------------------------
 
@@ -335,6 +346,22 @@ BOSS_HITS       equ 10          ; hits a colour: then the next of FORM_COLOR_RED
 BOSS_PTS        equ 500         ; its death's bonus with a one-ship front (with more, SHARE_2..4 % of it) ...
 BONUS_TEXT_MS   equ 2000        ; ... shown this long in the screen's middle (OVER_ROW) after its boom; then the score, the next wave
 ;
+; Boss2 (images/boss2.png): after this wave of a level (one of
+; BOSS_AFTER_LIST), Boss2 instead of the boss above (Boss1). Stationary,
+; in the bitmap, centred at the playfield's top; under it a line of
+; FORM_PAIRS_N pairs of one random enemy (each pair in a random colour of
+; FORM_COLOR_LIST) swerves left and right; it takes hits and changes colour
+; as Boss1 (its white parts stay), with Boss1's bonus; a bullet of the
+; enemies' may come from it too (it's one more shooter)
+BOSS2_AFTER     equ 10
+B2_GAP_Y        equ 8           ; the pairs' art's first line this many blank lines under its art's last
+B2_GAP_X        equ 8           ; ... blank px between two pairs' arts
+B2_MARGIN       equ 56          ; ... at the line's left end, its art's first column; at the right end its last 255 - this
+B2_SWERVE_MS    equ 500         ; ... from one end to the other
+B2_SPAWN_AT     equ 6           ; living enemies this many or fewer: it spawns a pair into a free slot of the line ...
+B2_SPAWNS       equ 16          ; ... this many at most
+B2_DESC_MS      equ 500         ; ... coming down from just above the screen to its slot in this long (the line stops meanwhile)
+;
 ; A cheat for playtesting: key 1 (a press, in a game, not in game over nor
 ; during a boss) goes to the level's next boss: that frame its wave's
 ; enemies are gone (no bonus ship counted), the level text shows the wave
@@ -399,6 +426,24 @@ BOSS_X_MAX      equ 256-BOSS_MARGIN-BOSS_W
 BOSS_EB_Y       equ BOSS_Y+BOSS_H
 BOSS_EB_RUN     equ PLAY_BOTTOM+2-BULLET_H-BOSS_EB_Y    ; (eb_move: gone once its top would reach line BOSS_EB_Y + this)
         assert BOSS_EB_N <= EB_N && BOSS_EB_RUN+256/50+BOSS_EB_N < 256
+; Boss2: its art's box (BOSS_W x BOSS_H, as Boss1's) in the bitmap at
+; (B2_X, B2_Y), whole cells; the pairs' line: their art's first line
+; B2_LINE_TOP; a spawned pair's sprite starts B2_DESC_FROM lines above
+; line 0 (all off screen)
+B2_X            equ (256-BOSS_W)/2
+B2_Y            equ PLAY_TOP
+B2_VRAM         equ B2_Y/8*256+B2_X ; its first cell, from GRPCGP / GRPCOL
+B2_LINE_TOP     equ B2_Y+BOSS2_LAST+1+B2_GAP_Y
+B2_DESC_FROM    equ 16
+B2_SW_MUL       equ 1000/B2_SWERVE_MS   ; the swerve's px/s: its range times this
+B2_DESC_MUL     equ 1000/B2_DESC_MS     ; the descent's px/s: its distance times this
+        assert B2_X%8 == 0 && B2_Y%8 == 0 && B2_Y == BOSS_Y && BOSS2_LAST == BOSS_H-1
+        assert 1000%B2_SWERVE_MS == 0 && 1000%B2_DESC_MS == 0 && B2_SW_MUL >= 1 && B2_DESC_MUL >= 1
+        ; the line: FORM_PAIRS_N pairs, each at most 16 px of art, inside the margins, with room to swerve
+        assert 2*B2_MARGIN+FORM_PAIRS_N*16+(FORM_PAIRS_N-1)*B2_GAP_X+(256-2*B2_MARGIN)/50+1 < 256
+        assert (256-2*B2_MARGIN)*B2_SW_MUL < 65536 && B2_SPAWN_AT < ENEMY_N-1 && B2_SPAWNS < 256
+        assert B2_LINE_TOP+16+B2_DESC_FROM < 256 && (B2_LINE_TOP+B2_DESC_FROM)*B2_DESC_MUL < 65536
+        assert B2_LINE_TOP+16 <= FORM_Y0+FORM_RISE+FORM_H      ; (as the formation: clear of the front)
 ; boss_st: none, fighting, booming (one state a boom image), a frame with
 ; nothing (its last boom gone; the text not yet: two heavy jobs apart, on
 ; the Expert), the bonus text shown, the bonus's end (next_wave: the text gone, the score), then the
@@ -519,6 +564,10 @@ KEY_ROWS        equ 11          ; keyboard matrix rows 0..10 (9, 10: the keypad,
 JOY_A           equ 10h         ; R14: button A (0 when pressed)
 
 MSXID1          equ 002Bh       ; bit 7 set = 50 Hz
+ENASLT          equ 0024h
+RSLREG          equ 0138h
+EXPTBL          equ 0FCC1h
+SLTTBL          equ 0FCC5h
 WRTVDP          equ 0047h
 FILVRM          equ 0056h
 LDIRVM          equ 005Ch
@@ -544,12 +593,13 @@ IM2_TABLE       equ RAM_BASE+800h
 IM2_HI          equ IM2_TABLE/256+1
 IM2_JUMP        equ IM2_HI*257
 ; A page of flags, one byte a line: bit 0 a bullet (a volley's or an
-; enemy's) on it now, bit 1 the middle text's row (move_stars sets them,
-; from ln_list; bullet_at reads bit 0)
-LN_FLAGS        equ RAM_BASE+400h
+; enemy's) on it now, bit 1 a row with cells kept from stars and bullets
+; (the middle text's, Boss2's) (move_stars sets them, from ln_list;
+; bullet_at reads bit 0)
+LN_FLAGS        equ RAM_BASE+700h
 LN_BULLET       equ 1
 LN_MID          equ 2
-LN_MAX          equ (MAX_VOLLEYS+EB_N)*BULLET_H+8
+LN_MAX          equ (MAX_VOLLEYS+EB_N)*BULLET_H+8+BOSS_H
 RES_PICS        equ RAM_BASE+500h   ; draw_reserves' patterns for 0..RESERVE_MAX ships (make_reserves)
 
 ; A high score record: the score (4 BCD bytes, the lowest two digits
@@ -598,6 +648,7 @@ X               word            ; ... and x: the art's left column, mod FORM_WRA
 YF              byte            ; y's fraction ...
 Y               byte            ; ... and y: the art box's top line (the sprite's first)
 DIR             byte            ; free: 0..FREE_DIRS-1 (path.py)
+COL             byte            ; its colour (form_color; Boss2's pairs: one each)
         ends
 
         struct EB
@@ -735,6 +786,30 @@ boss_eb:        ds 1            ; px its bullets moved since its last one (it fi
 boss_gap:       ds 1
 boss_alive:     ds 1            ; the front's living ships as it died (its bonus's share)
 boss_done:      ds 1            ; nonzero: the boss after this wave is over (next_wave.go: the next wave)
+boss_kind:      ds 1            ; 0: Boss1; nonzero: Boss2
+boss_art:       ds 2            ; its art for the hits: BOSS_PATTERN or BOSS2_PATTERN (boss_px)
+; Boss2: in the bitmap while b2_shown (no star or bullet drawn in its cells:
+; over_at); the pairs' line at b2_pos (0..b2_range, its left end 0)
+b2_shown:       ds 1
+b2_vanish:      ds 1            ; nonzero: it just died, the volleys go (move_bullets)
+b2_pos:         ds 1
+b2_dir:         ds 1            ; nonzero: going left
+b2_acc:         ds 1            ; ... Bresenham remainder
+b2_whole:       ds 1            ; ... the swerve's px a frame ...
+b2_frac:        ds 1            ; ... and remainder (fps)
+b2_range:       ds 1
+b2_x0:          ds 1            ; slot 0's sprite column at the left end
+b2_step:        ds 1            ; ... px from a slot to the next
+b2_land:        ds 1            ; ... the pairs' Y (their art box's top line)
+b2_slot:        ds FORM_PAIRS_N ; per record pair (enemies 2k, 2k+1) in a pair: its slot in the line
+b2_spawned:     ds 1            ; pairs it spawned
+b2_desc:        ds 1            ; a spawned pair coming down: its record pair + 1 (0: none) ...
+b2_drem:        ds 1            ; ... lines still to come (its Y: b2_land - this)
+b2_dacc:        ds 1            ; ... Bresenham remainder
+b2_dwhole:      ds 1            ; ... px a frame ...
+b2_dfrac:       ds 1            ; ... and remainder
+b2_dfull:       ds 1            ; ... its whole way down, in lines
+b2_half:        ds 2            ; b2_spawn: a half-gone record pair's gone record (0: none yet)
 bonus_text:     ds 1            ; nonzero: its bonus text shows (in bonus_buf)
 bonus_buf:      ds BONUS_LEN+1
 bonus_half:     ds 1            ; nonzero: the text's second half still to print (its first character)
@@ -746,7 +821,7 @@ eb_clock:       ds 1            ; ... 1/300 s since the last roll
 eb_wipe:        ds 1            ; ... nonzero: a new wave began, all of them go (eb_move)
 eb_alive:       ds 1            ; eb_move: the front's ships living when it began (FFh: not worked out yet)
 eb_slot:        ds 2            ; enemy_fire: a free slot
-eb_cand:        ds ENEMY_N*2    ; ... the enemies that can shoot: their bullets' {Y X}
+eb_cand:        ds (ENEMY_N+1)*2 ; ... the enemies (and Boss2) that can shoot: their bullets' {Y X}
 eb_cells:       ds 4            ; the 8-px columns (cells) enemy bullets are in: bit (X/8)%8 of byte X/64
 eb_m:           ds BULLET_H     ; eb_masks: the bits in each of an enemy bullet's bytes
 hc_first:       ds ENEMY_N      ; this frame, each enemy's art's first line (FFh: booming or gone), for ...
@@ -825,7 +900,7 @@ SAT_SIZE        equ $-sat_buf
 reserve_buf:    ds (RESERVE_CELLS+1)*8  ; the reserve ships' cells' patterns (+1: a ship's spill)
 RAM_SIZE        equ $-ram_start
 GAME_RAM_SIZE   equ $-game_ram
-        assert $ <= LN_FLAGS && LN_FLAGS+256 <= RES_PICS && RES_PICS+(RESERVE_MAX+1)*RES_PIC <= IM2_TABLE && (LN_FLAGS & 0FFh) == 0
+        assert $ <= RES_PICS && RES_PICS+(RESERVE_MAX+1)*RES_PIC <= LN_FLAGS && LN_FLAGS+256 <= IM2_TABLE && (LN_FLAGS & 0FFh) == 0
         assert (IM2_TABLE & 0FFh) == 0 && IM2_TABLE+257 <= IM2_JUMP
         ifdef BIN
         assert IM2_JUMP+3 <= BIN_STACK_ROOM
@@ -867,6 +942,9 @@ LICENSE_TEXT:
 ; ---- Init ------------------------------------------------------------------
 
 init:
+        ifndef BIN
+        call enable_page2       ; (first: the code past 8000h is the cartridge's from now on)
+        endif
         ld a,BG_COLOR
         ld (FORCLR),a
         ld (BAKCLR),a
@@ -928,6 +1006,40 @@ init:
         call hsc_load           ; (with IM 2 set up: bdos goes back to it)
         endif
         jr new_game
+
+        ifndef BIN
+; Page 2 switched to this cartridge's slot (the BIOS switched page 1 only):
+; page 1's primary slot P from RSLREG; expanded (EXPTBL+P bit 7), page 1's
+; subslot from SLTTBL+P, so 80h | subslot*4 | P; else P. Palavrale's.
+; In page 1 (assert), as init's start.
+enable_page2:
+        call RSLREG
+        rrca
+        rrca
+        and 3
+        ld c,a
+        ld b,0
+        ld hl,EXPTBL
+        add hl,bc
+        ld a,(hl)
+        and 80h
+        jr z,.single            ; (A = 0) not expanded
+        or c
+        ld c,a
+        inc hl                  ; SLTTBL + P
+        inc hl
+        inc hl
+        inc hl
+        ld a,(hl)
+        and 0Ch                 ; page 1's subslot
+.single:
+        or c
+        ld h,80h
+        call ENASLT
+        ei                      ; (ENASLT returns with interrupts disabled)
+        ret
+        assert $ <= 8000h
+        endif
 
 ; Game over's end: back to the title, the game's RAM as at power-on; first,
 ; if the score made the high score table, the initials (not attract mode's)
@@ -2619,7 +2731,15 @@ move_bullets:
         pop bc
         djnz .erase
         call eb_move            ; erased too before anything is drawn
-        ld ix,volleys
+        ld hl,b2_vanish         ; Boss2 died: the volleys go (all erased now)
+        ld a,(hl)
+        or a
+        jr z,.drawv
+        xor a
+        ld (hl),a
+        ld (volleys+VOLLEY.Y),a
+        ld (volleys+VOLLEY+VOLLEY.Y),a
+.drawv: ld ix,volleys
         ld b,MAX_VOLLEYS
 .draw:  push bc
         ld a,(ix+VOLLEY.Y)
@@ -2631,7 +2751,7 @@ move_bullets:
         pop bc
         djnz .draw
         ret
-        assert PLAY_TOP > (BULLET_SPEED+49)/50
+        assert PLAY_TOP > (BULLET_SPEED+49)/50 && MAX_VOLLEYS == 2
 
 ; A new press of fire, with a volley free and a living ship: a bullet from
 ; each living ship's nose, and the laser sound
@@ -2682,10 +2802,14 @@ fire:
 ; ---- Enemy bullets ---------------------------------------------------------
 
 ; A = this wave's (wave_n's) entry in the table HL of B entries (the last
-; from then on). Keeps C, DE.
+; from then on; during a boss, the first). Keeps C, DE.
 wave_entry:
+        ld a,(boss_st)          ; (a boss: wave 1's)
+        or a
         ld a,(wave_n)
-        cp b
+        jr z,.w
+        xor a
+.w:     cp b
         jr c,.in
         ld a,b
         dec a
@@ -2869,7 +2993,9 @@ eb_hit:
 ; Every EB_ROLL_MS a roll: one in EB_CHANCE, with fewer enemy bullets in
 ; flight than this wave's most (EB_MAX_LIST) and an enemy that can shoot
 ; (eb_can), one of those at random fires a bullet from its art's column
-; EB_DX, its top right under the art's last row (eb_draw draws it)
+; EB_DX, its top right under the art's last row (eb_draw draws it); with
+; Boss2 fighting, it's one of them too (from its lower edge, at a random
+; one of its columns), and its spawn coming down isn't
 enemy_fire:
         ld a,(eb_tick)
         ld hl,eb_clock
@@ -2907,7 +3033,14 @@ enemy_fire:
         ld b,ENEMY_N
         ld c,0
 .can:   push hl
-        call eb_can
+        ld a,ENEMY_N            ; Boss2's spawn coming down (b2_desc: its
+        sub b                   ; record pair + 1) can't yet
+        rrca
+        and 3
+        inc a
+        ld hl,b2_desc
+        cp (hl)
+        call nz,eb_can          ; (Z: no carry)
         pop hl
         jr nc,.cnext
         inc c
@@ -2922,12 +3055,31 @@ enemy_fire:
 .cnext: ld de,EN
         add iy,de
         djnz .can
-        ld a,c
+        ld a,(boss_st)          ; Boss2 fighting: one more, from a random
+        cp BS_FIGHT             ; column of its art's lower edge
+        jr nz,.nob
+        ld a,(boss_kind)
+        or a
+        jr z,.nob
+        ld (hl),BOSS_EB_Y
+        inc hl
+        push hl
+        call rand
+        pop hl
+        and BOSS_W-1
+        add a,B2_X
+        ld (hl),a
+        inc c
+.nob:   ld a,c
         or a
         ret z                   ; none
         ld b,a
+        ld e,ENEMY_N-1          ; (rolls of 0..ENEMY_N-1; with Boss2's, 0..15)
+        cp ENEMY_N+1
+        jr c,.pick
+        ld e,15
 .pick:  call rand
-        and ENEMY_N-1
+        and e
         cp b
         jr nc,.pick
         add a,a
@@ -2940,7 +3092,7 @@ enemy_fire:
         ldi
         ldi
         ret
-        assert ENEMY_N == 8 && (ebullets+EB_N*EB)/256 == ebullets/256
+        assert ENEMY_N == 8 && (ebullets+EB_N*EB)/256 == ebullets/256 && FORM_PAIRS_N == 4
 
 ; Carry: the enemy at IY can shoot: in a pair or free, its art's last line
 ; on EB_LAST or above, its column EB_DX on screen (A = that column). Keeps
@@ -3160,8 +3312,16 @@ eb_masks:
 volley_hits:
         ld a,(boss_st)
         cp BS_FIGHT
-        jp z,boss_volley
-        push de
+        jr nz,.en
+        ld a,(boss_kind)
+        or a
+        jp z,boss_volley        ; Boss1 (no enemies then)
+        call .en                ; Boss2: the enemies first (in front of it), then it
+        ld a,(ix+VOLLEY.Y)
+        or a
+        ret z
+        jp boss_volley
+.en:    push de
         ld a,(form_art_t)
         ld b,a
         ld a,(form_art_b)
@@ -3248,9 +3408,11 @@ bullet_hit:
         push hl
         ld a,(hl)
         ld (hc_i),a
+        ld l,a
         add a,a
         add a,a
-        add a,a                 ; * EN
+        add a,a
+        add a,l                 ; * EN
         ld l,a
         ld h,0
         push de
@@ -3306,7 +3468,7 @@ bullet_hit:
         pop de
         scf
         ret
-        assert EN_FORM == 0 && EN_FREE < EN_BOOM && EN == 8 && ENEMY_N*EN < 256
+        assert EN_FORM == 0 && EN_FREE < EN_BOOM && EN == 9 && ENEMY_N*EN < 256
         assert hc_x/256 == (hc_x+ENEMY_N-1)/256 && FORM_WRAP-256 == 16
 
 ; hc_first := each enemy's art's first line, FFh if booming or gone (the
@@ -3335,8 +3497,10 @@ hit_lines:
         pop hl
         ld de,EN
         ld a,(iy+EN.Y)
-        add a,c                 ; (no carry: the art is in the playfield)
-.put:   ld (hl),a
+        add a,c                 ; (no carry: the art is in the playfield; but
+        jr nc,.put              ; Boss2's spawn coming down, its art box partly
+        ld a,0FFh               ; above line 0: not hit yet; all above: its
+.put:   ld (hl),a               ; first line FxH, under no bullet's lines either)
         inc hl
         add iy,de
         djnz .e
@@ -3612,13 +3776,20 @@ MASK_R: db 0FFh,7Fh,3Fh,1Fh,0Fh,07h,03h,01h,00h ; FFh >> 0..8
 ; The volley at IX (top line Y) drawn (C nonzero) or erased (C = 0) in the
 ; bitmap; the cells hold nothing else, since a volley's bullets are
 ; SHIP_ART_W > 8 px apart and volleys at least a frame's step + BULLET_H
-; lines apart. Keeps IX. With no middle text, the VRAM addresses worked out
-; once for the volley (its lines are all its bullets'), 31 T between writes.
+; lines apart. Keeps IX. With no middle text (nor Boss2's lines), the VRAM
+; addresses worked out once for the volley (its lines are all its
+; bullets'), 31 T between writes.
 volley_px:
         ld a,(mid_text)
         or a
         jp nz,.slow
+        ld a,(b2_shown)         ; (Boss2: the slow way on its lines)
+        or a
+        jr z,.fast
         ld a,(ix+VOLLEY.Y)
+        cp B2_Y+BOSS_H
+        jp c,.slow
+.fast:  ld a,(ix+VOLLEY.Y)
         ld e,a
         and 7
         ld (vp_y7),a            ; its first line in its cell row
@@ -3726,12 +3897,14 @@ volley_px:
 
 ; Lines E..E+BULLET_H-1 of the bitmap at pixel column D's cell := C (outside
 ; vertical blank too: 40 T between the VRAM writes), but for the middle
-; text's cells (over_at)
+; text's cells and Boss2's (over_at)
 bullet_px:
         ld b,BULLET_H
 .cell:  ld a,(mid_text)
-        or a                    ; (no carry)
-        call nz,over_cell
+        ld l,a
+        ld a,(b2_shown)
+        or l                    ; (no carry)
+        call nz,over_at
         jr c,.skip
         ld a,e                  ; byte (E/8)*256 + (D and F8h) + E%8
         and 7
@@ -3764,7 +3937,7 @@ bullet_px:
         and 7
         jr nz,.row              ; same cell: the next byte
         jr .cell
-.skip:  dec b                   ; GAME OVER's: its lines left alone
+.skip:  dec b                   ; kept cells: their lines left alone
         ret z
         inc e
         ld a,e
@@ -3838,7 +4011,20 @@ move_stars:
         inc hl
         inc e
         djnz .mid
-.nomid: ld a,l
+.nomid: ld a,(b2_shown)         ; ... and Boss2's
+        or a
+        jr z,.nob2
+        ld d,high LN_FLAGS
+        ld e,B2_Y
+        ld b,BOSS_H
+.b2:    ld a,(de)
+        or LN_MID
+        ld (de),a
+        ld (hl),e
+        inc hl
+        inc e
+        djnz .b2
+.nob2:  ld a,l
         sub low ln_list
         ld (ln_n),a
         ld a,(star_whole)
@@ -3865,7 +4051,7 @@ move_stars:
         or a
         jr z,.clear             ; nothing on its line
         and LN_MID
-        jr nz,.slowp            ; the middle text's row
+        jr nz,.slowp            ; kept cells' row (the middle text's, Boss2's)
         call bullet_at          ; a bullet on its line: in its byte?
         jr c,.slowp
         ld a,c
@@ -4166,9 +4352,10 @@ random_line:
         ret
         assert STAR == 3
 
-; The wave's enemy (form_enemy) and colour (FORM_COLORS[form_cidx]): its
-; art's rows and bounds, its colour, its pair's and its lone enemy's
-; patterns in VRAM (no enemy sprite shows them while they change)
+; The wave's enemy (form_enemy) and colour (FORM_COLORS[form_cidx], every
+; enemy record's): its art's rows and bounds, its colour, its pair's and
+; its lone enemy's patterns in VRAM (no enemy sprite shows them while they
+; change)
 load_formation:
         ld a,(form_cidx)
         ld e,a
@@ -4177,7 +4364,15 @@ load_formation:
         add hl,de
         ld a,(hl)
         ld (form_color),a
+        ld hl,enemies+EN.COL    ; every enemy's
+        ld de,EN
+        ld b,ENEMY_N
+.col:   ld (hl),a
+        add hl,de
+        djnz .col
         ld a,(form_enemy)
+; ... enemy A's (not its colour; Boss2's)
+load_enemy:
         ld l,a
         ld h,0
         add hl,hl
@@ -4331,13 +4526,13 @@ next_wave:
         jr c,.cn
         xor a
 .cn:    ld (form_cidx),a
-        call load_formation
-        call level_text
         ld hl,enemies           ; all EN_FORM, as at the start
         ld de,enemies+1
         ld bc,ENEMY_N*EN-1
         ld (hl),0
         ldir
+        call load_formation     ; (their colour too)
+        call level_text
         ld hl,FORM_X0
         ld (form_x),hl
         ld hl,0
@@ -4455,11 +4650,20 @@ boss_after:
         ret
 
 ; The boss begins (next_wave.go, instead of the next wave; it shows from
-; this frame's SAT on): at its left end going right, in its first colour;
+; this frame's SAT on): Boss2 after BOSS2_AFTER (boss2_begin); Boss1 at
+; its left end going right, in its first colour;
 ; its bullets one every boss_gap px they move: BOSS_EB_N * boss_gap at
 ; least BOSS_EB_RUN + the longest step - 1, so that the one fired
 ; BOSS_EB_N before is gone by then (at BOSS_EB_PCT %: eb_speed)
 boss_begin:
+        ld a,(form_enemy)
+        inc a
+        cp BOSS2_AFTER
+        jp z,boss2_begin
+        ld hl,BOSS_PATTERN
+        ld (boss_art),hl
+        xor a
+        ld (boss_kind),a
         ld a,BS_FIGHT
         ld (boss_st),a
         ld a,BOSS_X_MIN
@@ -4493,6 +4697,9 @@ boss_begin:
 ; The boss one frame on (fighting): BOSS_SPEED px/s, back the other way
 ; from either end (a step past it reflected)
 boss_move:
+        ld a,(boss_kind)
+        or a
+        jp nz,boss2_move
         ld a,(boss_whole)
         ld b,a
         ld a,(boss_frac)
@@ -4533,6 +4740,9 @@ boss_move:
 boss_fire:
         ld a,(boss_st)
         cp BS_FIGHT
+        ret nz
+        ld a,(boss_kind)        ; (Boss2: one of enemy_fire's shooters)
+        or a
         ret nz
         ld a,(boss_gap)
         ld c,a
@@ -4635,7 +4845,7 @@ boss_px:
         ld l,a
         ld h,0
         push de
-        ld de,BOSS_PATTERN
+        ld de,(boss_art)        ; (BOSS_PATTERN or BOSS2_PATTERN: the same layout)
         add hl,de
         pop de
         ld a,c
@@ -4701,9 +4911,12 @@ boss_hit:
         add hl,de
         ld a,(hl)
         ld (boss_color),a
-        ret
+        ld a,(boss_kind)
+        or a
+        ret z
+        jp b2_colours           ; (Boss2: its bitmap's)
 ; It starts to boom (in its last colour; the death sound), the front's
-; living ships now kept for its bonus (test.tcl: it dies here)
+; living ships now kept for its bonus (test.tcl: it dies here). Keeps IX.
 boss_dies:
         ld a,BS_BOOM
         ld (boss_st),a
@@ -4711,7 +4924,25 @@ boss_dies:
         ld (boss_left),a
         call alive_mask
         ld (boss_alive),a
-        jp death_start
+        call death_start
+        ld a,(boss_kind)
+        or a
+        ret z
+; Boss2: its enemies and every bullet gone at once (enemy bullets: this
+; frame's eb_move, after the volleys; the volleys: move_bullets, all
+; erased by then), its bitmap too (its booms are sprites, as Boss1's)
+        ld hl,enemies+EN.ST
+        ld de,EN
+        ld b,ENEMY_N
+.gone:  ld (hl),EN_GONE
+        add hl,de
+        djnz .gone
+        xor a
+        ld (b2_desc),a
+        inc a
+        ld (eb_wipe),a
+        ld (b2_vanish),a
+        jp b2_erase
 
 ; The boss booming: the next boom image when one's frames are over; after
 ; the last, a frame with nothing (BS_GAP), then its bonus text (its points:
@@ -4882,6 +5113,483 @@ boss_sat:
         djnz .p
         ret
         assert BS_FIGHT == 1 && BS_BOOM == 2
+
+; ---- Boss2 -----------------------------------------------------------------
+
+; Boss2 begins (boss_begin, after BOSS2_AFTER; every enemy gone): fighting,
+; in its first colour, in the bitmap (its stars there off: it covers them);
+; under it FORM_PAIRS_N pairs of a random enemy (each pair in a random
+; colour), pair k in slot k, the line in its middle going right. The line's
+; geometry from the enemy's art: a pair's art W = 8 + its last column - its
+; first + 1 px wide, slots W + B2_GAP_X apart, the line's art B2_MARGIN px
+; from the screen's left edge at its left end (b2_x0: slot 0's sprite
+; column there), b2_range px from it to its right end (as far from the
+; right edge), crossed in B2_SWERVE_MS; a spawn's way down, from
+; B2_DESC_FROM lines above line 0 to the line, in B2_DESC_MS
+boss2_begin:
+        ld a,BS_FIGHT
+        ld (boss_st),a
+        ld (boss_kind),a
+        ld hl,BOSS2_PATTERN
+        ld (boss_art),hl
+        ld a,B2_X
+        ld (boss_x),a           ; (its booms: boss_sat)
+        xor a
+        ld (boss_hits),a
+        ld (boss_cidx),a
+        ld (b2_spawned),a
+        ld (b2_desc),a
+        ld (b2_dir),a
+        ld (b2_acc),a
+        ld a,(BOSS_COLORS)
+        ld (boss_color),a
+.e:     call rand               ; a random enemy
+        and 15
+        cp ENEMIES
+        jr nc,.e
+        push af
+        call load_enemy
+        pop af
+        add a,a
+        ld l,a
+        ld h,0
+        ld de,ENEMY_COLS
+        add hl,de
+        ld e,(hl)               ; its art's first column ...
+        inc hl
+        ld a,(hl)               ; ... and last
+        sub e
+        add a,9
+        ld d,a                  ; D = a pair's art's width
+        add a,B2_GAP_X
+        ld (b2_step),a
+        ld a,B2_MARGIN
+        sub e
+        ld (b2_x0),a
+        ld a,d
+        add a,a
+        add a,a
+        add a,(FORM_PAIRS_N-1)*B2_GAP_X     ; the line's art's width
+        neg
+        add a,256-2*B2_MARGIN
+        ld (b2_range),a
+        ld l,a
+        srl a
+        ld (b2_pos),a           ; in the middle
+        ld h,0
+        ld d,h
+        ld e,l
+        dup B2_SW_MUL-1
+        add hl,de
+        edup
+        call rate
+        ld a,b
+        ld (b2_whole),a
+        ld a,d
+        ld (b2_frac),a
+        ld a,(form_art_t)
+        ld b,a
+        ld a,B2_LINE_TOP
+        sub b
+        ld (b2_land),a
+        add a,B2_DESC_FROM
+        ld (b2_dfull),a
+        ld l,a
+        ld h,0
+        ld d,h
+        ld e,l
+        dup B2_DESC_MUL-1
+        add hl,de
+        edup
+        call rate
+        ld a,b
+        ld (b2_dwhole),a
+        ld a,d
+        ld (b2_dfrac),a
+        ld ix,enemies           ; the pairs (the records were all gone)
+        ld b,FORM_PAIRS_N
+        ld hl,b2_slot
+        ld c,0
+.p:     push bc
+        push hl
+        call b2_pair
+        pop hl
+        pop bc
+        ld (hl),c
+        inc hl
+        inc c
+        ld de,2*EN
+        add ix,de
+        djnz .p
+        call b2_place
+        ld ix,stars             ; its cells' stars off (not drawn: it covers them)
+        ld b,STARS
+        ld de,STAR
+.s:     ld a,(ix+STAR.Y)
+        cp B2_Y+BOSS_H
+        jr nc,.sn
+        ld a,(ix+STAR.X)
+        sub B2_X
+        cp BOSS_W
+        jr nc,.sn
+        ld (ix+STAR.ON),0
+.sn:    add ix,de
+        djnz .s
+        ld a,1
+        ld (b2_shown),a
+        ld hl,(GRPCGP)          ; its patterns ...
+        ld de,BOSS2_PAT
+        ld c,0
+        call b2_put
+; ... and its colours (BOSS2_COL: the body's bytes in boss_color)
+b2_colours:
+        ld a,(boss_color)
+        add a,a
+        add a,a
+        add a,a
+        add a,a
+        ld c,a
+        ld hl,(GRPCOL)
+        ld de,BOSS2_COL
+; Its two rows of cells in the VRAM table at HL (GRPCGP or GRPCOL) from DE,
+; BOSS_W bytes each, a byte under 10h ORed with C (outside vertical blank:
+; over 40 T between writes). Keeps IX.
+b2_put:
+        push bc
+        ld bc,B2_VRAM
+        add hl,bc
+        pop bc
+        ld b,2
+.row:   push bc
+        push hl
+        call vdp_write
+        ld b,BOSS_W
+.byte:  ld a,(de)
+        cp 10h
+        jr nc,.out
+        or c
+.out:   out (VDP_DATA),a
+        inc de
+        djnz .byte
+        pop hl
+        inc h                   ; the next row of cells
+        pop bc
+        djnz .row
+        ret
+        assert BOSS_H == 16
+
+; Boss2 gone from the bitmap (it died): its cells blank, in the playfield's
+; colour (a bullet's), stars and bullets in them again. Keeps IX.
+b2_erase:
+        xor a
+        ld (b2_shown),a
+        ld hl,(GRPCGP)
+        call .fill
+        ld hl,(GRPCOL)
+        ld a,BULLET_COLOR*16+BG_COLOR
+.fill:  ld e,a
+        ld bc,B2_VRAM
+        add hl,bc
+        ld d,2
+.row:   push hl
+        call vdp_write
+        ld b,BOSS_W
+.byte:  ld a,e                  ; 32 T
+        out (VDP_DATA),a
+        nop
+        djnz .byte
+        pop hl
+        inc h
+        dec d
+        jr nz,.row
+        ret
+
+; The record pair at IX: a pair (EN_FORM, no fractions), in a random colour
+; of FORM_COLORS
+b2_pair:
+        xor a
+        ld (ix+EN.ST),a
+        ld (ix+EN+EN.ST),a
+        ld (ix+EN.XF),a
+        ld (ix+EN+EN.XF),a
+        ld (ix+EN.YF),a
+        ld (ix+EN+EN.YF),a
+.c:     call rand
+        and 15
+        cp FORM_COLORS_N
+        jr nc,.c
+        ld hl,FORM_COLORS
+        add a,l
+        ld l,a
+        jr nc,.nc
+        inc h
+.nc:    ld a,(hl)
+        ld (ix+EN.COL),a
+        ld (ix+EN+EN.COL),a
+        ret
+        assert EN_FORM == 0
+
+; B = HL px/s / fps, D = the remainder (bresenham's whole px and remainder
+; a frame for HL px/s; both under 256)
+rate:   ld a,(fps)
+        ld e,a
+        ld d,0
+        ld b,-1
+.d:     inc b
+        or a
+        sbc hl,de
+        jr nc,.d
+        add hl,de
+        ld d,l
+        ret
+
+; Boss2 one frame on (next_wave, fighting): a spawn coming down moves on
+; (shot, broken up: its way down is over), the line standing still;
+; else the line swerves (B2_SW_MUL * b2_range px/s, back the other way from
+; either end, a step past it reflected), and with B2_SPAWN_AT living
+; enemies or fewer and spawns left, a new pair (b2_spawn); then the pairs
+; at their places
+boss2_move:
+        ld a,(b2_desc)
+        or a
+        jr z,.swerve
+        dec a                   ; its record pair's state
+        ld l,a
+        add a,a
+        add a,a
+        add a,a
+        add a,l
+        add a,a                 ; * 2*EN
+        ld l,a
+        ld h,0
+        ld de,enemies
+        add hl,de
+        ld a,(hl)
+        or a
+        jr nz,.over             ; broken up
+        ld a,(b2_dwhole)
+        ld b,a
+        ld a,(b2_dfrac)
+        ld d,a
+        ld hl,b2_dacc
+        call bresenham
+        ld b,a
+        ld hl,b2_drem
+        ld a,(hl)
+        sub b
+        jr c,.land
+        ld (hl),a
+        jr nz,b2_place          ; still coming
+.land:  ld (hl),0
+.over:  xor a
+        ld (b2_desc),a
+        jr b2_place
+.swerve:
+        ld a,(b2_whole)
+        ld b,a
+        ld a,(b2_frac)
+        ld d,a
+        ld hl,b2_acc
+        call bresenham
+        ld b,a
+        ld a,(b2_range)
+        ld c,a
+        ld hl,b2_pos
+        ld a,(b2_dir)
+        or a
+        ld a,(hl)
+        jr nz,.left
+        add a,b                 ; (no carry: the range + a step < 256)
+        sub c                   ; past the right end by this
+        jr c,.inr
+        ld e,a
+        ld a,c
+        sub e                   ; reflected
+        ld (hl),a
+        ld a,1
+        ld (b2_dir),a
+        jr .spawn
+.inr:   add a,c
+        ld (hl),a
+        jr .spawn
+.left:  sub b
+        jr z,.lend
+        jr nc,.inl
+        neg                     ; past the left end: reflected
+.lend:  ld (hl),a
+        xor a
+        ld (b2_dir),a
+        jr .spawn
+.inl:   ld (hl),a
+.spawn: ld a,(b2_spawned)
+        cp B2_SPAWNS
+        jr nc,b2_place
+        ld hl,enemies+EN.ST     ; the living enemies
+        ld de,EN
+        ld bc,ENEMY_N*256
+.cnt:   ld a,(hl)
+        cp EN_BOOM
+        jr nc,.nl
+        inc c
+.nl:    add hl,de
+        djnz .cnt
+        ld a,c
+        cp B2_SPAWN_AT+1
+        call c,b2_spawn
+; The pairs (EN_FORM) at their slots' places in the line, the spawn
+; coming down at its line
+b2_place:
+        ld ix,enemies
+        ld c,0
+.p:     ld a,(ix+EN.ST)
+        or a
+        jr nz,.next
+        ld a,c                  ; its slot
+        add a,low b2_slot
+        ld l,a
+        ld h,high b2_slot
+        ld b,(hl)
+        ld a,(b2_step)
+        ld d,a
+        ld a,(b2_x0)
+        ld hl,b2_pos
+        add a,(hl)
+        inc b
+.m:     dec b
+        jr z,.x
+        add a,d
+        jr .m
+.x:     ld (ix+EN.X),a
+        ld (ix+EN.X+1),0
+        add a,8
+        ld (ix+EN+EN.X),a
+        ld (ix+EN+EN.X+1),0
+        ld a,(b2_desc)
+        dec a
+        cp c
+        ld a,(b2_land)
+        jr nz,.y
+        ld hl,b2_drem           ; coming down: this much above the line
+        sub (hl)
+.y:     ld (ix+EN.Y),a
+        ld (ix+EN+EN.Y),a
+.next:  ld de,2*EN
+        add ix,de
+        inc c
+        ld a,c
+        cp FORM_PAIRS_N
+        jr c,.p
+        ret
+        assert b2_slot/256 == (b2_slot+FORM_PAIRS_N-1)/256 && FORM_PAIRS_N*4 < 256
+
+; A spawn (boss2_move: B2_SPAWN_AT living enemies or fewer): a record pair
+; with both gone (none, but two with one gone each: the other's enemy
+; moved into the first's gone record, the other's then both gone; none of
+; those yet, enemies still booming: nothing, till a later frame) becomes a
+; pair in a random colour in a random free slot of the line, coming down
+; from B2_DESC_FROM lines above line 0
+b2_spawn:
+        ld hl,0
+        ld (b2_half),hl
+        ld ix,enemies
+        ld c,0
+.k:     ld a,(ix+EN+EN.ST)
+        ld b,a
+        ld a,(ix+EN.ST)
+        cp EN_GONE
+        jr nz,.lin
+        ld a,b                  ; the left one gone
+        cp EN_GONE
+        jr z,.found             ; ... both
+        push ix
+        pop hl
+        jr .half
+.lin:   ld a,b
+        cp EN_GONE
+        jr nz,.next             ; neither
+        push ix                 ; the right one gone
+        pop hl
+        ld de,EN
+        add hl,de
+.half:  ld de,(b2_half)
+        ld a,d
+        or e
+        jr nz,.move
+        ld (b2_half),hl         ; the first such pair
+        jr .next
+.move:  push ix                 ; this pair's living one (free or booming)
+        pop hl                  ; into the first's gone record
+        ld a,(ix+EN.ST)
+        cp EN_GONE
+        jr nz,.lv
+        ld de,EN
+        add hl,de
+.lv:    push bc
+        ld de,(b2_half)
+        ld bc,EN
+        ldir
+        ld de,-EN
+        add hl,de
+        ld (hl),EN_GONE         ; (EN.ST) this pair now both gone
+        pop bc
+        jr .found
+.next:  ld de,2*EN
+        add ix,de
+        inc c
+        ld a,c
+        cp FORM_PAIRS_N
+        jr c,.k
+        ret                     ; none yet
+.found: ld hl,b2_slot           ; IX, C: the record pair. E = the line's
+        ld iy,enemies           ; slots taken (bit k: slot k)
+        ld b,FORM_PAIRS_N
+        ld e,0
+.tk:    ld a,(iy+EN.ST)
+        or a
+        jr nz,.tn               ; not a pair
+        push bc
+        ld b,(hl)
+        ld a,1
+        inc b
+.tb:    dec b
+        jr z,.tset
+        add a,a
+        jr .tb
+.tset:  or e
+        ld e,a
+        pop bc
+.tn:    inc hl
+        push de
+        ld de,2*EN
+        add iy,de
+        pop de
+        djnz .tk
+.slot:  call rand               ; a free one, at random (keeps BC, DE)
+        and FORM_PAIRS_N-1
+        ld d,a
+        ld b,a
+        inc b
+        ld a,e
+.sb:    rrca
+        djnz .sb                ; (carry: slot D's bit)
+        jr c,.slot              ; taken
+        ld a,c
+        add a,low b2_slot
+        ld l,a
+        ld h,high b2_slot
+        ld (hl),d
+        call b2_pair
+        ld a,c
+        inc a
+        ld (b2_desc),a
+        ld a,(b2_dfull)
+        ld (b2_drem),a
+        xor a
+        ld (b2_dacc),a
+        ld hl,b2_spawned
+        inc (hl)
+        ret
+        assert (FORM_PAIRS_N & (FORM_PAIRS_N-1)) == 0 && B2_SPAWN_AT < 2*FORM_PAIRS_N   ; (a slot free then)
 
 ; ---- Call-up ---------------------------------------------------------------
 
@@ -5307,14 +6015,25 @@ game_over:
         scf
         ret
 
-; Carry: a text shows in the screen's middle (mid_text: GAME OVER or the
-; boss's bonus), and pixel (D, E)'s bitmap byte is in its cells (no star or
-; bullet is drawn there meanwhile). Keeps BC, DE, HL.
+; Carry: pixel (D, E)'s bitmap byte is kept from stars and bullets: in
+; Boss2's cells while it shows (b2_shown), or a text shows in the screen's
+; middle (mid_text: GAME OVER or the boss's bonus) and it's in its cells.
+; Keeps BC, DE, HL.
 over_at:
-        ld a,(mid_text)
+        ld a,(b2_shown)
+        or a
+        jr z,.mid
+        ld a,e
+        cp B2_Y+BOSS_H
+        jr nc,.mid
+        ld a,d
+        sub B2_X
+        cp BOSS_W
+        ret c
+.mid:   ld a,(mid_text)
         or a
         ret z
-; ... the same, with one showing
+; ... the middle text's, with one showing
 over_cell:
         ld a,e
         and 0F8h
@@ -5659,7 +6378,12 @@ build_sat:
         dec a
         cp BS_GAP-BS_FIGHT      ; (fighting or booming)
         jr nc,.pairs
-        call boss_sat
+        or a
+        jr nz,.boss             ; booming (Boss2's booms too)
+        ld a,(boss_kind)
+        or a
+        jr nz,.pairs            ; Boss2 fighting: in the bitmap, its enemies here
+.boss:  call boss_sat
         jr .turn
 .pairs: ld ix,enemies
         ld b,FORM_PAIRS_N
@@ -5737,12 +6461,12 @@ en_ent: ld l,(ix+EN.X)
         ld h,(ix+EN.X+1)
         call to_screen
 ; ... name B at column HL (signed, -32..255; < 0: the early clock), the
-; enemy IX's line, in the formation's colour
+; enemy IX's line, in its colour
 ent_at: ld a,(ix+EN.Y)
         dec a                   ; a sprite's first line is Y + 1
         ld (de),a
         inc de
-        ld a,(form_color)
+        ld a,(ix+EN.COL)
         ld c,a
         ld a,l
         bit 7,h
@@ -7052,6 +7776,6 @@ code_end:
         ifdef BIN
         assert $ <= RAM_BASE
         else
-        assert $ <= 8000h
-        ds 8000h-$,0FFh         ; a 16 KB ROM
+        assert $ <= 0C000h
+        ds 0C000h-$,0FFh        ; a 32 KB ROM
         endif
